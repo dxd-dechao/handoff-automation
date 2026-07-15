@@ -12,69 +12,71 @@ CLI on a separate account) while keeping:
 ## Setup
 
 1. **Executor account.** The `claude` CLI (`~/.local/bin/claude`) must be
-   logged into the executor account (run `claude /login` once in a terminal).
+  logged into the executor account (run `claude /login` once in a terminal).
    The planner runs in Cursor / the desktop app on its own account; this tool
    never touches it.
 2. **PATH.** Add this repo's `bin` to your PATH, e.g. in `~/.zshrc`:
-
-   ```sh
+  ```sh
    export PATH="$HOME/Documents/handoff-automation/bin:$PATH"
-   ```
-
+  ```
 3. **Install the protocol into a target repo:**
-
-   ```sh
+  ```sh
    handoff init ~/path/to/repo
-   ```
-
+  ```
    This copies `templates/HANDOFF.md` to the repo root and adds `HANDOFF.md`,
    `HANDOFF-ARCHIVE.md`, and `.handoff-logs/` to `.git/info/exclude` —
    local-only excludes, deliberately **not** `.gitignore`, because the handoff
    machinery is this machine's workflow, not part of the project.
-
 4. **Install the executor permission allowlist** (recommended). JSON can't
-   carry comments, so it's documented here instead:
-
-   ```sh
-   mkdir -p ~/path/to/repo/.claude
-   cp templates/executor-settings.json ~/path/to/repo/.claude/settings.json
-   ```
-
+  carry comments, so it's documented here instead:
    What it grants and why:
-
-   - **allow:** `Edit`/`Write` (implementing the plan), `git add/commit/status/diff/log`
-     (commit-as-you-go on a branch), `pnpm test/lint/build` and
-     `npx tsx/vitest/tsc/eslint` (running the acceptance checks itself).
-   - **deny:** `git push`, `git merge`, `gh pr create`. Publishing requires
-     explicit human authorization written into the task plan — and even then a
-     human runs it, or temporarily widens the allowlist for that one task.
-
+  - **allow:** `Edit`/`Write` (implementing the plan), `git add/commit/status/diff/log`
+  (commit-as-you-go on a branch), `pnpm test/lint/build` and
+  `npx tsx/vitest/tsc/eslint` (running the acceptance checks itself).
+  - **deny:** `git push`, `git merge`, `gh pr create`. Publishing requires
+  explicit human authorization written into the task plan — and even then a
+  human runs it, or temporarily widens the allowlist for that one task.
    If the repo already has a `.claude/settings.json`, merge the `permissions`
    block instead of overwriting.
 
+
+
 ## The loop
 
+Two ways to run it. Both keep the same two human gates (plan approval,
+merge) and the same channel rule (agents talk only through HANDOFF.md).
+
+**Drive mode — everything happens in the planner chat:**
+
 ```
- 1. you → Cursor chat: "plan <task> in the handoff"
-       PLANNER writes the plan, sets READY FOR EXECUTION
+ 1. you → planner chat: "plan <task> in the handoff and drive it"
+       PLANNER runs `handoff archive`, writes the plan, asks you to approve
 
- 2. ★ HUMAN GATE: you read the plan
+ 2. ★ HUMAN GATE (a chat reply): "approved"
 
- 3. watch sees READY FOR EXECUTION (or CHANGES REQUESTED)
-       auto-runs `claude -p "execute the handoff"`        ← the automation
-       executor implements, sets READY FOR QA
+ 3. PLANNER runs `handoff execute` with its own shell tool
+       executor implements on its own account, sets READY FOR QA
 
- 4. watch notifies you → you tell Cursor: "QA the handoff"
-       PLANNER reviews the git diff, then either:
-         CHANGES REQUESTED  → back to 3, automatically
-         APPROVED           → step 5
+ 4. PLANNER QAs the git diff
+         CHANGES REQUESTED → back to 3, automatically (stops after 3 rounds)
+         APPROVED          → step 5
 
- 5. ★ HUMAN GATE: you merge; `handoff archive`; back to 1
+ 5. ★ HUMAN GATE: you merge; back to 1
 ```
 
-Steps 3 and the fix-loop half of 4 need no human at all — that was the
-courier work this tool removes. The two ★ gates and the one-phrase QA
-relay in step 4 are the only human touchpoints, kept deliberately.
+The planner session must stay open while the executor runs (the executor is
+its child process in this mode). The account boundary survives because
+`handoff execute` strips the planner's auth environment before launching the
+executor.
+
+**Watch mode — planner chat + a terminal you leave open:** run
+`handoff watch [repo]`. It auto-executes executor turns and posts a macOS
+notification on READY FOR QA / APPROVED; you relay "QA the handoff" to the
+planner chat yourself. Use this when a task is long and you don't want to
+keep a chat session open — at the cost of the one relay phrase per QA round.
+
+Don't run both modes on the same repo at once; a per-repo lock makes the
+second `execute` fail loudly rather than double-run the executor.
 
 Day-to-day:
 
@@ -105,22 +107,35 @@ flag, argument, or env var to add instructions to the prompt. If you want the
 executor to know something, write it into HANDOFF.md — that keeps the file
 the complete, auditable contract, and keeps every executor run reproducible
 from the file alone. The same discipline applies to the planner side: "plan …
-in the handoff", "QA the handoff".
+in the handoff", "QA the handoff", "drive the handoff". Drive mode changes
+who types the ritual phrase, not the channel — the planner invokes the
+executor only through `handoff execute`, which cannot carry extra
+instructions.
 
 ## Limitations (intentional)
 
-- **The executor runs headless (`claude -p`), so it cannot answer permission
-  prompts.** Anything outside the allowlist simply fails. That is the point:
-  the allowlist is the executor's authority boundary, and widening it is a
-  human decision, not something an agent can talk its way through.
+- **The executor runs headless (**`claude -p`**), so it cannot answer permission
+prompts.** Anything outside the allowlist simply fails. That is the point:
+the allowlist is the executor's authority boundary, and widening it is a
+human decision, not something an agent can talk its way through.
 - `--permission-mode acceptEdits` auto-accepts file edits only; shell commands
-  still go through the allowlist.
+still go through the allowlist.
 - `watch` is a poller, not a daemon: it runs in a terminal you leave open, and
-  one repo per invocation.
+one repo per invocation.
+- One executor run per repo at a time, enforced by a lock directory
+(`.handoff-logs/execute.lock`). If a run crashes and leaves the lock behind,
+remove it by hand — `execute` tells you the path.
+- In drive mode, closing the planner chat mid-run kills the executor with it;
+prefer watch mode for very long tasks.
+- Repos initialized before drive mode existed have the old protocol text:
+between tasks, copy everything above `## Current Task` from
+`templates/HANDOFF.md` over the same region of the repo's HANDOFF.md.
 - One task in flight at a time — that's the protocol, not a bug.
 - Status parsing expects the template's `**Status:** …` line; if an agent
-  mangles the heading structure, `handoff status` reports `UNKNOWN` and
-  `execute` refuses to run.
+mangles the heading structure, `handoff status` reports `UNKNOWN` and
+`execute` refuses to run.
+
+
 
 ## Smoke test result (2026-07-15)
 
@@ -143,14 +158,15 @@ an executor run.
 ## Troubleshooting
 
 - `claude: command not found` — set `HANDOFF_CLAUDE_BIN=/Users/CHEN_Dechao/.local/bin/claude`
-  or fix PATH.
+or fix PATH.
 - Executor exits immediately with an auth error — the CLI got logged out of
-  the executor account; run `claude /login` in a terminal.
+the executor account; run `claude /login` in a terminal.
 - `401 Invalid bearer token` on old versions of this script meant an
-  `ANTHROPIC_AUTH_TOKEN` in the calling environment was overriding the stored
-  login; `handoff execute` now strips those vars itself. Note this also means
-  you cannot authenticate the executor via env vars — the stored login is the
-  only supported path, by design.
+`ANTHROPIC_AUTH_TOKEN` in the calling environment was overriding the stored
+login; `handoff execute` now strips those vars itself. Note this also means
+you cannot authenticate the executor via env vars — the stored login is the
+only supported path, by design.
 - Executor "did nothing" — read the log in `.handoff-logs/`. Most often the
-  plan required a command outside the allowlist; either the plan is wrong or
-  the allowlist needs a deliberate, human-made addition.
+plan required a command outside the allowlist; either the plan is wrong or
+the allowlist needs a deliberate, human-made addition.
+
