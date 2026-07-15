@@ -26,6 +26,7 @@ usage: handoff <subcommand> [repo-path]     (repo-path defaults to $PWD)
 
   status    print the Status line, whose turn it is, and the current Goal
   execute   run the executor headlessly (only when it's the executor's turn)
+  runs      list past executor runs from their manifests
   watch     poll Status; auto-execute on executor turns, notify on human/planner turns
   archive   append Current Task / Execution Notes / QA Feedback to HANDOFF-ARCHIVE.md
   init      install the protocol template into a repo (local git excludes, not .gitignore)
@@ -80,6 +81,8 @@ cmd_status() {
 }
 
 cmd_execute() {
+  command -v jq >/dev/null || die "jq is required (brew install jq)"
+
   local repo status
   repo="$(resolve_repo "${1:-}")"
   status="$(read_status "$repo")"
@@ -99,10 +102,28 @@ cmd_execute() {
   fi
   trap "rmdir '$lock' 2>/dev/null" EXIT INT TERM
 
-  local log
-  log="$repo/.handoff-logs/$(date +%Y%m%d-%H%M%S)-execute.log"
+  local run_id
+  run_id="$(date +%Y%m%d-%H%M%S)-$$"
+  local log="$repo/.handoff-logs/${run_id}-execute.log"
+  local raw_result="$repo/.handoff-logs/${run_id}-result.json"
+  local manifest="$repo/.handoff-logs/${run_id}-manifest.json"
+
   echo "executor starting in $repo (status: $status)"
+  echo "run: $run_id"
   echo "log: $log"
+
+  # Pre-run data capture
+  local started_at branch_before head_before
+  started_at="$(date +%FT%T%z)"
+  branch_before="$(git -C "$repo" branch --show-current 2>/dev/null || echo "")"
+  head_before="$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo "")"
+
+  {
+    echo "=== Executor run $run_id ==="
+    echo "started: $started_at"
+    echo "status:  $status"
+    echo ""
+  } > "$log"
 
   local start=$SECONDS rc=0
   (
@@ -113,15 +134,237 @@ cmd_execute() {
     # executor on the wrong account.
     local v
     for v in $(compgen -e | grep -E '^(ANTHROPIC_|CLAUDE)' || true); do unset "$v"; done
-    "$CLAUDE_BIN" -p "$RITUAL_PROMPT" --permission-mode acceptEdits
-  ) 2>&1 | tee "$log" || rc=$?
+    "$CLAUDE_BIN" -p "$RITUAL_PROMPT" --permission-mode acceptEdits \
+      --output-format json > "$raw_result" 2>> "$log" || exit $?
+  ) || rc=$?
   rmdir "$lock" 2>/dev/null || true # explicit release: watch reuses this process
 
-  local dur=$((SECONDS - start)) new_status
+  # Post-run data capture
+  local dur=$((SECONDS - start))
+  local finished_at branch_after head_after new_status
+  finished_at="$(date +%FT%T%z)"
+  branch_after="$(git -C "$repo" branch --show-current 2>/dev/null || echo "")"
+  head_after="$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo "")"
   new_status="$(read_status "$repo")"
-  echo "executor finished in $((dur / 60))m $((dur % 60))s (exit $rc)"
-  echo "status: $new_status ($(turn_for "$new_status")'s turn)"
+
+  # Commits created during this run
+  local commits_json="[]"
+  if [[ -n "$head_before" && -n "$head_after" && "$head_before" != "$head_after" ]]; then
+    local commit_lines
+    commit_lines="$(git -C "$repo" log --format='%H%x09%s' "$head_before..$head_after" 2>/dev/null || echo "")"
+    if [[ -n "$commit_lines" ]]; then
+      # Determine GitHub base URL from origin remote
+      local origin_url github_base=""
+      origin_url="$(git -C "$repo" remote get-url origin 2>/dev/null || echo "")"
+      if [[ "$origin_url" =~ github\.com[:/]([^/]+)/([^/.]+) ]]; then
+        github_base="https://github.com/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/commit"
+      fi
+
+      commits_json="$(echo "$commit_lines" | jq -R --arg base "$github_base" '
+        split("\t") | {
+          sha: .[0],
+          subject: .[1],
+          url: (if $base != "" then ($base + "/" + .[0]) else null end)
+        }
+      ' | jq -s '.')"
+    fi
+  fi
+
+  # Parse claude result JSON (graceful degradation if invalid/missing)
+  local claude_session_id claude_subtype claude_is_error claude_num_turns
+  local claude_duration_ms claude_duration_api_ms claude_cost
+  local claude_input_tokens claude_output_tokens
+  local claude_cache_creation claude_cache_read claude_result_text
+  claude_session_id="null"
+  claude_subtype="null"
+  claude_is_error="null"
+  claude_num_turns="null"
+  claude_duration_ms="null"
+  claude_duration_api_ms="null"
+  claude_cost="null"
+  claude_input_tokens="null"
+  claude_output_tokens="null"
+  claude_cache_creation="null"
+  claude_cache_read="null"
+  claude_result_text=""
+
+  if [[ -f "$raw_result" ]] && jq empty "$raw_result" 2>/dev/null; then
+    claude_session_id="$(jq -r '.session_id // null' "$raw_result")"
+    claude_subtype="$(jq -r '.subtype // null' "$raw_result")"
+    claude_is_error="$(jq '.is_error // null' "$raw_result")"
+    claude_num_turns="$(jq '.num_turns // null' "$raw_result")"
+    claude_duration_ms="$(jq '.duration_ms // null' "$raw_result")"
+    claude_duration_api_ms="$(jq '.duration_api_ms // null' "$raw_result")"
+    claude_cost="$(jq '.total_cost_usd // null' "$raw_result")"
+    claude_input_tokens="$(jq '.usage.input_tokens // null' "$raw_result")"
+    claude_output_tokens="$(jq '.usage.output_tokens // null' "$raw_result")"
+    claude_cache_creation="$(jq '.usage.cache_creation_input_tokens // null' "$raw_result")"
+    claude_cache_read="$(jq '.usage.cache_read_input_tokens // null' "$raw_result")"
+    claude_result_text="$(jq -r '.result // empty' "$raw_result")"
+  fi
+
+  # Write manifest
+  jq -n \
+    --arg run_id "$run_id" \
+    --arg repo "$repo" \
+    --arg trigger_status "$status" \
+    --arg status_after "$new_status" \
+    --arg started_at "$started_at" \
+    --arg finished_at "$finished_at" \
+    --argjson wall_duration_s "$dur" \
+    --argjson exit_code "$rc" \
+    --arg branch_before "$branch_before" \
+    --arg branch_after "$branch_after" \
+    --arg head_before "$head_before" \
+    --arg head_after "$head_after" \
+    --argjson commits "$commits_json" \
+    --arg session_id "$claude_session_id" \
+    --arg subtype "$claude_subtype" \
+    --argjson is_error "$claude_is_error" \
+    --argjson num_turns "$claude_num_turns" \
+    --argjson duration_ms "$claude_duration_ms" \
+    --argjson duration_api_ms "$claude_duration_api_ms" \
+    --argjson total_cost_usd "$claude_cost" \
+    --argjson input_tokens "$claude_input_tokens" \
+    --argjson output_tokens "$claude_output_tokens" \
+    --argjson cache_creation "$claude_cache_creation" \
+    --argjson cache_read "$claude_cache_read" \
+    --arg log_rel ".handoff-logs/${run_id}-execute.log" \
+    --arg raw_rel ".handoff-logs/${run_id}-result.json" \
+    '{
+      run_id: $run_id,
+      repo: $repo,
+      trigger_status: $trigger_status,
+      status_after: $status_after,
+      started_at: $started_at,
+      finished_at: $finished_at,
+      wall_duration_s: $wall_duration_s,
+      exit_code: $exit_code,
+      git: {
+        branch_before: (if $branch_before == "" then null else $branch_before end),
+        branch_after: (if $branch_after == "" then null else $branch_after end),
+        head_before: (if $head_before == "" then null else $head_before end),
+        head_after: (if $head_after == "" then null else $head_after end),
+        commits: $commits
+      },
+      claude: {
+        session_id: (if $session_id == "null" then null else $session_id end),
+        subtype: (if $subtype == "null" then null else $subtype end),
+        is_error: $is_error,
+        num_turns: $num_turns,
+        duration_ms: $duration_ms,
+        duration_api_ms: $duration_api_ms,
+        total_cost_usd: $total_cost_usd,
+        usage: {
+          input_tokens: $input_tokens,
+          output_tokens: $output_tokens,
+          cache_creation_input_tokens: $cache_creation,
+          cache_read_input_tokens: $cache_read
+        }
+      },
+      files: {
+        log: $log_rel,
+        raw_result: $raw_rel
+      }
+    }' > "$manifest"
+
+  # Human-readable summary
+  local summary
+  summary="$(printf '
+── Run Summary ─────────────────────────────────────────
+  run:      %s
+  status:   %s → %s
+  duration: %dm %ds (wall)
+  exit:     %d
+  tokens:   %s in / %s out' \
+    "$run_id" \
+    "$status" "$new_status" \
+    $((dur / 60)) $((dur % 60)) \
+    "$rc" \
+    "$(jq -r 'if .claude.usage.input_tokens then (.claude.usage.input_tokens | tostring) else "n/a" end' "$manifest")" \
+    "$(jq -r 'if .claude.usage.output_tokens then (.claude.usage.output_tokens | tostring) else "n/a" end' "$manifest")")"
+
+  # Cached tokens line (only if present)
+  local cached_in
+  cached_in="$(jq -r '[.claude.usage.cache_creation_input_tokens, .claude.usage.cache_read_input_tokens] | map(select(. != null)) | if length > 0 then map(tostring) | join(" + ") else empty end' "$manifest")"
+  if [[ -n "$cached_in" ]]; then
+    summary+="$(printf ' (cached: %s)' "$cached_in")"
+  fi
+
+  summary+="$(printf '\n  cost:    %s' \
+    "$(jq -r 'if .claude.total_cost_usd then ("$" + (.claude.total_cost_usd | tostring)) else "n/a" end' "$manifest")")"
+
+  # Commits
+  local commit_count
+  commit_count="$(jq '.git.commits | length' "$manifest")"
+  if [[ "$commit_count" -gt 0 ]]; then
+    summary+="$(printf '\n  commits:')"
+    while IFS=$'\t' read -r sha subject url; do
+      local shortsha="${sha:0:7}"
+      if [[ "$url" != "null" && -n "$url" ]]; then
+        summary+="$(printf '\n    %s %s\n         %s' "$shortsha" "$subject" "$url")"
+      else
+        summary+="$(printf '\n    %s %s' "$shortsha" "$subject")"
+      fi
+    done < <(jq -r '.git.commits[] | [.sha, .subject, (.url // "null")] | @tsv' "$manifest")
+  fi
+
+  summary+="$(printf '\n  manifest: %s\n────────────────────────────────────────────────────────\n' "$manifest")"
+
+  # Print summary to stdout and append to log
+  echo "$summary"
+
+  {
+    echo ""
+    if [[ -n "$claude_result_text" ]]; then
+      echo "=== Executor Result ==="
+      echo "$claude_result_text"
+      echo ""
+    fi
+    echo "$summary"
+  } >> "$log"
+
   return "$rc"
+}
+
+cmd_runs() {
+  command -v jq >/dev/null || die "jq is required (brew install jq)"
+
+  local repo
+  repo="$(resolve_repo "${1:-}")"
+
+  local manifests=()
+  while IFS= read -r f; do
+    manifests+=("$f")
+  done < <(find "$repo/.handoff-logs" -name '*-manifest.json' -type f 2>/dev/null | sort)
+
+  if [[ ${#manifests[@]} -eq 0 ]]; then
+    echo "no runs found in $repo/.handoff-logs/"
+    return 0
+  fi
+
+  printf '%-22s  %-24s  %6s  %4s  %8s  %8s  %8s  %-16s  %s\n' \
+    "RUN ID" "FINISHED" "WALL" "EXIT" "IN TOK" "OUT TOK" "COST" "STATUS AFTER" "COMMITS"
+  printf '%-22s  %-24s  %6s  %4s  %8s  %8s  %8s  %-16s  %s\n' \
+    "------" "--------" "----" "----" "------" "-------" "----" "------------" "-------"
+
+  local m
+  for m in "${manifests[@]}"; do
+    jq -r '[
+      .run_id,
+      .finished_at,
+      (.wall_duration_s | "\(. / 60 | floor)m \(. % 60)s"),
+      (.exit_code | tostring),
+      (if .claude.usage.input_tokens then (.claude.usage.input_tokens | tostring) else "n/a" end),
+      (if .claude.usage.output_tokens then (.claude.usage.output_tokens | tostring) else "n/a" end),
+      (if .claude.total_cost_usd then ("$" + (.claude.total_cost_usd | tostring)) else "n/a" end),
+      .status_after,
+      (.git.commits | length | tostring)
+    ] | @tsv' "$m" | while IFS=$'\t' read -r rid fin wall ex itin outk cost sa cc; do
+      printf '%-22s  %-24s  %6s  %4s  %8s  %8s  %8s  %-16s  %s\n' \
+        "$rid" "$fin" "$wall" "$ex" "$itin" "$outk" "$cost" "$sa" "$cc"
+    done
+  done
 }
 
 cmd_watch() {
@@ -187,7 +430,7 @@ cmd_init() {
 }
 
 case "${1:-}" in
-  status | execute | watch | archive | init) "cmd_$1" "${2:-}" ;;
+  status | execute | runs | watch | archive | init) "cmd_$1" "${2:-}" ;;
   -h | --help | "") usage ;;
   *) die "unknown subcommand: $1 (try --help)" ;;
 esac
