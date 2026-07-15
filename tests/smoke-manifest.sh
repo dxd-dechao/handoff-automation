@@ -13,10 +13,10 @@ assert() {
   local desc="$1"; shift
   if "$@"; then
     echo "  PASS: $desc"
-    ((pass++))
+    pass=$((pass + 1))
   else
     echo "  FAIL: $desc"
-    ((fail++))
+    fail=$((fail + 1))
   fi
 }
 
@@ -24,10 +24,10 @@ assert_eq() {
   local desc="$1" expected="$2" actual="$3"
   if [[ "$expected" == "$actual" ]]; then
     echo "  PASS: $desc"
-    ((pass++))
+    pass=$((pass + 1))
   else
     echo "  FAIL: $desc (expected '$expected', got '$actual')"
-    ((fail++))
+    fail=$((fail + 1))
   fi
 }
 
@@ -98,6 +98,7 @@ assert_eq ".claude.usage.input_tokens" "812" "$(jq '.claude.usage.input_tokens' 
 assert_eq ".claude.total_cost_usd" "0.0421" "$(jq '.claude.total_cost_usd' "$MANIFEST1")"
 assert_eq ".claude.session_id" "stub-session-123" "$(jq -r '.claude.session_id' "$MANIFEST1")"
 assert_eq ".git.commits | length == 1" "1" "$(jq '.git.commits | length' "$MANIFEST1")"
+assert_eq ".claude.is_error == false" "false" "$(jq '.claude.is_error' "$MANIFEST1")"
 
 RUN1_ID="$(jq -r '.run_id' "$MANIFEST1")"
 assert "summary mentions run id" grep -q "$RUN1_ID" "$RUN1_OUT"

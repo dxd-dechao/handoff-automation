@@ -100,7 +100,7 @@ cmd_execute() {
   if ! mkdir "$lock" 2>/dev/null; then
     die "another executor run is in progress (or crashed): remove $lock to clear"
   fi
-  trap "rmdir '$lock' 2>/dev/null" EXIT INT TERM
+  trap "rmdir '$lock' 2>/dev/null || true" EXIT INT TERM
 
   local run_id
   run_id="$(date +%Y%m%d-%H%M%S)-$$"
@@ -156,8 +156,10 @@ cmd_execute() {
       # Determine GitHub base URL from origin remote
       local origin_url github_base=""
       origin_url="$(git -C "$repo" remote get-url origin 2>/dev/null || echo "")"
-      if [[ "$origin_url" =~ github\.com[:/]([^/]+)/([^/.]+) ]]; then
-        github_base="https://github.com/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/commit"
+      if [[ "$origin_url" =~ github\.com[:/]([^/]+)/([^/]+) ]]; then
+        local repo_name="${BASH_REMATCH[2]}"
+        repo_name="${repo_name%.git}"
+        github_base="https://github.com/${BASH_REMATCH[1]}/${repo_name}/commit"
       fi
 
       commits_json="$(echo "$commit_lines" | jq -R --arg base "$github_base" '
@@ -191,7 +193,7 @@ cmd_execute() {
   if [[ -f "$raw_result" ]] && jq empty "$raw_result" 2>/dev/null; then
     claude_session_id="$(jq -r '.session_id // null' "$raw_result")"
     claude_subtype="$(jq -r '.subtype // null' "$raw_result")"
-    claude_is_error="$(jq '.is_error // null' "$raw_result")"
+    claude_is_error="$(jq 'if has("is_error") then .is_error else null end' "$raw_result")"
     claude_num_turns="$(jq '.num_turns // null' "$raw_result")"
     claude_duration_ms="$(jq '.duration_ms // null' "$raw_result")"
     claude_duration_api_ms="$(jq '.duration_api_ms // null' "$raw_result")"
