@@ -85,6 +85,7 @@ handoff status [repo]    # whose turn is it, what's the task
 handoff watch  [repo]    # leave running: auto-executes executor turns,
                          # desktop-notifies on planner/human turns
 handoff execute [repo]   # one executor run, manually
+handoff runs   [repo]    # list past executor runs (from manifests)
 handoff archive [repo]   # snapshot the finished task before PLANNER
                          # writes the next plan
 ```
@@ -96,8 +97,29 @@ watching. If an executor run fails without changing the status, watch does
 **not** retry until the status line changes — fix the problem, then touch the
 status (or run `handoff execute` by hand).
 
-Executor output is teed to `.handoff-logs/<timestamp>-execute.log` in the
-target repo (git-excluded) for post-hoc auditing.
+### Audit trail
+
+Every `handoff execute` run produces three files in `$repo/.handoff-logs/`
+(git-excluded), keyed by a run ID (`YYYYMMDD-HHMMSS-PID`):
+
+| File | Contents |
+|------|----------|
+| `<run_id>-execute.log` | Human-readable log: header, executor's final result text, stderr, and closing summary |
+| `<run_id>-result.json` | Raw JSON output from `claude --output-format json` (verbatim) |
+| `<run_id>-manifest.json` | Structured manifest: durations, tokens, cost, exit code, status transition, git commits with GitHub URLs |
+
+Key manifest fields: `run_id`, `trigger_status`/`status_after`, `started_at`/
+`finished_at`, `wall_duration_s`, `exit_code`, `git.commits[]` (each with
+`sha`, `subject`, `url`), `claude.total_cost_usd`, `claude.usage.*`.
+
+`handoff runs [repo]` lists past runs in a columnar format from their
+manifests.
+
+**Dependencies:** `jq` (1.7+) is required for `execute` and `runs`.
+
+**Note:** With `--output-format json` there is no live streaming output during
+execution. The executor's result text is written to the log file at the end of
+the run.
 
 ## Invocation discipline
 
