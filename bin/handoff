@@ -95,7 +95,16 @@ cmd_execute() {
   echo "log: $log"
 
   local start=$SECONDS rc=0
-  (cd "$repo" && "$CLAUDE_BIN" -p "$RITUAL_PROMPT" --permission-mode acceptEdits) 2>&1 | tee "$log" || rc=$?
+  (
+    cd "$repo"
+    # Strip inherited ANTHROPIC_*/CLAUDE* env so the executor always runs on
+    # its own stored login — if this were invoked from inside another Claude
+    # session (e.g. the planner's), leaked auth vars would silently run the
+    # executor on the wrong account.
+    local v
+    for v in $(compgen -e | grep -E '^(ANTHROPIC_|CLAUDE)' || true); do unset "$v"; done
+    "$CLAUDE_BIN" -p "$RITUAL_PROMPT" --permission-mode acceptEdits
+  ) 2>&1 | tee "$log" || rc=$?
 
   local dur=$((SECONDS - start)) new_status
   new_status="$(read_status "$repo")"

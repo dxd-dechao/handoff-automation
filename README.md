@@ -121,8 +121,19 @@ in the handoff", "QA the handoff".
 
 Verified end-to-end against a throwaway repo: `handoff init`, a trivial
 planned task ("create hello.txt containing 'hello'") set to
-`READY FOR EXECUTION`, then `handoff execute`. The executor created the file,
-filled in Execution Notes, and set `READY FOR QA`.
+`READY FOR EXECUTION`, then `handoff execute`. The executor created the file
+(byte-exact `hello\n`), filled in Execution Notes, and set `READY FOR QA`,
+in 31s. `git status` in the target repo stayed clean of handoff files,
+confirming the `.git/info/exclude` entries.
+
+One real failure was found and fixed during the test: the first run died with
+`Failed to authenticate. API Error: 401 Invalid bearer token` because it was
+launched from inside another Claude Code session, whose exported
+`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_BASE_URL` overrode the executor CLI's stored
+login. `handoff execute` now strips all inherited `ANTHROPIC_*`/`CLAUDE*` env
+vars before launching the executor, so it always runs on its own stored
+account — this also prevents the planner's credentials from ever leaking into
+an executor run.
 
 ## Troubleshooting
 
@@ -130,6 +141,11 @@ filled in Execution Notes, and set `READY FOR QA`.
   or fix PATH.
 - Executor exits immediately with an auth error — the CLI got logged out of
   the executor account; run `claude /login` in a terminal.
+- `401 Invalid bearer token` on old versions of this script meant an
+  `ANTHROPIC_AUTH_TOKEN` in the calling environment was overriding the stored
+  login; `handoff execute` now strips those vars itself. Note this also means
+  you cannot authenticate the executor via env vars — the stored login is the
+  only supported path, by design.
 - Executor "did nothing" — read the log in `.handoff-logs/`. Most often the
   plan required a command outside the allowlist; either the plan is wrong or
   the allowlist needs a deliberate, human-made addition.
