@@ -19,7 +19,8 @@ same workflow there.
 The two agents share no chat context. Everything they need to know from each
 other must be in this file, the git history, or the code itself. The human
 relays turns by prompting each agent (e.g. "write a plan to the handoff",
-"execute the handoff", "QA the handoff").
+"execute the handoff", "QA the handoff") — or PLANNER drives the loop itself
+via the `handoff` CLI (see Drive mode below).
 
 ---
 
@@ -42,6 +43,30 @@ The workflow is a loop over one task at a time:
    `Status: READY FOR QA` again. Repeat until approved.
 5. **Done** — On `APPROVED`, the human merges/keeps the branch. The next task
    overwrites the working sections; this file keeps no history (git does).
+
+### Drive mode (PLANNER runs the loop itself)
+
+When the human says **"drive the handoff"** (e.g. "plan X in the handoff and
+drive it"), PLANNER replaces the human courier by running the `handoff` CLI
+from its own shell tool:
+
+1. If the file holds a finished previous task, run `handoff archive`. Write
+   the plan as usual, then **stop and ask the human for approval in chat**.
+   Never start execution without an explicit go-ahead.
+2. On approval, run `handoff execute` (repo root as the argument). It blocks
+   until the executor finishes; if your shell tool times out first, poll
+   `handoff status` about once a minute until the Status line changes.
+3. QA per the rules below. On `CHANGES REQUESTED`, run `handoff execute`
+   again. After 3 QA rounds without approval, stop and summarize the impasse
+   for the human instead of looping further.
+4. On `APPROVED`, stop and report — merging is the human's.
+
+Safety properties you can rely on: `handoff execute` refuses to run when it
+is not the executor's turn, strips your session's auth environment so the
+executor always runs on its own account, and takes a per-repo lock so a
+concurrent `handoff watch` cannot double-run the executor (don't run one
+anyway). Everything the executor must know still goes through this file —
+drive mode changes who types the ritual phrase, not the channel.
 
 ### Rules for PLANNER (plan + QA)
 
