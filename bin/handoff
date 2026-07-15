@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# handoff — drive the two-agent HANDOFF.md workflow without a human courier.
+#
+# The Status line in HANDOFF.md's Current Task section is the state machine:
+#   READY FOR EXECUTION -> executor's turn
+#   READY FOR QA        -> planner's turn
+#   CHANGES REQUESTED   -> executor's turn
+#   APPROVED            -> human's turn
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEMPLATE_DIR="$SCRIPT_DIR/../templates"
+
+# INVOCATION DISCIPLINE: the executor prompt is this fixed ritual phrase and
+# nothing else. There is deliberately no flag, env var, or argument to add
+# instructions — HANDOFF.md must remain the complete, auditable contract
+# between the agents. Do not "improve" this.
+readonly RITUAL_PROMPT="execute the handoff"
+
+CLAUDE_BIN="${HANDOFF_CLAUDE_BIN:-claude}"
+POLL_INTERVAL="${HANDOFF_POLL_INTERVAL:-30}"
+
+usage() {
+  cat <<'EOF'
+usage: handoff <subcommand> [repo-path]     (repo-path defaults to $PWD)
+
+  status    print the Status line, whose turn it is, and the current Goal
+  execute   run the executor headlessly (only when it's the executor's turn)
+  watch     poll Status; auto-execute on executor turns, notify on human/planner turns
+  archive   append Current Task / Execution Notes / QA Feedback to HANDOFF-ARCHIVE.md
+  init      install the protocol template into a repo (local git excludes, not .gitignore)
+
+env: HANDOFF_CLAUDE_BIN (default: claude), HANDOFF_POLL_INTERVAL seconds (default: 30)
+EOF
+}
+
+die() { echo "handoff: $*" >&2; exit 1; }
+
+resolve_repo() {
+  local repo="${1:-$PWD}"
+  repo="$(cd "$repo" 2>/dev/null && pwd)" || die "no such directory: ${1:-$PWD}"
+  [[ -f "$repo/HANDOFF.md" ]] || die "no HANDOFF.md in $repo (run 'handoff init $repo' first?)"
+  echo "$repo"
+}
+
+# The only '**Status:**' line in the file lives in Current Task.
+read_status() {
+  sed -n 's/^\*\*Status:\*\* *//p' "$1/HANDOFF.md" | head -n 1 | sed 's/[[:space:]]*$//'
+}
+
+turn_for() {
+  case "$1" in
+    "READY FOR EXECUTION" | "CHANGES REQUESTED") echo "EXECUTOR" ;;
+    "READY FOR QA") echo "PLANNER" ;;
+    "APPROVED") echo "HUMAN" ;;
+    *) echo "UNKNOWN" ;;
+  esac
+}
+
+# First non-empty line after the '### Goal' heading.
+read_goal() {
+  awk '/^### Goal/ { found = 1; next } found && NF { print; exit }' "$1/HANDOFF.md"
+}
+
+notify() { # title, body
+  if command -v osascript >/dev/null 2>&1; then
+    osascript -e "display notification \"$2\" with title \"$1\"" >/dev/null 2>&1 || true
+  fi
+  echo "NOTIFY: $1 — $2"
+}
+
+cmd_status() {
+  local repo status
+  repo="$(resolve_repo "${1:-}")"
+  status="$(read_status "$repo")"
+  echo "repo:   $repo"
+  echo "status: ${status:-"(no Status line found)"}"
+  echo "turn:   $(turn_for "$status")"
+  echo "goal:   $(read_goal "$repo")"
+}
+
+cmd_execute() {
+  local repo status
+  repo="$(resolve_repo "${1:-}")"
+  status="$(read_status "$repo")"
+  case "$status" in
+    "READY FOR EXECUTION" | "CHANGES REQUESTED") ;;
+    *) die "refusing to execute: Status is '$status' (need READY FOR EXECUTION or CHANGES REQUESTED)" ;;
+  esac
+
+  mkdir -p "$repo/.handoff-logs"
+  local log
+  log="$repo/.handoff-logs/$(date +%Y%m%d-%H%M%S)-execute.log"
+  echo "executor starting in $repo (status: $status)"
+  echo "log: $log"
+
+  local start=$SECONDS rc=0
+  (cd "$repo" && "$CLAUDE_BIN" -p "$RITUAL_PROMPT" --permission-mode acceptEdits) 2>&1 | tee "$log" || rc=$?
+
+  local dur=$((SECONDS - start)) new_status
+  new_status="$(read_status "$repo")"
+  echo "executor finished in $((dur / 60))m $((dur % 60))s (exit $rc)"
+  echo "status: $new_status ($(turn_for "$new_status")'s turn)"
+  return "$rc"
+}
+
+cmd_watch() {
+  local repo last="" status
+  repo="$(resolve_repo "${1:-}")"
+  echo "watching $repo/HANDOFF.md every ${POLL_INTERVAL}s (Ctrl-C to stop)"
+  while true; do
+    status="$(read_status "$repo")"
+    if [[ "$status" != "$last" ]]; then
+      echo "[$(date +%H:%M:%S)] status: $status ($(turn_for "$status")'s turn)"
+      case "$status" in
+        "READY FOR EXECUTION" | "CHANGES REQUESTED")
+          if ! cmd_execute "$repo"; then
+            # Don't hot-loop a failing executor: wait for the status (or a
+            # human) to change something before trying again.
+            echo "execute failed; watching for the next status change"
+          fi
+          ;;
+        "READY FOR QA" | "APPROVED")
+          notify "Handoff: $status" "$(read_goal "$repo")"
+          ;;
+      esac
+      last="$status" # if execute changed the status, next poll handles the new state
+    fi
+    sleep "$POLL_INTERVAL"
+  done
+}
+
+cmd_archive() {
+  local repo archive goal
+  repo="$(resolve_repo "${1:-}")"
+  archive="$repo/HANDOFF-ARCHIVE.md"
+  goal="$(read_goal "$repo")"
+  if [[ ! -f "$archive" ]]; then
+    printf '# HANDOFF Archive\n\nCompleted tasks, appended verbatim by `handoff archive`. Local-only (git-excluded).\n' > "$archive"
+  fi
+  {
+    printf '\n---\n\n# Archived %s — %s\n\n' "$(date '+%Y-%m-%d %H:%M')" "${goal:-"(no goal)"}"
+    # Current Task through QA Feedback are the last sections of the file.
+    awk '/^## Current Task/ { found = 1 } found' "$repo/HANDOFF.md"
+  } >> "$archive"
+  echo "archived '$goal' to $archive"
+}
+
+cmd_init() {
+  local repo="${1:-$PWD}"
+  repo="$(cd "$repo" 2>/dev/null && pwd)" || die "no such directory: ${1:-$PWD}"
+  [[ -d "$repo/.git" ]] || die "not a git repository: $repo"
+  [[ -f "$repo/HANDOFF.md" ]] && die "HANDOFF.md already exists in $repo"
+  [[ -f "$TEMPLATE_DIR/HANDOFF.md" ]] || die "template not found: $TEMPLATE_DIR/HANDOFF.md"
+
+  cp "$TEMPLATE_DIR/HANDOFF.md" "$repo/HANDOFF.md"
+  # Local-only excludes, deliberately NOT .gitignore: the handoff machinery
+  # is this machine's workflow, not part of the project.
+  local exclude="$repo/.git/info/exclude"
+  mkdir -p "$repo/.git/info"
+  local p
+  for p in HANDOFF.md HANDOFF-ARCHIVE.md .handoff-logs/; do
+    grep -qxF "$p" "$exclude" 2>/dev/null || echo "$p" >> "$exclude"
+  done
+  echo "initialized: $repo/HANDOFF.md (excluded locally via .git/info/exclude)"
+  echo "optional: install templates/executor-settings.json as $repo/.claude/settings.json"
+}
+
+case "${1:-}" in
+  status | execute | watch | archive | init) "cmd_$1" "${2:-}" ;;
+  -h | --help | "") usage ;;
+  *) die "unknown subcommand: $1 (try --help)" ;;
+esac
