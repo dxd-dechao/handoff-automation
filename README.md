@@ -55,21 +55,26 @@ CLI on a separate account) while keeping:
 ## The loop
 
 ```
-                 human approves plan
-                        │
-   PLANNER writes plan  ▼
-   ┌────────────► READY FOR EXECUTION ─────┐
-   │                                       │ handoff watch runs
-   │                                       │ `claude -p "execute the handoff"`
-   │                                       ▼
-   │  CHANGES REQUESTED ◄─── QA ─── READY FOR QA
-   │        │                │   (watch notifies; human asks PLANNER to QA)
-   │        │ watch runs     │
-   │        └── executor ────┘
-   │                         │
-   │                         ▼
-   └──── handoff archive ◄ APPROVED  (watch notifies; human merges)
+ 1. you → Cursor chat: "plan <task> in the handoff"
+       PLANNER writes the plan, sets READY FOR EXECUTION
+
+ 2. ★ HUMAN GATE: you read the plan
+
+ 3. watch sees READY FOR EXECUTION (or CHANGES REQUESTED)
+       auto-runs `claude -p "execute the handoff"`        ← the automation
+       executor implements, sets READY FOR QA
+
+ 4. watch notifies you → you tell Cursor: "QA the handoff"
+       PLANNER reviews the git diff, then either:
+         CHANGES REQUESTED  → back to 3, automatically
+         APPROVED           → step 5
+
+ 5. ★ HUMAN GATE: you merge; `handoff archive`; back to 1
 ```
+
+Steps 3 and the fix-loop half of 4 need no human at all — that was the
+courier work this tool removes. The two ★ gates and the one-phrase QA
+relay in step 4 are the only human touchpoints, kept deliberately.
 
 Day-to-day:
 
