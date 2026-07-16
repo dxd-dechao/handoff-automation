@@ -33,10 +33,15 @@ CLI on a separate account) while keeping:
    handoff permissions ~/path/to/repo
   ```
    This **merges** a `permissions` block into the repo's
-   `.claude/settings.json` — existing hooks, sandbox config, and permission
-   entries are preserved (safe to re-run; it dedupes). The Bash rules adapt
-   to the repo's package manager, detected from its lockfile
-   (`yarn.lock` / `pnpm-lock.yaml` / `package-lock.json`).
+   `.claude/settings.local.json` — the machine-local settings file Claude
+   Code keeps out of git — leaving the repo's shared `.claude/settings.json`
+   untouched. Claude Code combines permissions from both files (deny always
+   wins), existing entries are preserved, and re-running is safe (it
+   dedupes). Local-only is deliberate, for the same reason init uses
+   `.git/info/exclude` instead of `.gitignore`: the handoff machinery is
+   this machine's workflow, not the project's — a teammate's clone stays
+   zero-diff. The Bash rules adapt to the repo's package manager, detected
+   from its lockfile (`yarn.lock` / `pnpm-lock.yaml` / `package-lock.json`).
    What it grants and why:
   - **allow:** `Edit`/`Write` (implementing the plan), `cd` (scripts often
   live in subpackages — `cd backend && yarn test` needs every part allowed),
@@ -45,14 +50,13 @@ CLI on a separate account) while keeping:
   scripts plus `npx tsx/vitest/tsc/eslint` (running the acceptance checks
   itself). The script list is a fixed safe list on purpose — repo-specific
   extras (a `migration:generate`, a `db:reset`) are a human decision; add
-  them to `.claude/settings.json` by hand.
+  them to `.claude/settings.local.json` by hand.
   - **deny:** `git push`, `git merge`, `gh pr create`. Publishing requires
   explicit human authorization written into the task plan — and even then a
   human runs it, or temporarily widens the allowlist for that one task.
    `templates/executor-settings.json` remains as a reference for the pnpm
-   shape of this block. Since `.claude/settings.json` is usually committed,
-   review the merge with `git diff` and commit it — the executor account
-   reads the same file.
+   shape of this block. Both accounts read the same file, so the executor
+   picks the rules up with no further setup.
 
 
 

@@ -30,8 +30,9 @@ usage: handoff <subcommand> [repo-path]     (repo-path defaults to $PWD)
   watch     poll Status; auto-execute on executor turns, notify on human/planner turns
   archive   append Current Task / Execution Notes / QA Feedback to HANDOFF-ARCHIVE.md
   init      install the protocol template into a repo (local git excludes, not .gitignore)
-  permissions  merge the executor allowlist into the repo's .claude/settings.json,
-               adapted to the repo's package manager (yarn/pnpm/npm, via lockfile)
+  permissions  merge the executor allowlist into the repo's .claude/settings.local.json
+               (machine-local, git-ignored), adapted to the repo's package manager
+               (yarn/pnpm/npm, detected via lockfile)
 
 env: HANDOFF_CLAUDE_BIN (default: claude), HANDOFF_POLL_INTERVAL seconds (default: 30)
 EOF
@@ -413,8 +414,11 @@ cmd_archive() {
   echo "archived '$goal' to $archive"
 }
 
-# Merge the executor's permission rules into the repo's .claude/settings.json,
-# preserving hooks, sandbox config, and anything else already there. The JS
+# Merge the executor's permission rules into the repo's
+# .claude/settings.local.json — the machine-local settings file Claude Code
+# keeps out of git — preserving anything already there. Deliberately NOT the
+# shared settings.json: the handoff machinery is this machine's workflow, not
+# the project's (same reasoning as .git/info/exclude over .gitignore). The JS
 # package manager is detected from the repo's lockfile so the allow rules
 # match the project's actual toolchain (the executor runs headless, so any
 # command outside these rules fails rather than prompting).
@@ -469,7 +473,7 @@ cmd_permissions() {
   allow_json="$(printf '%s\n' "${allow[@]}" | jq -R . | jq -s .)"
   deny_json="$(printf '%s\n' "${deny[@]}" | jq -R . | jq -s .)"
 
-  local settings="$repo/.claude/settings.json"
+  local settings="$repo/.claude/settings.local.json"
   mkdir -p "$repo/.claude"
   if [[ -f "$settings" ]]; then
     jq empty "$settings" 2>/dev/null || die "$settings is not valid JSON — fix it before merging"
@@ -488,7 +492,7 @@ cmd_permissions() {
     echo "created $settings with executor permissions"
   fi
   echo "toolchain: ${pm:-"none detected — git/edit rules only; add your build tool's commands by hand"}"
-  echo "review:    git -C $repo diff .claude/settings.json"
+  echo "review:    cat $settings   (local-only; not part of the repo's git history)"
 }
 
 cmd_init() {
@@ -504,7 +508,7 @@ cmd_init() {
   local exclude="$repo/.git/info/exclude"
   mkdir -p "$repo/.git/info"
   local p
-  for p in HANDOFF.md HANDOFF-ARCHIVE.md .handoff-logs/; do
+  for p in HANDOFF.md HANDOFF-ARCHIVE.md .handoff-logs/ .claude/settings.local.json; do
     grep -qxF "$p" "$exclude" 2>/dev/null || echo "$p" >> "$exclude"
   done
   echo "initialized: $repo/HANDOFF.md (excluded locally via .git/info/exclude)"
