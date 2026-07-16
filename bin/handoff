@@ -30,6 +30,8 @@ usage: handoff <subcommand> [repo-path]     (repo-path defaults to $PWD)
   watch     poll Status; auto-execute on executor turns, notify on human/planner turns
   archive   append Current Task / Execution Notes / QA Feedback to HANDOFF-ARCHIVE.md
   init      install the protocol template into a repo (local git excludes, not .gitignore)
+  permissions  merge the executor allowlist into the repo's .claude/settings.json,
+               adapted to the repo's package manager (yarn/pnpm/npm, via lockfile)
 
 env: HANDOFF_CLAUDE_BIN (default: claude), HANDOFF_POLL_INTERVAL seconds (default: 30)
 EOF
@@ -411,6 +413,84 @@ cmd_archive() {
   echo "archived '$goal' to $archive"
 }
 
+# Merge the executor's permission rules into the repo's .claude/settings.json,
+# preserving hooks, sandbox config, and anything else already there. The JS
+# package manager is detected from the repo's lockfile so the allow rules
+# match the project's actual toolchain (the executor runs headless, so any
+# command outside these rules fails rather than prompting).
+cmd_permissions() {
+  command -v jq >/dev/null || die "jq is required (brew install jq)"
+  local repo="${1:-$PWD}"
+  repo="$(cd "$repo" 2>/dev/null && pwd)" || die "no such directory: ${1:-$PWD}"
+
+  local pm=""
+  if [[ -f "$repo/yarn.lock" ]]; then
+    pm="yarn"
+  elif [[ -f "$repo/pnpm-lock.yaml" ]]; then
+    pm="pnpm"
+  elif [[ -f "$repo/package-lock.json" ]]; then
+    pm="npm"
+  fi
+
+  # Base rules: edits, navigation, local-only git. `cd` is included because
+  # scripts often live in subpackages — a compound command like
+  # `cd backend && yarn test` is only allowed if every part is.
+  local -a allow=(
+    "Edit" "Write" "Bash(cd:*)"
+    "Bash(git add:*)" "Bash(git commit:*)"
+    "Bash(git status)" "Bash(git status:*)"
+    "Bash(git diff)" "Bash(git diff:*)"
+    "Bash(git log)" "Bash(git log:*)"
+  )
+
+  # Verification scripts the executor may run itself. Deliberately a fixed
+  # safe list — repo-specific extras (e.g. migration:generate) are a human
+  # decision; add those to .claude/settings.json by hand.
+  local -a scripts=(test lint check typecheck build pre-commit format)
+  local s
+  case "$pm" in
+    yarn | pnpm)
+      for s in "${scripts[@]}"; do allow+=("Bash($pm $s)" "Bash($pm $s:*)"); done
+      ;;
+    npm)
+      allow+=("Bash(npm test)" "Bash(npm test:*)")
+      for s in "${scripts[@]}"; do allow+=("Bash(npm run $s)" "Bash(npm run $s:*)"); done
+      ;;
+  esac
+  if [[ -n "$pm" ]]; then
+    allow+=("Bash(npx vitest:*)" "Bash(npx tsc:*)" "Bash(npx eslint:*)" "Bash(npx tsx:*)")
+  fi
+
+  # Publishing requires explicit human authorization written into the task —
+  # and even then a human runs it. Deny beats allow in Claude Code.
+  local -a deny=("Bash(git push:*)" "Bash(git merge:*)" "Bash(gh pr create:*)")
+
+  local allow_json deny_json
+  allow_json="$(printf '%s\n' "${allow[@]}" | jq -R . | jq -s .)"
+  deny_json="$(printf '%s\n' "${deny[@]}" | jq -R . | jq -s .)"
+
+  local settings="$repo/.claude/settings.json"
+  mkdir -p "$repo/.claude"
+  if [[ -f "$settings" ]]; then
+    jq empty "$settings" 2>/dev/null || die "$settings is not valid JSON — fix it before merging"
+    # Append-and-dedupe, preserving the order of anything already present.
+    jq --argjson allow "$allow_json" --argjson deny "$deny_json" '
+      .permissions.allow = ((.permissions.allow // []) + $allow
+        | reduce .[] as $r ([]; if index($r) == null then . + [$r] else . end))
+      | .permissions.deny = ((.permissions.deny // []) + $deny
+        | reduce .[] as $r ([]; if index($r) == null then . + [$r] else . end))
+    ' "$settings" > "$settings.tmp"
+    mv "$settings.tmp" "$settings"
+    echo "merged executor permissions into $settings (existing settings preserved)"
+  else
+    jq -n --argjson allow "$allow_json" --argjson deny "$deny_json" \
+      '{permissions: {allow: $allow, deny: $deny}}' > "$settings"
+    echo "created $settings with executor permissions"
+  fi
+  echo "toolchain: ${pm:-"none detected — git/edit rules only; add your build tool's commands by hand"}"
+  echo "review:    git -C $repo diff .claude/settings.json"
+}
+
 cmd_init() {
   local repo="${1:-$PWD}"
   repo="$(cd "$repo" 2>/dev/null && pwd)" || die "no such directory: ${1:-$PWD}"
@@ -428,11 +508,11 @@ cmd_init() {
     grep -qxF "$p" "$exclude" 2>/dev/null || echo "$p" >> "$exclude"
   done
   echo "initialized: $repo/HANDOFF.md (excluded locally via .git/info/exclude)"
-  echo "optional: install templates/executor-settings.json as $repo/.claude/settings.json"
+  cmd_permissions "$repo"
 }
 
 case "${1:-}" in
-  status | execute | runs | watch | archive | init) "cmd_$1" "${2:-}" ;;
+  status | execute | runs | watch | archive | init | permissions) "cmd_$1" "${2:-}" ;;
   -h | --help | "") usage ;;
   *) die "unknown subcommand: $1 (try --help)" ;;
 esac
