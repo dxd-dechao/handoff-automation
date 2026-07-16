@@ -27,17 +27,32 @@ CLI on a separate account) while keeping:
    `HANDOFF-ARCHIVE.md`, and `.handoff-logs/` to `.git/info/exclude` —
    local-only excludes, deliberately **not** `.gitignore`, because the handoff
    machinery is this machine's workflow, not part of the project.
-4. **Install the executor permission allowlist** (recommended). JSON can't
-  carry comments, so it's documented here instead:
+4. **Executor permission allowlist.** `handoff init` installs this
+   automatically; for a repo that was init'ed earlier, run:
+  ```sh
+   handoff permissions ~/path/to/repo
+  ```
+   This **merges** a `permissions` block into the repo's
+   `.claude/settings.json` — existing hooks, sandbox config, and permission
+   entries are preserved (safe to re-run; it dedupes). The Bash rules adapt
+   to the repo's package manager, detected from its lockfile
+   (`yarn.lock` / `pnpm-lock.yaml` / `package-lock.json`).
    What it grants and why:
-  - **allow:** `Edit`/`Write` (implementing the plan), `git add/commit/status/diff/log`
-  (commit-as-you-go on a branch), `pnpm test/lint/build` and
-  `npx tsx/vitest/tsc/eslint` (running the acceptance checks itself).
+  - **allow:** `Edit`/`Write` (implementing the plan), `cd` (scripts often
+  live in subpackages — `cd backend && yarn test` needs every part allowed),
+  `git add/commit/status/diff/log` (commit-as-you-go on a branch), and the
+  detected package manager's `test/lint/check/typecheck/build/pre-commit/format`
+  scripts plus `npx tsx/vitest/tsc/eslint` (running the acceptance checks
+  itself). The script list is a fixed safe list on purpose — repo-specific
+  extras (a `migration:generate`, a `db:reset`) are a human decision; add
+  them to `.claude/settings.json` by hand.
   - **deny:** `git push`, `git merge`, `gh pr create`. Publishing requires
   explicit human authorization written into the task plan — and even then a
   human runs it, or temporarily widens the allowlist for that one task.
-   If the repo already has a `.claude/settings.json`, merge the `permissions`
-   block instead of overwriting.
+   `templates/executor-settings.json` remains as a reference for the pnpm
+   shape of this block. Since `.claude/settings.json` is usually committed,
+   review the merge with `git diff` and commit it — the executor account
+   reads the same file.
 
 
 
