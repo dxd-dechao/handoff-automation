@@ -18,6 +18,7 @@ TEMPLATE_DIR="$SCRIPT_DIR/../templates"
 readonly RITUAL_PROMPT="execute the handoff"
 
 CLAUDE_BIN="${HANDOFF_CLAUDE_BIN:-claude}"
+CLAUDE_MODEL="${HANDOFF_MODEL:-bedrock.claude-opus-4-8}"
 POLL_INTERVAL="${HANDOFF_POLL_INTERVAL:-30}"
 
 usage() {
@@ -34,7 +35,8 @@ usage: handoff <subcommand> [repo-path]     (repo-path defaults to $PWD)
                (machine-local, git-ignored), adapted to the repo's package manager
                (yarn/pnpm/npm, detected via lockfile)
 
-env: HANDOFF_CLAUDE_BIN (default: claude), HANDOFF_POLL_INTERVAL seconds (default: 30)
+env: HANDOFF_CLAUDE_BIN (default: claude), HANDOFF_MODEL (default: bedrock.claude-opus-4-8),
+     HANDOFF_POLL_INTERVAL seconds (default: 30)
 EOF
 }
 
@@ -138,6 +140,7 @@ cmd_execute() {
     local v
     for v in $(compgen -e | grep -E '^(ANTHROPIC_|CLAUDE)' || true); do unset "$v"; done
     "$CLAUDE_BIN" -p "$RITUAL_PROMPT" --permission-mode acceptEdits \
+      --model "$CLAUDE_MODEL" \
       --output-format json > "$raw_result" 2>> "$log" || exit $?
   ) || rc=$?
   rmdir "$lock" 2>/dev/null || true # explicit release: watch reuses this process
@@ -449,7 +452,7 @@ cmd_permissions() {
 
   # Verification scripts the executor may run itself. Deliberately a fixed
   # safe list — repo-specific extras (e.g. migration:generate) are a human
-  # decision; add those to .claude/settings.json by hand.
+  # decision; add those to .claude/settings.local.json by hand.
   local -a scripts=(test lint check typecheck build pre-commit format)
   local s
   case "$pm" in
