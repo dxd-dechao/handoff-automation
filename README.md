@@ -208,6 +208,44 @@ login; `handoff execute` now strips those vars itself. Note this also means
 you cannot authenticate the executor via env vars — the stored login is the
 only supported path, by design.
 - Executor "did nothing" — read the log in `.handoff-logs/`. Most often the
-plan required a command outside the allowlist; either the plan is wrong or
-the allowlist needs a deliberate, human-made addition.
+  plan required a command outside the allowlist; either the plan is wrong or
+  the allowlist needs a deliberate, human-made addition.
+
+## Experimental A2A path (A1)
+
+Optional Python package. It does **not** replace `handoff execute`. Task state
+is in-memory (not restart-durable). Cancellation is unsupported. Wiring this
+path into the production CLI is later work.
+
+Profile: [`docs/a2a-coding-task-v1.md`](docs/a2a-coding-task-v1.md).
+
+```sh
+uv sync --extra test
+uv run --extra test python -m pytest -q tests/test_a2a_contracts.py tests/test_a2a_roundtrip.py
+uv run handoff-a2a --help
+```
+
+Server config (loopback host only) supplies `host`, `port`, `workspace_id`,
+`workspace_path`, `credential_file`, `evidence_dir`, and `claude.binary` /
+`claude.model`. Start and submit:
+
+```sh
+uv run handoff-a2a serve --config server.json
+uv run handoff-a2a execute --repo /path/to/workspace \
+  --agent-card-url http://127.0.0.1:PORT/.well-known/agent-card.json \
+  --credential-file /path/to/token --workspace-id that-workspace
+```
+
+`execute` reads the local `HANDOFF.md` snapshot; there is no extra prompt
+flag. Tests must point `claude.binary` at a fake executable, never a paid CLI.
+
+## Planner CLI skill
+
+Source: [`skills/handoff-cli/SKILL.md`](skills/handoff-cli/SKILL.md). Copy or
+symlink that folder into a skill directory your Planner host searches (project
+or user-level). It drives the **existing** `handoff` commands for plan /
+execute / QA / drive / status intents. It does not add `handoff plan` and
+does not talk to A2A itself.
+
+See [skill loading guidance](https://learn.chatgpt.com/docs/build-skills).
 

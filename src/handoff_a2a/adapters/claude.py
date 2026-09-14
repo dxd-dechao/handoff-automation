@@ -1,0 +1,159 @@
+"""Claude Code adapter: native argv launch, JSON parse, auth stripping."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Mapping
+
+from handoff_a2a.contracts import Usage
+
+RITUAL_PROMPT = "execute the handoff"
+_STRIP_PREFIXES = ("ANTHROPIC_", "CLAUDE")
+
+
+@dataclass(frozen=True)
+class ClaudeAdapterConfig:
+    binary: str
+    model: str
+
+
+@dataclass(frozen=True)
+class AdapterOutcome:
+    exit_code: int
+    stdout: str
+    stderr: str
+    duration_s: float
+    parsed: Mapping[str, Any] | None
+    invalid_output: bool
+    provider_error: bool
+    summary: str
+    usage: Usage | None
+    cost_usd: float | None
+    usage_provenance: str | None
+    cost_provenance: str | None
+    argv: tuple[str, ...]
+
+
+def child_environment(base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Drop inherited provider auth so the child uses its own stored login."""
+    env = dict(os.environ if base is None else base)
+    for key in list(env):
+        if key.startswith(_STRIP_PREFIXES):
+            del env[key]
+    return env
+
+
+def parse_claude_json(raw: str) -> tuple[Mapping[str, Any] | None, bool]:
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None, True
+    if not isinstance(data, dict):
+        return None, True
+    return data, False
+
+
+def _usage_from_claude(data: Mapping[str, Any]) -> tuple[Usage | None, str | None]:
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        return None, None
+    def as_int(name: str) -> int | None:
+        value = usage.get(name)
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        if float(value) != int(value):
+            return None
+        return int(value)
+
+    parsed = Usage(
+        input_tokens=as_int("input_tokens"),
+        output_tokens=as_int("output_tokens"),
+        cache_creation_input_tokens=as_int("cache_creation_input_tokens"),
+        cache_read_input_tokens=as_int("cache_read_input_tokens"),
+    )
+    return parsed, "claude.usage"
+
+
+def _cost_from_claude(data: Mapping[str, Any]) -> tuple[float | None, str | None]:
+    if "total_cost_usd" not in data:
+        return None, None
+    value = data.get("total_cost_usd")
+    if value is None:
+        return None, "claude.total_cost_usd"
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None, "claude.total_cost_usd"
+    return float(value), "claude.total_cost_usd"
+
+
+class ClaudeAdapter:
+    def __init__(self, config: ClaudeAdapterConfig):
+        self.config = config
+
+    def argv(self) -> list[str]:
+        return [
+            self.config.binary,
+            "-p",
+            RITUAL_PROMPT,
+            "--permission-mode",
+            "acceptEdits",
+            "--model",
+            self.config.model,
+            "--output-format",
+            "json",
+        ]
+
+    async def run(
+        self,
+        workspace: Path,
+        stdout_path: Path,
+        stderr_path: Path,
+        env: Mapping[str, str] | None = None,
+    ) -> AdapterOutcome:
+        argv = self.argv()
+        started = time.monotonic()
+        with stdout_path.open("wb") as out, stderr_path.open("wb") as err:
+            process = await asyncio.create_subprocess_exec(
+                *argv,
+                cwd=str(workspace),
+                env=child_environment(env),
+                stdout=out,
+                stderr=err,
+            )
+            exit_code = await process.wait()
+        duration_s = time.monotonic() - started
+        stdout = stdout_path.read_text(encoding="utf-8", errors="replace")
+        stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
+        parsed, invalid = parse_claude_json(stdout) if stdout.strip() else (None, True)
+        provider_error = False
+        summary = ""
+        usage = None
+        cost_usd = None
+        usage_provenance = None
+        cost_provenance = None
+        if parsed is not None:
+            provider_error = parsed.get("is_error") is True
+            summary = str(parsed.get("result") or "")
+            usage, usage_provenance = _usage_from_claude(parsed)
+            cost_usd, cost_provenance = _cost_from_claude(parsed)
+        return AdapterOutcome(
+            exit_code=int(exit_code),
+            stdout=stdout,
+            stderr=stderr,
+            duration_s=duration_s,
+            parsed=parsed,
+            invalid_output=invalid,
+            provider_error=provider_error,
+            summary=summary,
+            usage=usage,
+            cost_usd=cost_usd,
+            usage_provenance=usage_provenance,
+            cost_provenance=cost_provenance,
+            argv=tuple(argv),
+        )
