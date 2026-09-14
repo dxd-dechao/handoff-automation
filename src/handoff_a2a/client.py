@@ -8,6 +8,7 @@ import os
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlparse
 
@@ -78,6 +79,9 @@ def verify_agent_card(card: AgentCard, card_url: str) -> str:
     return interface.url
 
 
+SUCCESS_TASK_STATES = frozenset({"TASK_STATE_COMPLETED", "COMPLETED"})
+
+
 def coding_result_from_task(task: dict[str, Any]) -> dict[str, Any] | None:
     for artifact in task.get("artifacts") or []:
         if artifact.get("name") != CODING_RESULT_ARTIFACT:
@@ -87,6 +91,42 @@ def coding_result_from_task(task: dict[str, Any]) -> dict[str, Any] | None:
             if isinstance(data, dict):
                 return data
     return None
+
+
+def _data_parts_from_message(message: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(message, Mapping):
+        return []
+    found: list[dict[str, Any]] = []
+    for part in message.get("parts") or []:
+        if not isinstance(part, Mapping):
+            continue
+        data = part.get("data")
+        if isinstance(data, dict):
+            found.append(data)
+    return found
+
+
+def task_reason(task: Mapping[str, Any] | None) -> str | None:
+    """Failure/rejection reason from a coding-result artifact or status message."""
+    if not task:
+        return None
+    result = coding_result_from_task(dict(task))
+    if result:
+        reason = result.get("reason")
+        if reason:
+            return str(reason)
+    status = task.get("status") if isinstance(task.get("status"), Mapping) else {}
+    for data in _data_parts_from_message(status.get("message") if isinstance(status, Mapping) else None):
+        if data.get("reason"):
+            return str(data["reason"])
+    return None
+
+
+def execute_exit_code(state: str | None) -> int:
+    """0 for delivered COMPLETED, nonzero for other terminal outcomes. Unresolved stays 2."""
+    if state in SUCCESS_TASK_STATES:
+        return 0
+    return 1
 
 
 def request_from_repo(
@@ -288,12 +328,14 @@ async def execute_repo(
     try:
         task = await client.execute(request, timeout=timeout)
         persist_client_metadata(repo, request, task)
+        result = coding_result_from_task(task)
         return {
             "request": request.to_dict(),
             "task": task,
-            "result": coding_result_from_task(task),
+            "result": result,
             "task_id": task.get("id"),
             "execution_id": request.execution_id,
+            "reason": task_reason(task),
             "local_metadata": str(repo / LOG_DIRNAME / "a2a-client.json"),
         }
     except UnresolvedExecution as exc:

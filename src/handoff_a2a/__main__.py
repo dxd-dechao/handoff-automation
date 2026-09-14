@@ -8,7 +8,12 @@ import json
 import sys
 from pathlib import Path
 
-from handoff_a2a.client import ClientError, UnresolvedExecution, execute_repo
+from handoff_a2a.client import (
+    ClientError,
+    UnresolvedExecution,
+    execute_exit_code,
+    execute_repo,
+)
 from handoff_a2a.server import load_server_config, serve
 
 
@@ -73,12 +78,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"handoff-a2a: {exc}", file=sys.stderr)
             return 1
         result = payload.get("result") or {}
+        state = (payload.get("task") or {}).get("status", {}).get("state")
         print(
             json.dumps(
                 {
                     "task_id": payload.get("task_id"),
                     "execution_id": payload.get("execution_id"),
-                    "state": (payload.get("task") or {}).get("status", {}).get("state"),
+                    "state": state,
+                    "reason": payload.get("reason") or result.get("reason"),
                     "evidence_dir": result.get("evidence_dir"),
                     "local_metadata": payload.get("local_metadata"),
                     "result": result,
@@ -86,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
                 indent=2,
             )
         )
-        return 0
+        return execute_exit_code(state)
     parser.error("unknown command")
     return 2
 

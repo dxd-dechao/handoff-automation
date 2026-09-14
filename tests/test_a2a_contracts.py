@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from handoff_a2a.adapters.claude import RITUAL_PROMPT, child_environment, parse_claude_json
+from handoff_a2a.client import execute_exit_code, task_reason
 from handoff_a2a.contracts import (
     CODING_TASK_PROFILE,
     ContractError,
@@ -123,14 +124,37 @@ def test_auth_stripping_and_ritual_prompt() -> None:
 
 def test_zero_cost_survives_parse_and_missing_cost_is_invalid_json_object_ok() -> None:
     parsed, invalid = parse_claude_json(
-        '{"is_error": false, "total_cost_usd": 0.0, "result": "ok", "usage": {"input_tokens": 0}}'
+        '{"type": "result", "is_error": false, "total_cost_usd": 0.0, "result": "ok", "usage": {"input_tokens": 0}}'
     )
     assert invalid is False
     assert parsed is not None
     assert parsed["total_cost_usd"] == 0.0
     assert parsed["usage"]["input_tokens"] == 0
+    missing_cost, missing_invalid = parse_claude_json(
+        '{"type": "result", "is_error": false, "result": "ok"}'
+    )
+    assert missing_invalid is False
+    assert missing_cost is not None
     _, bad = parse_claude_json("not json")
     assert bad is True
+
+
+def test_cli_exit_codes_distinguish_success_from_unsuccessful_terminal() -> None:
+    assert execute_exit_code("TASK_STATE_COMPLETED") == 0
+    assert execute_exit_code("TASK_STATE_FAILED") != 0
+    assert execute_exit_code("TASK_STATE_REJECTED") != 0
+    assert task_reason(
+        {"status": {"state": "TASK_STATE_REJECTED", "message": {"parts": [{"data": {"reason": "busy"}}]}}}
+    ) == "busy"
+
+
+def test_wrong_shape_json_object_is_invalid_claude_result() -> None:
+    parsed, invalid = parse_claude_json('{"unrelated": "not a Claude result"}')
+    assert invalid is True
+    assert parsed is None
+    missing_outcome, missing_invalid = parse_claude_json('{"type": "result"}')
+    assert missing_invalid is True
+    assert missing_outcome is None
 
 
 def test_skill_has_valid_metadata_and_existing_cli_intents() -> None:

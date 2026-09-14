@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import io
+import json
+from contextlib import redirect_stdout
 from pathlib import Path
 from uuid import uuid4
 
@@ -8,6 +11,7 @@ import pytest
 from a2a.types.a2a_pb2 import CancelTaskRequest
 from a2a.utils.errors import TaskNotCancelableError
 
+from handoff_a2a.__main__ import main
 from handoff_a2a.client import CodingClient, coding_result_from_task
 from handoff_a2a.contracts import parse_coding_request, snapshot_sha256
 from a2a_harness import (
@@ -208,6 +212,16 @@ async def test_malformed_result_is_failed(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_wrong_shape_json_object_is_failed(tmp_path: Path) -> None:
+    terminal, result, evidence = await _run_mode(tmp_path, "wrong_shape")
+    assert _state(terminal) == "TASK_STATE_FAILED"
+    assert result["invalid_output"] is True
+    assert result["provider_error"] is False
+    raw = (evidence / result["execution_id"] / "stdout.json").read_text(encoding="utf-8")
+    assert "not a Claude result" in raw
+
+
+@pytest.mark.asyncio
 async def test_missing_cost_stays_null_and_zero_usage_survives(tmp_path: Path) -> None:
     terminal, result, evidence = await _run_mode(tmp_path, "cost_missing")
     assert _state(terminal) == "TASK_STATE_COMPLETED"
@@ -267,3 +281,70 @@ async def test_lock_held_until_evidence_then_released(tmp_path: Path) -> None:
             assert git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "main"
         finally:
             await client.close()
+
+
+def _run_cli(repo: Path, card_url: str, token_path: Path, workspace_id: str) -> tuple[int, dict]:
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        code = main(
+            [
+                "execute",
+                "--repo",
+                str(repo),
+                "--agent-card-url",
+                card_url,
+                "--credential-file",
+                str(token_path),
+                "--workspace-id",
+                workspace_id,
+            ]
+        )
+    printed = json.loads(buffer.getvalue())
+    return code, printed
+
+
+def test_cli_success_exits_zero(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    fake = make_fake_claude(tmp_path)
+    config, token_path, _evidence = make_server_config(tmp_path, repo, fake)
+    with RunningServer(config) as server:
+        code, printed = _run_cli(repo, server.card_url, token_path, config.workspace_id)
+    assert code == 0
+    assert printed["state"] == "TASK_STATE_COMPLETED"
+    assert printed["task_id"]
+    assert printed["execution_id"]
+    assert printed["result"]["cost_usd"] == 0.0
+
+
+def test_cli_worker_failure_exits_nonzero(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    fake = make_fake_claude(tmp_path)
+    (repo / ".fake-mode").write_text("nonzero\n", encoding="utf-8")
+    config, token_path, _evidence = make_server_config(tmp_path, repo, fake)
+    with RunningServer(config) as server:
+        code, printed = _run_cli(repo, server.card_url, token_path, config.workspace_id)
+    assert code != 0
+    assert code != 2
+    assert printed["state"] == "TASK_STATE_FAILED"
+    assert printed["task_id"]
+    assert printed["execution_id"]
+    assert printed["reason"]
+    assert printed["result"]["exit_code"] == 3
+
+
+def test_cli_preworker_rejection_exits_nonzero_with_reason(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    fake = make_fake_claude(tmp_path)
+    config, token_path, _evidence = make_server_config(tmp_path, repo, fake)
+    lock = repo / ".handoff-logs" / "execute.lock"
+    lock.mkdir(parents=True)
+    with RunningServer(config) as server:
+        code, printed = _run_cli(repo, server.card_url, token_path, config.workspace_id)
+    assert code != 0
+    assert code != 2
+    assert printed["state"] == "TASK_STATE_REJECTED"
+    assert printed["task_id"]
+    assert printed["execution_id"]
+    assert printed["reason"]
+    assert printed.get("result") in ({}, None) or printed["reason"]
+    assert not (repo / "WORKER_STARTED").exists()

@@ -48,12 +48,23 @@ def child_environment(base: Mapping[str, str] | None = None) -> dict[str, str]:
     return env
 
 
+def is_claude_result(data: Any) -> bool:
+    """A Claude --output-format json result must identify itself and report outcome."""
+    if not isinstance(data, dict):
+        return False
+    if data.get("type") != "result":
+        return False
+    if "is_error" not in data or not isinstance(data["is_error"], bool):
+        return False
+    return True
+
+
 def parse_claude_json(raw: str) -> tuple[Mapping[str, Any] | None, bool]:
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
         return None, True
-    if not isinstance(data, dict):
+    if not is_claude_result(data):
         return None, True
     return data, False
 

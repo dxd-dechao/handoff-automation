@@ -76,6 +76,12 @@ if mode == "nonzero":
 if mode == "malformed":
     print("not-json")
     sys.exit(0)
+if mode == "wrong_shape":
+    set_value(1)
+    write_handoff(set_notes(set_status(text, "READY FOR QA"), "wrong-shape provider json"))
+    json.dump({"unrelated": "not a Claude result"}, sys.stdout)
+    sys.stdout.write("\n")
+    sys.exit(0)
 if mode == "provider_error":
     set_value(1)
     write_handoff(set_notes(set_status(text, "READY FOR QA"), "provider error after edits"))

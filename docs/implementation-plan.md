@@ -1,6 +1,6 @@
 # A2A Executor implementation plan
 
-Status: plan approved; A1 implemented / awaiting QA.
+Status: plan approved; A1 implemented / awaiting QA after correction of CLI exit codes and Claude result validation.
 Date: 2026-09-14. Source baseline: `6201590bb98d7cc9514c04e7df14482695f8afed`.
 Open PR check: `gh pr list --state open` returned no open PRs on 2026-09-14.
 
@@ -51,7 +51,7 @@ Run the focused checks once after the final relevant change. Repeat or broaden o
 
 | ID | Deliverable | Depends on | Status | QA evidence / commit |
 |---|---|---|---|---|
-| A1 | Standalone local A2A server, Claude adapter, provider-neutral client, request/result contract, and Planner-facing CLI skill | Existing baseline | implemented / awaiting QA | — |
+| A1 | Standalone local A2A server, Claude adapter, provider-neutral client, request/result contract, and Planner-facing CLI skill | Existing baseline | implemented / awaiting QA | d615f09; correction commit pending QA round 2 |
 | A2 | Durable execution identity, reconnect/restart handling, and cancellation | A1 | Not started | — |
 | A3 | Wire A2A into handoff CLI, workflow status, gates, and reporting | A2 | Not started | — |
 | A4 | Codex adapter and real replacement validation through handoff CLI | A3 | Not started | — |
