@@ -523,6 +523,7 @@ async def status_from_record(*, record_path: Path, credential_file: Path, timeou
             "recovery_required": _recovery_required(task),
             "result": result,
             "unresolved": False,
+            "task": task,
         }
     except Exception as exc:
         raise UnresolvedExecution(

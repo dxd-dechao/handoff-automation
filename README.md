@@ -24,9 +24,11 @@ CLI on a separate account) while keeping:
    handoff init ~/path/to/repo
   ```
    This copies `templates/HANDOFF.md` to the repo root and adds `HANDOFF.md`,
-   `HANDOFF-ARCHIVE.md`, and `.handoff-logs/` to `.git/info/exclude` —
-   local-only excludes, deliberately **not** `.gitignore`, because the handoff
-   machinery is this machine's workflow, not part of the project.
+   `HANDOFF-ARCHIVE.md`, `.handoff-logs/`, and `.handoff-config.json` to
+   `.git/info/exclude` — local-only excludes, deliberately **not** `.gitignore`.
+   Re-running `handoff init` on an already-initialized repo does not rewrite
+   `HANDOFF.md`; it only ensures those excludes. Do not commit
+   `.handoff-config.json`.
 4. **Executor permission allowlist.** `handoff init` installs this
    automatically; for a repo that was init'ed earlier, run:
   ```sh
@@ -100,13 +102,15 @@ second `execute` fail loudly rather than double-run the executor.
 Day-to-day:
 
 ```sh
-handoff status [repo]    # whose turn is it, what's the task
-handoff watch  [repo]    # leave running: auto-executes executor turns,
-                         # desktop-notifies on planner/human turns
-handoff execute [repo]   # one executor run, manually
-handoff runs   [repo]    # list past executor runs (from manifests)
+handoff status [repo]    # Markdown status, execution state, whose turn
+handoff approve [repo]   # record approval (A2A receipt) or activate a legacy DRAFT
+handoff execute [repo]   # one executor run
+handoff resume  [repo]   # reconnect to an outstanding A2A run
+handoff cancel  [repo]   # request A2A cancellation and reconcile
+handoff watch   [repo]   # leave running: auto-executes eligible executor turns
+handoff runs    [repo]   # list past executor runs (from manifests)
 handoff archive [repo]   # snapshot the finished task before PLANNER
-                         # writes the next plan
+                         # writes the next plan (`--superseded` for exhausted A2A work)
 ```
 
 `watch` polls the `Status:` line (default 30s, `HANDOFF_POLL_INTERVAL` to
@@ -211,53 +215,74 @@ only supported path, by design.
   plan required a command outside the allowlist; either the plan is wrong or
   the allowlist needs a deliberate, human-made addition.
 
-## Experimental A2A path
+## Optional A2A execution
 
-Optional Python package. It does **not** replace `handoff execute`. Tasks persist
-in a local SQLite store, duplicate `execution_id` submissions reuse the original
-task, and CancelTask/deadlines stop the owned process group before releasing the
-workspace. Wiring this path into the production CLI is later work.
+Absent `.handoff-config.json`, `handoff` stays on the legacy direct-Claude path
+and does not import Python. Set `transport` to `a2a` only in a target
+repository you intend to switch; do not enable it in this implementation
+checkout while building the path.
 
-Profile: [`docs/a2a-coding-task-v1.md`](docs/a2a-coding-task-v1.md).
+Example (placeholders only; never commit secrets):
+
+```json
+{
+  "transport": "a2a",
+  "max_rounds": 3,
+  "a2a": {
+    "agent_card_url": "http://127.0.0.1:8765/.well-known/agent-card.json",
+    "workspace_id": "my-project",
+    "credential_file": "/path/to/local-token",
+    "request_timeout_s": 30,
+    "wait_timeout_s": 180,
+    "poll_interval_s": 1
+  }
+}
+```
+
+Relative `credential_file` paths resolve against the target repo. Invalid or
+unknown transport fails; it does not fall back to legacy. `HANDOFF_MODEL` and
+`HANDOFF_CLAUDE_BIN` apply to legacy only. Point `HANDOFF_A2A_BIN` at the
+`handoff-a2a` executable if it is not on `PATH`. Start the server yourself:
 
 ```sh
 uv sync --extra test
-uv run --extra test python -m pytest -q tests/test_a2a_contracts.py tests/test_a2a_roundtrip.py tests/test_a2a_lifecycle.py
-uv run handoff-a2a --help
-uv run handoff-a2a resume --help
+uv run handoff-a2a serve --config server.json
+handoff approve /path/to/workspace
+handoff execute /path/to/workspace
+handoff resume /path/to/workspace
+handoff cancel /path/to/workspace
 ```
 
 Server config (loopback host only) supplies `host`, `port`, `workspace_id`,
 `workspace_path`, `credential_file`, `evidence_dir`, and `claude.binary` /
-`claude.model`. Optional A2 keys: `state_db` (default `evidence_dir/state.sqlite`),
+`claude.model`. Optional keys: `state_db` (default `evidence_dir/state.sqlite`),
 `caller_id` (default `local-planner`), `execution_timeout_s` (default 3600),
-`cancel_grace_s` (default 5). Start and submit:
+`cancel_grace_s` (default 5). The integrated CLI also requires Agent Card
+`workspace_code_fingerprint` and `durable_execution_id_deduplication`. Client
+wait timeout does not cancel the worker. Development helper:
 
 ```sh
-uv run handoff-a2a serve --config server.json
+uv run --extra test python -m pytest -q
+uv run handoff-a2a --help
 uv run handoff-a2a execute --repo /path/to/workspace \
   --agent-card-url http://127.0.0.1:PORT/.well-known/agent-card.json \
   --credential-file /path/to/token --workspace-id that-workspace
-uv run handoff-a2a status --run-record PATH --credential-file PATH
-uv run handoff-a2a resume --run-record PATH --credential-file PATH
-uv run handoff-a2a cancel --run-record PATH --credential-file PATH
 ```
 
-`execute` writes a durable run record before SendMessage and reads the local
-`HANDOFF.md` snapshot; there is no extra prompt flag. Client `--timeout` only
-bounds waiting; it does not cancel the worker. Tests must point `claude.binary`
-at a fake executable, never a paid CLI. A1-era evidence without a database row
-is not a resumable task. If restart recovery reports `recovery_required`, inspect
+Tests must point `claude.binary` at a fake executable, never a paid CLI. If
+restart recovery reports `recovery_required`, inspect
 `.handoff-logs/execute.lock/owner.json` and `state.sqlite` and remove the lock
 only after confirming the worker is stopped.
+
+Profile: [`docs/a2a-coding-task-v1.md`](docs/a2a-coding-task-v1.md).
 
 ## Planner CLI skill
 
 Source: [`skills/handoff-cli/SKILL.md`](skills/handoff-cli/SKILL.md). Copy or
 symlink that folder into a skill directory your Planner host searches (project
 or user-level). It drives the **existing** `handoff` commands for plan /
-execute / QA / drive / status intents. It does not add `handoff plan` and
-does not talk to A2A itself.
+execute / QA / drive / status intents, including `approve`, `resume`, and
+`cancel`. It does not add `handoff plan` and does not talk to A2A itself.
 
 See [skill loading guidance](https://learn.chatgpt.com/docs/build-skills).
 

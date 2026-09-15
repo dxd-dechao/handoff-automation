@@ -12,8 +12,13 @@ from typing import Any
 from handoff_a2a.contracts import ELIGIBLE_HANDOFF_STATUSES, READY_FOR_QA, snapshot_sha256
 
 HANDOFF_NAME = "HANDOFF.md"
+ARCHIVE_NAME = "HANDOFF-ARCHIVE.md"
+CONFIG_NAME = ".handoff-config.json"
 LOCK_DIRNAME = "execute.lock"
+SUBMIT_LOCK_DIRNAME = "submit.lock"
 LOG_DIRNAME = ".handoff-logs"
+LOCAL_SETTINGS = ".claude/settings.local.json"
+WORKFLOW_ROOT_FILES = frozenset({HANDOFF_NAME, ARCHIVE_NAME, CONFIG_NAME})
 
 _STATUS_RE = re.compile(r"^\*\*Status:\*\*\s*(.*?)\s*$", re.MULTILINE)
 _BRANCH_RE = re.compile(r"^\*\*Branch:\*\*\s*(.*?)\s*$", re.MULTILINE)
@@ -72,20 +77,48 @@ def execution_notes(text: str) -> str:
     return _section(text, "## Execution Notes").strip()
 
 
+def _current_task_without_status(text: str) -> str:
+    matches = list(_HEADING_RE.finditer(text))
+    for index, match in enumerate(matches):
+        heading = match.group(0).strip()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        if heading == "## Current Task":
+            return _STATUS_RE.sub("**Status:**", text[match.start() : end])
+    return ""
+
+
 def planner_fingerprint(text: str) -> str:
     """Planner-owned plan + QA text, excluding Status and Execution Notes."""
     matches = list(_HEADING_RE.finditer(text))
-    plan = ""
     qa = ""
     for index, match in enumerate(matches):
         heading = match.group(0).strip()
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
-        body = text[match.start() : end]
-        if heading == "## Current Task":
-            plan = _STATUS_RE.sub("**Status:**", body)
-        elif heading == "## QA Feedback":
-            qa = body
-    return f"{plan}\n---\n{qa}"
+        if heading == "## QA Feedback":
+            qa = text[match.start() : end]
+    return f"{_current_task_without_status(text)}\n---\n{qa}"
+
+
+def approved_plan_hash(text: str) -> str:
+    """Hash the Current Task plan excluding Status; notes and QA are outside it."""
+    return snapshot_sha256(_current_task_without_status(text))
+
+
+def replace_status(text: str, status: str) -> str:
+    if _STATUS_RE.search(text):
+        return _STATUS_RE.sub(f"**Status:** {status}", text, count=1)
+    return text
+
+
+def is_workflow_path(rel: str) -> bool:
+    normalized = rel.replace("\\", "/")
+    if normalized.startswith("./"):
+        normalized = normalized[2:]
+    if normalized in WORKFLOW_ROOT_FILES:
+        return True
+    if normalized == LOCAL_SETTINGS:
+        return True
+    return normalized == LOG_DIRNAME or normalized.startswith(f"{LOG_DIRNAME}/")
 
 
 def parse_handoff(text: str) -> HandoffDocument:
@@ -142,6 +175,45 @@ class ExecuteLock:
         return self._held
 
 
+class DirLock:
+    """Atomic directory lock. Never deletes a foreign lock."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self._held = False
+
+    def acquire(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.path.mkdir()
+        except FileExistsError as exc:
+            raise WorkspaceBusy(f"busy (or crashed): remove {self.path} to clear") from exc
+        self._held = True
+
+    def release(self) -> None:
+        if not self._held:
+            return
+        try:
+            self.path.rmdir()
+        except OSError:
+            return
+        self._held = False
+
+    def held(self) -> bool:
+        return self._held
+
+    def __enter__(self) -> "DirLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.release()
+
+
+def submit_lock(workspace: Path) -> DirLock:
+    return DirLock(workspace / LOG_DIRNAME / SUBMIT_LOCK_DIRNAME)
+
+
 def release_lock_if_owner(workspace: Path, execution_id: str) -> bool:
     """Remove this execution's leftover lock directory after verified stop. Never a foreign lock."""
     lock = workspace / LOG_DIRNAME / LOCK_DIRNAME
@@ -182,6 +254,17 @@ class GitWorkspace:
             )
         return result.stdout.strip("\n")
 
+    def git_bytes(self, *args: str) -> bytes:
+        result = subprocess.run(
+            ["git", "-C", str(self.path), *args],
+            check=False,
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout).decode("utf-8", errors="replace").strip()
+            raise WorkspaceError(f"git {' '.join(args)} failed: {err}")
+        return result.stdout
+
     def require_git_checkout(self) -> None:
         if not (self.path / ".git").exists() and not (self.path / ".git").is_file():
             # git rev-parse is the authority for worktrees / linked checkouts
@@ -205,6 +288,56 @@ class GitWorkspace:
             status=self.git("status", "--porcelain"),
             diff=self.git("diff", "HEAD"),
         )
+
+    def _untracked_files(self) -> list[str]:
+        output = self.git("ls-files", "--others", "--exclude-standard")
+        if not output.strip():
+            return []
+        return [line.replace("\\", "/") for line in output.splitlines() if line]
+
+    def code_fingerprint(self) -> str:
+        """Deterministic hash of branch/HEAD plus tracked diffs and nonignored untracked code."""
+        untracked: list[list[str]] = []
+        for rel in self._untracked_files():
+            if is_workflow_path(rel):
+                continue
+            path = self.path / rel
+            data = path.read_bytes() if path.is_file() else b""
+            untracked.append([rel, snapshot_sha256(data)])
+        untracked.sort(key=lambda item: item[0])
+        payload = {
+            "branch": self.current_branch(),
+            "head": self.current_head(),
+            "index": snapshot_sha256(self.git_bytes("diff", "--cached", "--binary")),
+            "worktree": snapshot_sha256(self.git_bytes("diff", "--binary")),
+            "untracked": untracked,
+        }
+        encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        return snapshot_sha256(encoded)
+
+    def code_is_clean(self) -> bool:
+        porcelain = self.git("status", "--porcelain", "-uall")
+        for line in porcelain.splitlines():
+            if len(line) < 4:
+                continue
+            path = line[3:]
+            if " -> " in path:
+                path = path.split(" -> ", 1)[1]
+            if path.startswith('"') and path.endswith('"'):
+                path = path[1:-1]
+            if not is_workflow_path(path):
+                return False
+        return True
+
+    def verify_code_fingerprint(self, expected: str) -> None:
+        actual = self.code_fingerprint()
+        if actual != expected:
+            raise WorkspaceError(
+                "expected_code_fingerprint does not match the current workspace code snapshot"
+            )
+
+    def write_handoff_text(self, text: str) -> None:
+        self.handoff_path.write_text(text, encoding="utf-8")
 
     def commits_between(self, before: str, after: str) -> list[tuple[str, str]]:
         if not before or not after or before == after:
@@ -232,6 +365,7 @@ class GitWorkspace:
         expected_head: str,
         handoff_markdown: str,
         request_sha256: str,
+        expected_code_fingerprint: str | None = None,
     ) -> HandoffDocument:
         if workspace_id != self.workspace_id:
             raise WorkspaceError(
@@ -262,6 +396,8 @@ class GitWorkspace:
             )
         if expected_head != head:
             raise WorkspaceError("stale expected_head: does not match current HEAD")
+        if expected_code_fingerprint:
+            self.verify_code_fingerprint(expected_code_fingerprint)
         return document
 
     def evaluate_transition(self, before: HandoffDocument) -> tuple[HandoffDocument, bool, str | None]:

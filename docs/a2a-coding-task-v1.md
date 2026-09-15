@@ -2,18 +2,24 @@
 
 URI: `urn:handoff-automation:coding-task:v1`
 
-This is the provider-neutral A2A contract used by the optional `handoff-a2a` development path. The existing `bin/handoff` CLI is unchanged and does not yet call this profile.
+This is the provider-neutral A2A contract used by `handoff-a2a` and, when a
+target repo sets `transport: a2a`, by `bin/handoff`. The legacy direct-Claude
+path remains the default when `.handoff-config.json` is absent.
 
 ## Preconditions
 
-A1 does **not** accept an `approved: true` boolean as proof of human approval. The experimental path treats these as sufficient preconditions:
+A1/A2 development helpers still treat these as sufficient preconditions:
 
 - the local HANDOFF status is `READY FOR EXECUTION` or `CHANGES REQUESTED`
 - the submitted snapshot bytes exactly match the workspace `HANDOFF.md` (and `request_sha256`)
 - the caller presented a valid local bearer credential
 - a developer helper (`handoff-a2a execute` or the library) was invoked explicitly
 
-Persistent human-approval receipts and max-round enforcement arrive in A3. Do not treat A2A `COMPLETED` as Planner `APPROVED`.
+The integrated CLI (`handoff approve` / `handoff execute`) additionally requires
+a local approval receipt, matching plan hash, registered workspace/branch, an
+available round, a clean or continuation code fingerprint, and an Agent Card that
+advertises both `durable_execution_id_deduplication` and
+`workspace_code_fingerprint`. Do not treat A2A `COMPLETED` as Planner `APPROVED`.
 
 ## SendMessage data part
 
@@ -31,6 +37,7 @@ JSON object, `application/json`, no provider-specific fields and no model creden
 | `expected_head` | string | Must equal the workspace `HEAD` at validation time |
 | `handoff_markdown` | string | Full UTF-8 HANDOFF.md snapshot (plan, execution notes, QA feedback) |
 | `request_sha256` | hex | SHA-256 of those exact UTF-8 snapshot bytes |
+| `expected_code_fingerprint` | hex, optional | Additive. SHA-256 of branch/HEAD plus tracked diffs and nonignored untracked code, excluding known local workflow files. Required by the integrated CLI. The A2 development helper may omit it. When present, the server verifies it under the execute lock before spawning. |
 
 Transport: official SDK `SendMessage` with `returnImmediately: true`, then `GetTask` polling. Each correction is a **new** A2A task. Server task/context IDs are opaque. Match returned `run_id` / `execution_id` / `task_id` before using a result.
 
@@ -62,8 +69,10 @@ Unknown costs stay `null`. Valid false/zero values are preserved. Missing costs 
 - Identical retransmission reuses the original task/context/run identity
 - A different request body under the same `execution_id` is refused
 - Agent Card extension `params.durable_execution_id_deduplication` is `true` on this server
+- Agent Card extension `params.workspace_code_fingerprint` is `true` on this server
 - Client run records are written atomically before SendMessage; resume retransmits only that saved request
 - A1-era disk evidence without a database row is not imported as a resumable task
+- Artifact `worker-lifecycle` reports `worker_started` / `worker_stopped` / `lock_held` for reconciliation
 
 ## Server limitations
 
@@ -86,4 +95,4 @@ Unknown costs stay `null`. Valid false/zero values are preserved. Missing costs 
 - `handoff-a2a status|resume|cancel --run-record ... --credential-file ...` are development helpers. Client `--timeout` is wait time only and does not cancel the worker
 - Exit codes for execute/resume: `0` successful `COMPLETED`, `1` unsuccessful terminal, `2` unresolved / `INPUT_REQUIRED`
 - Resume with an unknown task ID retransmits only if the card advertises durable execution-ID deduplication
-- CLI integration into `bin/handoff` is A3
+- Production `handoff` A2A mode calls `handoff-a2a cli` and refuses an endpoint that cannot enforce `workspace_code_fingerprint`

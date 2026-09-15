@@ -17,6 +17,7 @@ from handoff_a2a.client import (
     resume_from_record,
     status_from_record,
 )
+from handoff_a2a.integration import main as integration_main
 from handoff_a2a.server import load_server_config, serve
 
 
@@ -24,7 +25,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="handoff-a2a",
         description=(
-            "Experimental A2A development helper. Does not replace `handoff execute`. "
+            "Experimental A2A development helper and production CLI integration. "
+            "Does not replace `handoff execute` unless invoked via `handoff`. "
             "There is no arbitrary instruction/prompt argument."
         ),
     )
@@ -32,6 +34,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     serve_cmd = sub.add_parser("serve", help="start a loopback-only Executor server")
     serve_cmd.add_argument("--config", required=True, type=Path, help="server.json")
+
+    cli_cmd = sub.add_parser("cli", help="internal production-CLI integration entry point")
+    cli_cmd.add_argument("--repo", required=True, type=Path)
+    cli_sub = cli_cmd.add_subparsers(dest="cli_command", required=True)
+    cli_sub.add_parser("approve")
+    cli_sub.add_parser("execute")
+    cli_sub.add_parser("resume")
+    cli_sub.add_parser("cancel")
+    cli_sub.add_parser("status")
+    cli_watch = cli_sub.add_parser("watch")
+    cli_watch.add_argument("--interval", type=float, default=30.0)
+    cli_archive = cli_sub.add_parser("archive")
+    cli_archive.add_argument("--superseded", action="store_true")
 
     execute_cmd = sub.add_parser(
         "execute",
@@ -84,6 +99,13 @@ def main(argv: list[str] | None = None) -> int:
         config = load_server_config(args.config)
         serve(config)
         return 0
+    if args.command == "cli":
+        argv = ["--repo", str(args.repo), args.cli_command]
+        if args.cli_command == "watch":
+            argv.extend(["--interval", str(getattr(args, "interval", 30.0))])
+        if args.cli_command == "archive" and getattr(args, "superseded", False):
+            argv.append("--superseded")
+        return integration_main(argv)
     if args.command == "execute":
         try:
             payload = asyncio.run(

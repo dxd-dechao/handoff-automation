@@ -10,7 +10,9 @@ from uuid import UUID
 
 CODING_TASK_PROFILE = "urn:handoff-automation:coding-task:v1"
 CODING_RESULT_ARTIFACT = "coding-result"
+WORKER_LIFECYCLE_ARTIFACT = "worker-lifecycle"
 DURABLE_DEDUP_PARAM = "durable_execution_id_deduplication"
+WORKSPACE_FINGERPRINT_PARAM = "workspace_code_fingerprint"
 
 ELIGIBLE_HANDOFF_STATUSES = frozenset(
     {"READY FOR EXECUTION", "CHANGES REQUESTED"}
@@ -108,12 +110,13 @@ class CodingRequest:
     expected_head: str
     handoff_markdown: str
     request_sha256: str
+    expected_code_fingerprint: str | None = None
 
     def utf8_bytes(self) -> bytes:
         return self.handoff_markdown.encode("utf-8")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "schema": self.schema,
             "workflow_id": self.workflow_id,
             "run_id": self.run_id,
@@ -125,6 +128,9 @@ class CodingRequest:
             "handoff_markdown": self.handoff_markdown,
             "request_sha256": self.request_sha256,
         }
+        if self.expected_code_fingerprint is not None:
+            payload["expected_code_fingerprint"] = self.expected_code_fingerprint
+        return payload
 
 
 def parse_coding_request(payload: Mapping[str, Any] | Any) -> CodingRequest:
@@ -139,6 +145,14 @@ def parse_coding_request(payload: Mapping[str, Any] | Any) -> CodingRequest:
     expected = snapshot_sha256(markdown)
     if digest != expected:
         raise ContractError("request_sha256 does not match handoff_markdown bytes")
+    fingerprint_raw = payload.get("expected_code_fingerprint")
+    fingerprint: str | None
+    if fingerprint_raw is None:
+        fingerprint = None
+    else:
+        if not isinstance(fingerprint_raw, str) or not fingerprint_raw:
+            raise ContractError("expected_code_fingerprint must be a non-empty string when present")
+        fingerprint = fingerprint_raw
     return CodingRequest(
         schema=CODING_TASK_PROFILE,
         workflow_id=_require_str(payload, "workflow_id"),
@@ -150,6 +164,7 @@ def parse_coding_request(payload: Mapping[str, Any] | Any) -> CodingRequest:
         expected_head=_require_str(payload, "expected_head"),
         handoff_markdown=markdown,
         request_sha256=digest,
+        expected_code_fingerprint=fingerprint,
     )
 
 

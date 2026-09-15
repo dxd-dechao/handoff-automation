@@ -1,6 +1,6 @@
 # A2A Executor implementation plan
 
-Status: A1 QA approved; A2 correction implemented and awaiting QA. A3/A4 not started. Human will manually launch QA; no merge/push.
+Status: A1 and A2 QA approved; A3 implemented and awaiting QA on 2026-09-15. A4 not started. Human retains manual Executor launch and merge/push decisions.
 Date: 2026-09-14. Source baseline: `6201590bb98d7cc9514c04e7df14482695f8afed`.
 Open PR check: `gh pr list --state open` returned no open PRs on 2026-09-14.
 
@@ -19,7 +19,7 @@ The temporary experiment established that the same official-SDK A2A client could
 1. Planner drafts one self-contained task in root `HANDOFF.md`; keep `DRAFT` until human approval. The current CLI reports its turn as UNKNOWN and refuses execution, which is intentional.
 2. After approval, Planner sets `READY FOR EXECUTION` and invokes the existing handoff CLI. Use the current direct-Claude implementation to build all four tasks; do not switch the implementation workflow onto the new A2A path until A4 is verified and the human chooses it.
 3. Executor implements and commits the named task. Planner reviews the actual branch/working-tree diff and executes its acceptance checks.
-4. Request another execution only for a material acceptance failure. Stop after three unsuccessful QA rounds.
+4. Request another execution only for a material functional acceptance failure. After three unsuccessful executions, stop dispatching and have Planner review the scope, preserve passing work, and draft the smallest meaningful remaining task. Archive the exhausted task as superseded and link a constrained successor for human approval/manual launch. If only documentation remains, Planner fixes it directly and closes QA without another execution.
 5. On QA approval, archive that handoff using `handoff archive`, update this tracker, and draft the next task. Each subsequent handoff is reviewed before execution. QA approval does not authorize merging, pushing, or publishing.
 
 Use one implementation branch, `codex/a2a-executor-mvp`, with a recorded start/end commit per task. Review each task against its recorded start commit, including uncommitted changes, so later QA does not repeatedly revisit accepted earlier work. The final merge is the human's decision.
@@ -31,6 +31,8 @@ Block on a reproducible failure in a supported workflow, materially incorrect co
 Do not block on rare speculative edge cases, preferred internal abstractions, formatting, naming, or exact documentation wording. Documentation needs correct runnable commands, setup prerequisites, and honest limitations. Tests should check behavior, not prose. Note minor improvements once as optional; do not turn them into another execution round. Do not expand a task's acceptance criteria after implementation without an actual functional reason or explicit scope agreement.
 
 Run the focused checks once after the final relevant change. Repeat or broaden only for a failure, changed code, or a concrete unresolved concern. Default automated tests use fake subprocesses and temporary repositories; paid model calls belong to explicitly identified live checks.
+
+Planner is authorized to make documentation-only QA corrections directly at any round, then record the changes/checks and approve when functional acceptance passes. Runtime, tests, permissions, and behavior-changing skill/template edits remain implementation work. At the execution limit, reassess scope rather than repeating the broad task: identify the important blocker, narrow files/behavior/checks, preserve passing work, and keep deferred requirements visible. A successor does not mean the original broader goal has passed.
 
 ## Architecture decisions
 
@@ -52,8 +54,8 @@ Run the focused checks once after the final relevant change. Repeat or broaden o
 | ID | Deliverable | Depends on | Status | QA evidence / commit |
 |---|---|---|---|---|
 | A1 | Standalone local A2A server, Claude adapter, provider-neutral client, request/result contract, and Planner-facing CLI skill | Existing baseline | APPROVED | d615f09 + b9bd0aa; reviewed through 123eccc; 23 A2A + 17 legacy checks and five independent CLI probes passed |
-| A2 | Durable execution identity, reconnect/restart handling, and cancellation | A1 | implemented / awaiting QA | b8468ce plus correction; 35 A2A + 17 legacy checks passed on 2026-09-15 after round-1 lifecycle fixes; see Execution Notes |
-| A3 | Wire A2A into handoff CLI, workflow status, gates, and reporting | A2 | Not started | — |
+| A2 | Durable execution identity, reconnect/restart handling, and cancellation | A1 | APPROVED | b8468ce + 756ad06; 35 A2A + 17 legacy checks and both independent cancellation/restart probes passed on 2026-09-15 |
+| A3 | Wire A2A into handoff CLI, workflow status, gates, and reporting | A2 | implemented / awaiting QA | Baseline 756ad06; 47 pytest + 17 legacy checks passed on 2026-09-15; see Execution Notes |
 | A4 | Codex adapter and real replacement validation through handoff CLI | A3 | Not started | — |
 
 ### A1 — Make a real A2A execution path work
@@ -102,13 +104,19 @@ Add `DRAFT` to the documented template flow: write the plan as DRAFT, obtain hum
 
 Persist an A2A max execution/QA-round limit defaulting to three: one implementation plus at most two correction executions. Reconnects and duplicate transport requests do not count again. Failures before any worker starts do not consume an execution round. Do not retrofit a separate approval database into every historical legacy use case: document legacy's instruction-based limit and gate as legacy behavior, while moving the default template to DRAFT avoids the known watch-before-approval problem.
 
-Configuration: locally excluded `.handoff-config.json`, `transport`, `a2a.agent_card_url`, `a2a.workspace_id`, credential file/reference, polling/request/execution timeouts, and `max_rounds`. Missing/invalid A2A settings fail clearly. Provider model/binary is server configuration; existing HANDOFF_MODEL stays meaningful only for legacy mode.
+When exhausted, route to external Planner scope review. Add `handoff archive <repo> --superseded` for an exhausted, fully reconciled workflow, preserving history and its unsuccessful disposition. A reviewed smaller successor starts as DRAFT, needs human approval, records parent_workflow_id, and may inherit the verified post-run baseline (including uncommitted work). It gets its own budget without resetting the predecessor's counters. Watch cannot make this transition or dispatch the draft. Documentation-only remaining work is handled by Planner directly, with no further Executor run.
+
+Configuration: locally excluded `.handoff-config.json`, `transport`, `a2a.agent_card_url`, `a2a.workspace_id`, credential file/reference, polling/request/client-wait timeouts, and `max_rounds`. Server execution timeout remains server configuration. Missing/invalid A2A settings fail clearly. Provider model/binary is server configuration; existing HANDOFF_MODEL stays meaningful only for legacy mode.
 
 Keep `<run_id>-execute.log`, `-result.json`, and `-manifest.json`, adding immutable request snapshots and lifecycle events. New manifests carry workflow/execution/task IDs, endpoint identity, outcome, git snapshot, and neutral usage/cost; `runs` reads both new and old formats without counting a resumed run twice. A1 server run artifacts can be referenced/copied into this format; avoid two competing authoritative ledgers.
 
 Fix the existing early lock release and recheck status after acquisition where the shared execution path is touched. Handle pre-existing dirty work explicitly: initial A2A execution requires a clean code baseline; continuation checks the last recorded post-run snapshot so the same workflow may retain uncommitted Executor changes. Never stash/reset user changes automatically.
 
 Acceptance: current legacy smoke tests stay green without Python installed; actual `handoff execute` A2A fake-worker roundtrip; READY FOR QA only after terminal completion; watch does not duplicate an active/resumable task; DRAFT/unapproved/changed-scope plan refused; third failed QA round stops further execution; old and new run reporting works; client credentials are absent from subprocess output/env probes.
+
+A3 handoff decisions (2026-09-15): keep Bash as the public CLI and use small Python integration/workflow/config/reporting helpers for A2A. Reuse A2 run records and server SQLite; an outstanding pointer and short cross-transport submission mutex prevent duplicate dispatch. Approve records the plan and workflow without resetting used rounds on reapproval. Unknown submissions reserve a round until reconciled; failed delivery sets an automatic-dispatch hold that watch cannot clear. Archive closes approved work or explicitly supersedes exhausted work after Planner scope review before a linked constrained draft.
+
+Capture code content fingerprints (including nonignored untracked files), check continuation against the last post-run snapshot, and validate the submitted expected fingerprint again under the server worker lock. Advertise the added profile capability. Publish enough authenticated worker-start/stop/partial-evidence data for correct counting and reconciliation. Keep the server manually started locally, legacy/mixed reporting usable without Python, and the skill provider-neutral. Test through actual bin/handoff subprocesses; automatic daemon management and Herdr integration are outside A3.
 
 ### A4 — Prove actual Executor replacement
 

@@ -65,7 +65,7 @@ if mode == "orphan_term_immune":
     )
     (root / "CHILD_PID").write_text(str(child.pid), encoding="utf-8")
     os._exit(0)
-if sleep_s:
+if sleep_s and mode not in ("early_ready", "writer", "orphan_term_immune"):
     time.sleep(sleep_s)
 
 handoff_path = root / "HANDOFF.md"
@@ -154,11 +154,20 @@ if mode == "approved":
     sys.exit(0)
 if mode == "fix":
     set_value(2)
+    (root / "scratch.txt").write_text("uncommitted executor file\n", encoding="utf-8")
     write_handoff(set_notes(set_status(text, "READY FOR QA"), "addressed QA: value must be 2"))
+    result_json()
+    sys.exit(0)
+if mode == "early_ready":
+    set_value(1)
+    write_handoff(set_notes(set_status(text, "READY FOR QA"), "still working"))
+    extra = float((root / ".fake-sleep").read_text(encoding="utf-8").strip() or "30") if (root / ".fake-sleep").is_file() else 30.0
+    time.sleep(extra)
     result_json()
     sys.exit(0)
 
 set_value(1)
+(root / "scratch.txt").write_text("uncommitted executor file\n", encoding="utf-8")
 write_handoff(set_notes(set_status(text, "READY FOR QA"), "implemented value=1"))
 result_json()
 '''

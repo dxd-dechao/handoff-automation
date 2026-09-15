@@ -57,6 +57,8 @@ from handoff_a2a.contracts import (
     CODING_RESULT_ARTIFACT,
     CODING_TASK_PROFILE,
     DURABLE_DEDUP_PARAM,
+    WORKER_LIFECYCLE_ARTIFACT,
+    WORKSPACE_FINGERPRINT_PARAM,
     CodingRequest,
     CodingResult,
     CommitRef,
@@ -224,7 +226,9 @@ def load_server_config(path: Path) -> ServerConfig:
 
 def _extension_params() -> Struct:
     params = Struct()
-    params.update({DURABLE_DEDUP_PARAM: True})
+    params.update(
+        {DURABLE_DEDUP_PARAM: True, WORKSPACE_FINGERPRINT_PARAM: True}
+    )
     return params
 
 
@@ -362,6 +366,13 @@ class ExecutionRuntime:
                 self._final_kind = "recovery"
                 return "recovery"
             await self._capture_partial(reason=reason, canceled=(kind == "canceled"))
+            lifecycle = {
+                "worker_started": self.worker_launched,
+                "worker_stopped": True,
+                "lock_held": False,
+                "evidence_dir": str(self.evidence),
+                "reason": reason,
+            }
             if kind == "canceled":
                 self.executor.state.update_execution(
                     self.request.execution_id,
@@ -377,6 +388,11 @@ class ExecutionRuntime:
                     payload={"reason": reason},
                 )
                 if updater is not None:
+                    await updater.add_artifact(
+                        [new_data_part(lifecycle)],
+                        name=WORKER_LIFECYCLE_ARTIFACT,
+                        last_chunk=True,
+                    )
                     await updater.cancel(
                         updater.new_agent_message([new_data_part({"reason": reason})])
                     )
@@ -395,6 +411,11 @@ class ExecutionRuntime:
                     payload={"reason": reason},
                 )
                 if updater is not None:
+                    await updater.add_artifact(
+                        [new_data_part(lifecycle)],
+                        name=WORKER_LIFECYCLE_ARTIFACT,
+                        last_chunk=True,
+                    )
                     await updater.failed(
                         updater.new_agent_message([new_data_part({"reason": reason})])
                     )
@@ -438,6 +459,8 @@ class ExecutionRuntime:
             "reason": reason,
             "canceled": canceled,
             "worker_launched": self.worker_launched,
+            "worker_stopped": True,
+            "lock_held": self.lock_acquired,
             "git_status": after_git.status,
             "diff": after_git.diff,
             "head_after": after_git.head,
@@ -448,6 +471,7 @@ class ExecutionRuntime:
         self.executor.state.update_execution(
             self.request.execution_id, result_json=payload
         )
+        # Best-effort lifecycle snapshot for canceled/failed/recovered runs.
 
 
 class CodingAgentExecutor(AgentExecutor):
@@ -693,6 +717,7 @@ class CodingAgentExecutor(AgentExecutor):
                 expected_head=request.expected_head,
                 handoff_markdown=request.handoff_markdown,
                 request_sha256=request.request_sha256,
+                expected_code_fingerprint=request.expected_code_fingerprint,
             )
             runtime.before_git = self.workspace.snapshot()
         except WorkspaceBusy as exc:
@@ -730,6 +755,20 @@ class CodingAgentExecutor(AgentExecutor):
                 stderr_path=stderr_path,
             )
             runtime.worker_launched = True
+            await updater.add_artifact(
+                [
+                    new_data_part(
+                        {
+                            "worker_started": True,
+                            "worker_stopped": False,
+                            "lock_held": True,
+                            "evidence_dir": str(runtime.evidence),
+                        }
+                    )
+                ],
+                name=WORKER_LIFECYCLE_ARTIFACT,
+                last_chunk=False,
+            )
             self.workspace.lock.write_owner(
                 {
                     "execution_id": request.execution_id,
@@ -830,6 +869,8 @@ class CodingAgentExecutor(AgentExecutor):
                 worker_launched=runtime.worker_launched,
             )
             payload = result.to_dict()
+            payload["worker_stopped"] = True
+            payload["lock_held"] = False
             _write_json(runtime.evidence / "result.json", payload)
             _write_json(
                 runtime.evidence / "metadata.json",
@@ -851,6 +892,20 @@ class CodingAgentExecutor(AgentExecutor):
             await updater.add_artifact(
                 [new_data_part(payload)],
                 name=CODING_RESULT_ARTIFACT,
+                last_chunk=True,
+            )
+            await updater.add_artifact(
+                [
+                    new_data_part(
+                        {
+                            "worker_started": runtime.worker_launched,
+                            "worker_stopped": True,
+                            "lock_held": False,
+                            "evidence_dir": str(runtime.evidence),
+                        }
+                    )
+                ],
+                name=WORKER_LIFECYCLE_ARTIFACT,
                 last_chunk=True,
             )
             if failed:
