@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -32,6 +33,7 @@ from a2a_harness import (
     make_repo,
     make_server_config,
     write_handoff,
+    write_server_json,
 )
 
 
@@ -468,3 +470,146 @@ def test_cancel_without_task_id_does_not_submit(tmp_path: Path) -> None:
         with pytest.raises(UnresolvedExecution, match="task ID unknown"):
             asyncio.run(cancel_from_record(record_path=record_path, credential_file=token_path))
     assert _launches(repo) == 0
+
+
+@pytest.mark.asyncio
+async def test_cancel_stops_term_immune_child_after_parent_exits(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    fake = make_fake_claude(tmp_path)
+    (repo / ".fake-mode").write_text("orphan_term_immune\n", encoding="utf-8")
+    config, token_path, _evidence = make_server_config(tmp_path, repo, fake, cancel_grace_s=0.5)
+    token = token_path.read_text().strip()
+    with RunningServer(config) as server:
+        from handoff_a2a.client import CodingClient
+
+        client = CodingClient(server.card_url, token)
+        await client.connect()
+        try:
+            submitted = await client.submit(
+                parse_coding_request(coding_payload(repo, config.workspace_id, execution_id=str(uuid4())))
+            )
+            _wait_file(repo / "CHILD_PID")
+            _wait_file(repo / "CHILD_WRITES")
+            child_pid = int((repo / "CHILD_PID").read_text(encoding="utf-8").strip())
+            os.kill(child_pid, 0)
+            canceled = await client.cancel(submitted["id"])
+            assert _state(canceled) == "TASK_STATE_CANCELED"
+            snapshot = (repo / "CHILD_WRITES").read_text(encoding="utf-8")
+            time.sleep(0.3)
+            assert (repo / "CHILD_WRITES").read_text(encoding="utf-8") == snapshot
+            with pytest.raises(ProcessLookupError):
+                os.kill(child_pid, 0)
+            assert not (repo / ".handoff-logs" / "execute.lock").exists()
+        finally:
+            await client.close()
+
+
+@pytest.mark.asyncio
+async def test_real_server_process_restart_during_active_run(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    fake = make_fake_claude(tmp_path)
+    (repo / ".fake-sleep").write_text("30\n", encoding="utf-8")
+    config, token_path, _evidence = make_server_config(tmp_path, repo, fake, cancel_grace_s=1.0)
+    token = token_path.read_text().strip()
+    config_path = write_server_json(tmp_path / "server.json", config)
+    execution_id = str(uuid4())
+    payload = coding_payload(repo, config.workspace_id, execution_id=execution_id)
+    request = parse_coding_request(payload)
+    record_path = run_record_path(repo, execution_id)
+    persist_run_record(
+        record_path,
+        initial_run_record(
+            request,
+            agent_card_url=f"http://127.0.0.1:{config.port}/.well-known/agent-card.json",
+            credential_file=token_path,
+            workspace_id=config.workspace_id,
+        ),
+        latest_repo=repo,
+    )
+
+    def launch() -> subprocess.Popen[bytes]:
+        return subprocess.Popen(
+            [sys.executable, "-m", "handoff_a2a", "serve", "--config", str(config_path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def wait_up(timeout: float = 8.0) -> None:
+        import httpx
+
+        deadline = time.time() + timeout
+        last_error = None
+        while time.time() < deadline:
+            try:
+                httpx.get(
+                    f"http://127.0.0.1:{config.port}/.well-known/agent-card.json",
+                    timeout=0.3,
+                    trust_env=False,
+                ).raise_for_status()
+                return
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                time.sleep(0.05)
+        raise RuntimeError(f"server did not start: {last_error}")
+
+    first = launch()
+    try:
+        wait_up()
+        from handoff_a2a.client import CodingClient
+
+        client = CodingClient(f"http://127.0.0.1:{config.port}/.well-known/agent-card.json", token)
+        await client.connect()
+        try:
+            submitted = await client.submit(request)
+            persist_run_record(
+                record_path,
+                {
+                    **json.loads(record_path.read_text(encoding="utf-8")),
+                    "task_id": submitted["id"],
+                    "context_id": submitted.get("contextId"),
+                    "agent_card_url": client.agent_card_url,
+                },
+                latest_repo=repo,
+            )
+            _wait_file(repo / "WORKER_STARTED")
+            task_id = submitted["id"]
+        finally:
+            await client.close()
+        first.send_signal(signal.SIGTERM)
+        try:
+            first.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            first.kill()
+            first.wait(timeout=5)
+        first = None
+        second = launch()
+        try:
+            wait_up()
+            client = CodingClient(f"http://127.0.0.1:{config.port}/.well-known/agent-card.json", token)
+            await client.connect()
+            try:
+                recovered = await client.get(task_id)
+                state = _state(recovered)
+                assert state != "TASK_STATE_WORKING"
+                assert state in {"TASK_STATE_FAILED", "TASK_STATE_INPUT_REQUIRED", "TASK_STATE_CANCELED"}
+                replay = await client.submit(request)
+                assert replay["id"] == task_id
+                assert _state(replay) != "TASK_STATE_WORKING"
+                resumed = await resume_from_record(
+                    record_path=record_path, credential_file=token_path, timeout=5
+                )
+                assert resumed["task_id"] == task_id
+                assert _state(resumed["task"]) != "TASK_STATE_WORKING"
+            finally:
+                await client.close()
+        finally:
+            second.send_signal(signal.SIGTERM)
+            try:
+                second.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                second.kill()
+                second.wait(timeout=5)
+    finally:
+        if first is not None and first.poll() is None:
+            first.kill()
+            first.wait(timeout=5)

@@ -179,6 +179,14 @@ class SqliteState:
             ).fetchall()
             return [self._row_to_claim(row, created=False) for row in rows]
 
+    def list_all(self) -> list[ExecutionClaim]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM executions WHERE caller_id = ?",
+                (self.caller_id,),
+            ).fetchall()
+            return [self._row_to_claim(row, created=False) for row in rows]
+
     def try_dispatch(self, execution_id: str) -> bool:
         """Mark a claimed execution running. Only one caller wins."""
         with self._lock:

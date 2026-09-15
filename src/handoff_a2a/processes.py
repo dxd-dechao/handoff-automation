@@ -102,7 +102,21 @@ def pid_exists(pid: int) -> bool:
         return False
     except PermissionError:
         return True
-    return True
+    return not _is_zombie(pid)
+
+
+def _is_zombie(pid: int) -> bool:
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "state="],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return False
+    state = result.stdout.strip()
+    return bool(state) and state[0].upper() == "Z"
 
 
 def identity_matches(owned: OwnedProcess) -> bool:
@@ -111,16 +125,48 @@ def identity_matches(owned: OwnedProcess) -> bool:
     return process_start_identity(owned.pid) == owned.start_identity
 
 
+def group_pids(pgid: int) -> frozenset[int]:
+    """Live (non-zombie) PIDs currently in this process group."""
+    if pgid <= 0:
+        return frozenset()
+    try:
+        result = subprocess.run(
+            ["ps", "-ax", "-o", "pid=,pgid=,state="],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return frozenset()
+    found: set[int] = set()
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0])
+            group = int(parts[1])
+        except ValueError:
+            continue
+        state = parts[2]
+        if group == pgid and (not state or state[0].upper() != "Z"):
+            found.add(pid)
+    return frozenset(found)
+
+
 def is_owned_alive(owned: OwnedProcess) -> bool:
+    """True if owned work may still be running, including group descendants after the leader exits."""
     if owned.pid <= 0:
         return False
-    if owned.process is not None and owned.process.poll() is not None:
-        return False
-    return identity_matches(owned)
+    if pid_exists(owned.pid) and not identity_matches(owned):
+        return True
+    if identity_matches(owned):
+        return True
+    return bool(group_pids(owned.pgid))
 
 
 def stop_owned(owned: OwnedProcess, *, grace_s: float) -> bool:
-    """Signal the owned group, wait, escalate, and reap. True if confirmed stopped."""
+    """Signal the owned group, wait, escalate, and reap. True only if the group is empty."""
     if owned.pid <= 0:
         return True
     if pid_exists(owned.pid) and not identity_matches(owned):
@@ -128,49 +174,51 @@ def stop_owned(owned: OwnedProcess, *, grace_s: float) -> bool:
     if not is_owned_alive(owned):
         _reap(owned)
         return True
-    try:
-        _signal_owned(owned, signal.SIGTERM)
-    except ProcessLookupError:
-        _reap(owned)
-        return True
-    except PermissionError:
-        return False
+    if _signal_group(owned.pgid, signal.SIGTERM) == "denied":
+        return not is_owned_alive(owned)
     deadline = time.monotonic() + max(grace_s, 0)
     while time.monotonic() < deadline:
         if not is_owned_alive(owned):
             _reap(owned)
             return True
         time.sleep(0.05)
-    try:
-        _signal_owned(owned, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    except PermissionError:
+    signaled = _signal_group(owned.pgid, signal.SIGKILL)
+    if signaled == "denied":
         return not is_owned_alive(owned)
+    kill_deadline = time.monotonic() + min(max(grace_s, 0.2), 2.0)
+    while time.monotonic() < kill_deadline:
+        if not is_owned_alive(owned):
+            _reap(owned)
+            return True
+        time.sleep(0.05)
     _reap(owned)
     return not is_owned_alive(owned)
 
 
-def _signal_owned(owned: OwnedProcess, sig: int) -> None:
-    """Signal the verified group; fall back to the owned PID if killpg is denied."""
+def _signal_group(pgid: int, sig: int) -> str:
+    """Signal every member of the verified group. Never falls back to an unverified PID."""
     try:
-        os.killpg(owned.pgid, sig)
+        os.killpg(pgid, sig)
+        return "ok"
+    except ProcessLookupError:
+        return "gone"
     except PermissionError:
-        os.kill(owned.pid, sig)
+        return "denied"
 
 
 def wait_owned(owned: OwnedProcess, *, timeout_s: float) -> int | None:
-    if owned.process is None:
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            if not is_owned_alive(owned):
-                return 0
-            time.sleep(0.05)
-        return None
-    try:
-        return int(owned.process.wait(timeout=timeout_s))
-    except subprocess.TimeoutExpired:
-        return None
+    """Wait until the owned group has no remaining members, not only the parent PID."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if owned.process is not None:
+            owned.process.poll()
+        if not is_owned_alive(owned):
+            _reap(owned)
+            if owned.process is not None and owned.process.returncode is not None:
+                return int(owned.process.returncode)
+            return 0
+        time.sleep(0.05)
+    return None
 
 
 def _reap(owned: OwnedProcess) -> None:

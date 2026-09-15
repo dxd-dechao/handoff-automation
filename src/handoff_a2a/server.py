@@ -8,6 +8,7 @@ import hmac
 import json
 import logging
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,8 @@ from a2a.types.a2a_pb2 import (
     AgentInterface,
     AgentSkill,
     HTTPAuthSecurityScheme,
+    Message,
+    Role,
     SecurityScheme,
     SendMessageRequest,
     Task,
@@ -83,6 +86,48 @@ LOGGER = logging.getLogger("handoff_a2a.server")
 RPC_PATH = "/a2a"
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 TERMINAL_EXECUTION = frozenset({"completed", "failed", "rejected", "canceled"})
+TERMINAL_TASK_PROTO = frozenset(
+    {
+        TaskState.TASK_STATE_COMPLETED,
+        TaskState.TASK_STATE_FAILED,
+        TaskState.TASK_STATE_REJECTED,
+        TaskState.TASK_STATE_CANCELED,
+    }
+)
+EXECUTION_TO_TASK_STATE = {
+    "completed": TaskState.TASK_STATE_COMPLETED,
+    "failed": TaskState.TASK_STATE_FAILED,
+    "rejected": TaskState.TASK_STATE_REJECTED,
+    "canceled": TaskState.TASK_STATE_CANCELED,
+}
+
+
+def persist_task_outcome(
+    store: SqliteState,
+    *,
+    task_id: str,
+    context_id: str,
+    state: TaskState,
+    payload: dict[str, Any],
+) -> None:
+    task = store.load_task(task_id)
+    if task is None:
+        task = Task(id=task_id, context_id=context_id)
+    if task.status.state in TERMINAL_TASK_PROTO:
+        return
+    task.status.CopyFrom(
+        TaskStatus(
+            state=state,
+            message=Message(
+                role=Role.ROLE_AGENT,
+                message_id=str(uuid.uuid4()),
+                task_id=task_id,
+                context_id=context_id,
+                parts=[new_data_part(payload)],
+            ),
+        )
+    )
+    store.save_task(task)
 
 
 @dataclass(frozen=True)
@@ -261,6 +306,7 @@ class ExecutionRuntime:
         self.before_doc = None
         self._cleanup = asyncio.Lock()
         self._finalized = False
+        self._closing = False
         self._final_kind: str | None = None
         self.started_at = time.monotonic()
 
@@ -289,6 +335,7 @@ class ExecutionRuntime:
         async with self._cleanup:
             if self._finalized:
                 return self._final_kind or kind
+            self._closing = True
             stopped = await self.stop_worker()
             if not stopped:
                 self._mark_recovery(
@@ -320,6 +367,14 @@ class ExecutionRuntime:
                     self.request.execution_id,
                     status="canceled",
                     recovery_required=False,
+                    recovery_reason=reason,
+                )
+                persist_task_outcome(
+                    self.executor.state,
+                    task_id=self.task_id,
+                    context_id=self.context_id,
+                    state=TaskState.TASK_STATE_CANCELED,
+                    payload={"reason": reason},
                 )
                 if updater is not None:
                     await updater.cancel(
@@ -330,6 +385,14 @@ class ExecutionRuntime:
                     self.request.execution_id,
                     status="failed",
                     recovery_required=False,
+                    recovery_reason=reason,
+                )
+                persist_task_outcome(
+                    self.executor.state,
+                    task_id=self.task_id,
+                    context_id=self.context_id,
+                    state=TaskState.TASK_STATE_FAILED,
+                    payload={"reason": reason},
                 )
                 if updater is not None:
                     await updater.failed(
@@ -349,10 +412,13 @@ class ExecutionRuntime:
             recovery_required=True,
             recovery_reason=reason,
         )
-        task = self.executor.state.load_task(self.task_id)
-        if task is not None:
-            task.status.CopyFrom(TaskStatus(state=TaskState.TASK_STATE_INPUT_REQUIRED))
-            self.executor.state.save_task(task)
+        persist_task_outcome(
+            self.executor.state,
+            task_id=self.task_id,
+            context_id=self.context_id,
+            state=TaskState.TASK_STATE_INPUT_REQUIRED,
+            payload={"reason": reason, "recovery_required": True},
+        )
 
     async def _capture_partial(self, *, reason: str, canceled: bool) -> None:
         self.evidence.mkdir(parents=True, exist_ok=True)
@@ -403,6 +469,32 @@ class CodingAgentExecutor(AgentExecutor):
                     claim,
                     "startup reconcile failed; inspect owner.json and state.sqlite",
                 )
+        self._heal_terminal_tasks()
+
+    def _heal_terminal_tasks(self) -> None:
+        """If the registry is terminal but the Task snapshot is not, persist the matching outcome."""
+        for claim in self.state.list_all():
+            mapped = EXECUTION_TO_TASK_STATE.get(claim.status)
+            if mapped is None:
+                continue
+            task = self.state.load_task(claim.task_id)
+            if task is None or task.status.state in TERMINAL_TASK_PROTO:
+                continue
+            reason = claim.recovery_reason
+            if not reason and claim.result_json:
+                try:
+                    parsed = json.loads(claim.result_json)
+                    if isinstance(parsed, dict) and parsed.get("reason"):
+                        reason = str(parsed["reason"])
+                except json.JSONDecodeError:
+                    reason = None
+            persist_task_outcome(
+                self.state,
+                task_id=claim.task_id,
+                context_id=claim.context_id,
+                state=mapped,
+                payload={"reason": reason or f"reconciled {claim.status} execution"},
+            )
 
     def _reconcile_claim(self, claim: ExecutionClaim) -> None:
         if claim.pid and claim.pgid and claim.start_identity:
@@ -412,11 +504,7 @@ class CodingAgentExecutor(AgentExecutor):
                 start_identity=claim.start_identity,
                 cwd=self.workspace.path,
             )
-            if not pid_exists(owned.pid):
-                self._persist_failed(claim, "interrupted by server restart")
-                release_lock_if_owner(self.workspace.path, claim.execution_id)
-                return
-            if not identity_matches(owned):
+            if pid_exists(owned.pid) and not identity_matches(owned):
                 self._persist_recovery(
                     claim,
                     "uncertain process identity after restart; do not signal the live PID or remove execute.lock until the worker is confirmed stopped",
@@ -443,15 +531,13 @@ class CodingAgentExecutor(AgentExecutor):
         )
 
     def _persist_failed(self, claim: ExecutionClaim, reason: str) -> None:
-        task = self.state.load_task(claim.task_id)
-        if task is not None and task.status.state not in {
-            TaskState.TASK_STATE_COMPLETED,
-            TaskState.TASK_STATE_FAILED,
-            TaskState.TASK_STATE_REJECTED,
-            TaskState.TASK_STATE_CANCELED,
-        }:
-            task.status.CopyFrom(TaskStatus(state=TaskState.TASK_STATE_FAILED))
-            self.state.save_task(task)
+        persist_task_outcome(
+            self.state,
+            task_id=claim.task_id,
+            context_id=claim.context_id,
+            state=TaskState.TASK_STATE_FAILED,
+            payload={"reason": reason},
+        )
         self.state.update_execution(
             claim.execution_id,
             status="failed",
@@ -464,10 +550,13 @@ class CodingAgentExecutor(AgentExecutor):
         _write_json(evidence / "partial-result.json", {"reason": reason, "recovery": False})
 
     def _persist_recovery(self, claim: ExecutionClaim, reason: str) -> None:
-        task = self.state.load_task(claim.task_id)
-        if task is not None:
-            task.status.CopyFrom(TaskStatus(state=TaskState.TASK_STATE_INPUT_REQUIRED))
-            self.state.save_task(task)
+        persist_task_outcome(
+            self.state,
+            task_id=claim.task_id,
+            context_id=claim.context_id,
+            state=TaskState.TASK_STATE_INPUT_REQUIRED,
+            payload={"reason": reason, "recovery_required": True},
+        )
         self.state.update_execution(
             claim.execution_id,
             status="recovery_required",
@@ -580,13 +669,16 @@ class CodingAgentExecutor(AgentExecutor):
                 self.state.update_execution(request.execution_id, status="failed")
                 await runtime.release_lock_if_safe()
         finally:
-            if runtime.owned is not None and is_owned_alive(runtime.owned) and not runtime._finalized:
+            if runtime._closing and not runtime._finalized:
+                async with runtime._cleanup:
+                    pass
+            elif runtime.owned is not None and is_owned_alive(runtime.owned) and not runtime._finalized:
                 await runtime.finalize(
                     kind="failed",
                     reason="execution ended while worker still running",
                     updater=updater,
                 )
-            elif runtime.lock_acquired:
+            elif runtime.lock_acquired and not runtime._closing and not runtime._finalized:
                 await runtime.release_lock_if_safe()
             self._runtimes.pop(task.id, None)
 
@@ -664,6 +756,8 @@ class CodingAgentExecutor(AgentExecutor):
                     reason=f"execution deadline exceeded ({self.config.execution_timeout_s}s)",
                     updater=updater,
                 )
+                return
+            if runtime._finalized or runtime._closing:
                 return
             duration_s = time.monotonic() - runtime.started_at
             outcome = interpret_claude_files(

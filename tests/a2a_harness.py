@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import socket
 import subprocess
 import threading
@@ -46,6 +47,24 @@ if mode == "writer":
     finally:
         child.wait()
     sys.exit(0)
+if mode == "orphan_term_immune":
+    marker = root / "CHILD_WRITES"
+    script = root / ".child_writer.py"
+    script.write_text(
+        "import os, pathlib, signal, time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "p = pathlib.Path(os.environ['CHILD_MARKER'])\n"
+        "while True:\n"
+        "    p.write_text((p.read_text() if p.exists() else '') + 'x')\n"
+        "    time.sleep(0.05)\n",
+        encoding="utf-8",
+    )
+    child = subprocess.Popen(
+        [sys.executable, str(script)],
+        env={**os.environ, "CHILD_MARKER": str(marker)},
+    )
+    (root / "CHILD_PID").write_text(str(child.pid), encoding="utf-8")
+    os._exit(0)
 if sleep_s:
     time.sleep(sleep_s)
 
@@ -229,6 +248,31 @@ def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+def write_server_json(path: Path, config: ServerConfig) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "host": config.host,
+                "port": config.port,
+                "workspace_id": config.workspace_id,
+                "workspace_path": str(config.workspace_path),
+                "credential_file": str(config.credential_file),
+                "evidence_dir": str(config.evidence_dir),
+                "state_db": str(config.resolved_state_db()),
+                "caller_id": config.caller_id,
+                "execution_timeout_s": config.execution_timeout_s,
+                "cancel_grace_s": config.cancel_grace_s,
+                "public_base_url": config.public_base_url,
+                "claude": {"binary": config.claude.binary, "model": config.claude.model},
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
 
 
 def make_server_config(
