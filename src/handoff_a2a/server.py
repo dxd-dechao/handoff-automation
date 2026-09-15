@@ -1,11 +1,13 @@
-"""Loopback A2A server: Agent Card, JSON-RPC, workspace lock, Claude adapter."""
+"""Loopback A2A server: Agent Card, JSON-RPC, durable claims, owned workers."""
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hmac
 import json
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,10 +21,9 @@ from a2a.helpers.proto_helpers import (
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events.event_queue_v2 import EventQueue
 from a2a.server.request_handlers.default_request_handler_v2 import DefaultRequestHandlerV2
-from a2a.server.request_handlers.response_helpers import build_error_response
+from a2a.server.tasks import TaskUpdater
 from a2a.server.routes.agent_card_routes import create_agent_card_routes
 from a2a.server.routes.jsonrpc_routes import create_jsonrpc_routes
-from a2a.server.tasks import InMemoryTaskStore, TaskUpdater
 from a2a.types.a2a_pb2 import (
     AgentCapabilities,
     AgentCard,
@@ -31,28 +32,57 @@ from a2a.types.a2a_pb2 import (
     AgentSkill,
     HTTPAuthSecurityScheme,
     SecurityScheme,
+    SendMessageRequest,
+    Task,
+    TaskState,
+    TaskStatus,
 )
-from a2a.utils.errors import TaskNotCancelableError, UnsupportedOperationError
+from a2a.utils.errors import InvalidParamsError, TaskNotCancelableError
+from google.protobuf.struct_pb2 import Struct
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from handoff_a2a.adapters.claude import ClaudeAdapter, ClaudeAdapterConfig
+from handoff_a2a.adapters.claude import (
+    ClaudeAdapter,
+    ClaudeAdapterConfig,
+    child_environment,
+    interpret_claude_files,
+)
 from handoff_a2a.contracts import (
     CODING_RESULT_ARTIFACT,
     CODING_TASK_PROFILE,
+    DURABLE_DEDUP_PARAM,
     CodingRequest,
     CodingResult,
     CommitRef,
     ContractError,
     parse_coding_request,
+    request_canonical_hash,
 )
-from handoff_a2a.workspace import GitWorkspace, WorkspaceBusy, WorkspaceError
+from handoff_a2a.processes import (
+    OwnedProcess,
+    identity_matches,
+    is_owned_alive,
+    owned_from_record,
+    pid_exists,
+    start_owned,
+    stop_owned,
+    wait_owned,
+)
+from handoff_a2a.store import ClaimConflict, ExecutionClaim, SqliteState, SqliteTaskStore
+from handoff_a2a.workspace import (
+    GitWorkspace,
+    WorkspaceBusy,
+    WorkspaceError,
+    release_lock_if_owner,
+)
 
 LOGGER = logging.getLogger("handoff_a2a.server")
 RPC_PATH = "/a2a"
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+TERMINAL_EXECUTION = frozenset({"completed", "failed", "rejected", "canceled"})
 
 
 @dataclass(frozen=True)
@@ -66,10 +96,28 @@ class ServerConfig:
     claude: ClaudeAdapterConfig
     public_base_url: str
     credential: str
+    state_db: Path | None = None
+    caller_id: str = "local-planner"
+    execution_timeout_s: float = 3600.0
+    cancel_grace_s: float = 5.0
+
+    def resolved_state_db(self) -> Path:
+        return Path(self.state_db) if self.state_db is not None else self.evidence_dir / "state.sqlite"
 
 
 def _is_loopback_host(host: str) -> bool:
     return host.strip().lower() in LOOPBACK_HOSTS
+
+
+def _positive_number(raw: Any, name: str, default: float) -> float:
+    if raw is None:
+        return default
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ValueError(f"{name} must be a positive number")
+    value = float(raw)
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive number")
+    return value
 
 
 def load_server_config(path: Path) -> ServerConfig:
@@ -79,7 +127,7 @@ def load_server_config(path: Path) -> ServerConfig:
     host = str(raw.get("host") or "")
     if not _is_loopback_host(host):
         raise ValueError(
-            f"host {host!r} is not loopback-only; A1 binds 127.0.0.1, ::1, or localhost"
+            f"host {host!r} is not loopback-only; A2 binds 127.0.0.1, ::1, or localhost"
         )
     port = raw.get("port")
     if not isinstance(port, int) or isinstance(port, bool) or port < 1 or port > 65535:
@@ -110,6 +158,8 @@ def load_server_config(path: Path) -> ServerConfig:
     if not public:
         hostname = f"[{host}]" if ":" in host and host != "localhost" else host
         public = f"http://{hostname}:{port}"
+    state_db_raw = raw.get("state_db")
+    caller_id = str(raw.get("caller_id") or "local-planner").strip() or "local-planner"
     return ServerConfig(
         host=host,
         port=port,
@@ -120,7 +170,17 @@ def load_server_config(path: Path) -> ServerConfig:
         claude=ClaudeAdapterConfig(binary=binary, model=model),
         public_base_url=public,
         credential=credential,
+        state_db=Path(str(state_db_raw)).expanduser().resolve() if state_db_raw else None,
+        caller_id=caller_id,
+        execution_timeout_s=_positive_number(raw.get("execution_timeout_s"), "execution_timeout_s", 3600.0),
+        cancel_grace_s=_positive_number(raw.get("cancel_grace_s"), "cancel_grace_s", 5.0),
     )
+
+
+def _extension_params() -> Struct:
+    params = Struct()
+    params.update({DURABLE_DEDUP_PARAM: True})
+    return params
 
 
 def build_agent_card(config: ServerConfig) -> AgentCard:
@@ -128,11 +188,11 @@ def build_agent_card(config: ServerConfig) -> AgentCard:
     return AgentCard(
         name="handoff-a2a Claude Executor",
         description=(
-            "Experimental local coding Executor. Task state is in-memory and not "
-            "restart-durable. Cancellation is not supported in A1. A COMPLETED "
-            "task is ready for independent Planner QA, not APPROVED."
+            "Experimental local coding Executor. Tasks persist in a local SQLite "
+            "store. Duplicate execution_id submissions reuse the original task. "
+            "A COMPLETED task is ready for independent Planner QA, not APPROVED."
         ),
-        version="0.1.0",
+        version="0.2.0",
         supported_interfaces=[
             AgentInterface(
                 url=rpc_url,
@@ -148,6 +208,7 @@ def build_agent_card(config: ServerConfig) -> AgentCard:
                     uri=CODING_TASK_PROFILE,
                     required=True,
                     description="HANDOFF.md snapshot coding-task profile v1",
+                    params=_extension_params(),
                 )
             ],
         ),
@@ -177,21 +238,307 @@ def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8")
 
 
+def _extract_coding_request(params: SendMessageRequest) -> CodingRequest:
+    parts = get_data_parts(params.message.parts)
+    if not parts:
+        raise ContractError("SendMessage must carry a coding-task data part")
+    return parse_coding_request(parts[0])
+
+
+class ExecutionRuntime:
+    """Per-execution cleanup owner. Outlives HTTP/SDK producer cancellation."""
+
+    def __init__(self, executor: CodingAgentExecutor, request: CodingRequest, task_id: str, context_id: str):
+        self.executor = executor
+        self.request = request
+        self.task_id = task_id
+        self.context_id = context_id
+        self.owned: OwnedProcess | None = None
+        self.lock_acquired = False
+        self.worker_launched = False
+        self.evidence = executor.config.evidence_dir / request.execution_id
+        self.before_git = None
+        self.before_doc = None
+        self._cleanup = asyncio.Lock()
+        self._finalized = False
+        self._final_kind: str | None = None
+        self.started_at = time.monotonic()
+
+    async def stop_worker(self) -> bool:
+        if self.owned is None:
+            return True
+        return await asyncio.to_thread(
+            stop_owned, self.owned, grace_s=self.executor.config.cancel_grace_s
+        )
+
+    async def release_lock_if_safe(self) -> None:
+        if not self.lock_acquired:
+            return
+        if self.owned is not None and is_owned_alive(self.owned):
+            return
+        self.executor.workspace.lock.release()
+        self.lock_acquired = False
+
+    async def finalize(
+        self,
+        *,
+        kind: str,
+        reason: str,
+        updater: TaskUpdater | None,
+    ) -> str:
+        async with self._cleanup:
+            if self._finalized:
+                return self._final_kind or kind
+            stopped = await self.stop_worker()
+            if not stopped:
+                self._mark_recovery(
+                    "could not confirm owned worker stopped; inspect owner.json and state.sqlite"
+                )
+                if updater is not None:
+                    await updater.requires_input(
+                        updater.new_agent_message(
+                            [
+                                new_data_part(
+                                    {
+                                        "reason": self.executor.state.get_execution(
+                                            self.request.execution_id
+                                        ).recovery_reason
+                                        if self.executor.state.get_execution(self.request.execution_id)
+                                        else reason,
+                                        "recovery_required": True,
+                                    }
+                                )
+                            ]
+                        )
+                    )
+                self._finalized = True
+                self._final_kind = "recovery"
+                return "recovery"
+            await self._capture_partial(reason=reason, canceled=(kind == "canceled"))
+            if kind == "canceled":
+                self.executor.state.update_execution(
+                    self.request.execution_id,
+                    status="canceled",
+                    recovery_required=False,
+                )
+                if updater is not None:
+                    await updater.cancel(
+                        updater.new_agent_message([new_data_part({"reason": reason})])
+                    )
+            else:
+                self.executor.state.update_execution(
+                    self.request.execution_id,
+                    status="failed",
+                    recovery_required=False,
+                )
+                if updater is not None:
+                    await updater.failed(
+                        updater.new_agent_message([new_data_part({"reason": reason})])
+                    )
+            await self.release_lock_if_safe()
+            if not self.lock_acquired:
+                release_lock_if_owner(self.executor.workspace.path, self.request.execution_id)
+            self._finalized = True
+            self._final_kind = kind
+            return kind
+
+    def _mark_recovery(self, reason: str) -> None:
+        self.executor.state.update_execution(
+            self.request.execution_id,
+            status="recovery_required",
+            recovery_required=True,
+            recovery_reason=reason,
+        )
+        task = self.executor.state.load_task(self.task_id)
+        if task is not None:
+            task.status.CopyFrom(TaskStatus(state=TaskState.TASK_STATE_INPUT_REQUIRED))
+            self.executor.state.save_task(task)
+
+    async def _capture_partial(self, *, reason: str, canceled: bool) -> None:
+        self.evidence.mkdir(parents=True, exist_ok=True)
+        after_git = self.executor.workspace.snapshot()
+        notes = ""
+        try:
+            notes = self.executor.workspace.read_handoff_text()
+        except OSError:
+            notes = ""
+        payload = {
+            "schema": CODING_TASK_PROFILE,
+            "workflow_id": self.request.workflow_id,
+            "run_id": self.request.run_id,
+            "execution_id": self.request.execution_id,
+            "task_id": self.task_id,
+            "context_id": self.context_id,
+            "reason": reason,
+            "canceled": canceled,
+            "worker_launched": self.worker_launched,
+            "git_status": after_git.status,
+            "diff": after_git.diff,
+            "head_after": after_git.head,
+            "evidence_dir": str(self.evidence),
+            "execution_notes": notes,
+        }
+        _write_json(self.evidence / "partial-result.json", payload)
+        self.executor.state.update_execution(
+            self.request.execution_id, result_json=payload
+        )
+
+
 class CodingAgentExecutor(AgentExecutor):
-    def __init__(self, config: ServerConfig):
+    def __init__(self, config: ServerConfig, state: SqliteState):
         self.config = config
+        self.state = state
         self.workspace = GitWorkspace(config.workspace_id, config.workspace_path)
         self.adapter = ClaudeAdapter(config.claude)
         self.config.evidence_dir.mkdir(parents=True, exist_ok=True)
+        self._runtimes: dict[str, ExecutionRuntime] = {}
+
+    def reconcile_startup(self) -> None:
+        for claim in self.state.list_nonterminal():
+            try:
+                self._reconcile_claim(claim)
+            except Exception:  # noqa: BLE001 — never fail server start on one row
+                LOGGER.exception("startup reconcile failed for %s", claim.execution_id)
+                self._persist_recovery(
+                    claim,
+                    "startup reconcile failed; inspect owner.json and state.sqlite",
+                )
+
+    def _reconcile_claim(self, claim: ExecutionClaim) -> None:
+        if claim.pid and claim.pgid and claim.start_identity:
+            owned = owned_from_record(
+                pid=int(claim.pid),
+                pgid=int(claim.pgid),
+                start_identity=claim.start_identity,
+                cwd=self.workspace.path,
+            )
+            if not pid_exists(owned.pid):
+                self._persist_failed(claim, "interrupted by server restart")
+                release_lock_if_owner(self.workspace.path, claim.execution_id)
+                return
+            if not identity_matches(owned):
+                self._persist_recovery(
+                    claim,
+                    "uncertain process identity after restart; do not signal the live PID or remove execute.lock until the worker is confirmed stopped",
+                )
+                return
+            if is_owned_alive(owned):
+                stopped = stop_owned(owned, grace_s=self.config.cancel_grace_s)
+                if not stopped:
+                    self._persist_recovery(
+                        claim,
+                        "owned worker still running after restart stop attempt; inspect owner.json",
+                    )
+                    return
+            self._persist_failed(claim, "interrupted by server restart")
+            release_lock_if_owner(self.workspace.path, claim.execution_id)
+            return
+        if claim.status == "claimed" and claim.pid is None:
+            self._persist_failed(claim, "interrupted before worker start (server restart)")
+            release_lock_if_owner(self.workspace.path, claim.execution_id)
+            return
+        self._persist_recovery(
+            claim,
+            "uncertain process identity after restart; do not remove execute.lock until the worker is confirmed stopped",
+        )
+
+    def _persist_failed(self, claim: ExecutionClaim, reason: str) -> None:
+        task = self.state.load_task(claim.task_id)
+        if task is not None and task.status.state not in {
+            TaskState.TASK_STATE_COMPLETED,
+            TaskState.TASK_STATE_FAILED,
+            TaskState.TASK_STATE_REJECTED,
+            TaskState.TASK_STATE_CANCELED,
+        }:
+            task.status.CopyFrom(TaskStatus(state=TaskState.TASK_STATE_FAILED))
+            self.state.save_task(task)
+        self.state.update_execution(
+            claim.execution_id,
+            status="failed",
+            recovery_required=False,
+            recovery_reason=reason,
+            result_json={"reason": reason},
+        )
+        evidence = self.config.evidence_dir / claim.execution_id
+        evidence.mkdir(parents=True, exist_ok=True)
+        _write_json(evidence / "partial-result.json", {"reason": reason, "recovery": False})
+
+    def _persist_recovery(self, claim: ExecutionClaim, reason: str) -> None:
+        task = self.state.load_task(claim.task_id)
+        if task is not None:
+            task.status.CopyFrom(TaskStatus(state=TaskState.TASK_STATE_INPUT_REQUIRED))
+            self.state.save_task(task)
+        self.state.update_execution(
+            claim.execution_id,
+            status="recovery_required",
+            recovery_required=True,
+            recovery_reason=reason,
+        )
+
+    async def shutdown(self) -> None:
+        for runtime in list(self._runtimes.values()):
+            await runtime.finalize(
+                kind="failed",
+                reason="server shutting down",
+                updater=None,
+            )
+        self.reconcile_startup()
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
-        raise UnsupportedOperationError(
-            message="CancelTask is not supported until A2; the worker was not canceled"
+        task_id = context.task_id or ""
+        runtime = self._runtimes.get(task_id)
+        claim = self.state.get_by_task(task_id)
+        if claim is not None and claim.status in TERMINAL_EXECUTION:
+            raise TaskNotCancelableError(message="task is already terminal")
+        updater = TaskUpdater(event_queue, task_id, context.context_id or "")
+        if runtime is None:
+            if claim is None:
+                raise TaskNotCancelableError(message="no execution is attached to this task")
+            owned = None
+            if claim.pid and claim.pgid and claim.start_identity:
+                owned = owned_from_record(
+                    pid=int(claim.pid),
+                    pgid=int(claim.pgid),
+                    start_identity=claim.start_identity,
+                    cwd=self.workspace.path,
+                )
+            if owned is None or not is_owned_alive(owned):
+                self._persist_failed(claim, "canceled after worker already stopped")
+                await updater.cancel(
+                    updater.new_agent_message([new_data_part({"reason": "canceled; worker already stopped"})])
+                )
+                release_lock_if_owner(self.workspace.path, claim.execution_id)
+                return
+            stopped = await asyncio.to_thread(
+                stop_owned, owned, grace_s=self.config.cancel_grace_s
+            )
+            if not stopped:
+                self._persist_recovery(claim, "cancel could not confirm owned worker stopped")
+                await updater.requires_input(
+                    updater.new_agent_message(
+                        [new_data_part({"reason": claim.recovery_reason or "recovery_required", "recovery_required": True})]
+                    )
+                )
+                return
+            self.state.update_execution(claim.execution_id, status="canceled", recovery_required=False)
+            await updater.cancel(
+                updater.new_agent_message([new_data_part({"reason": "canceled by caller"})])
+            )
+            release_lock_if_owner(self.workspace.path, claim.execution_id)
+            return
+        await runtime.finalize(
+            kind="canceled",
+            reason="canceled by caller",
+            updater=updater,
         )
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         if context.message is None:
             raise ContractError("missing message")
+        if context.task_id and not context.message.task_id:
+            context.message.task_id = context.task_id
+        if context.context_id and not context.message.context_id:
+            context.message.context_id = context.context_id
         task = new_task_from_user_message(context.message)
         updater = TaskUpdater(event_queue, task.id, task.context_id)
         await event_queue.enqueue_event(task)
@@ -205,69 +552,135 @@ class CodingAgentExecutor(AgentExecutor):
                 updater.new_agent_message([new_data_part({"reason": str(exc)})])
             )
             return
-        evidence = self.config.evidence_dir / request.execution_id
-        evidence.mkdir(parents=True, exist_ok=True)
-        _write_json(evidence / "request.json", request.to_dict() | {"task_id": task.id, "context_id": task.context_id})
-        (evidence / "handoff.md").write_bytes(request.utf8_bytes())
+        runtime = ExecutionRuntime(self, request, task.id, task.context_id)
+        self._runtimes[task.id] = runtime
+        runtime.evidence.mkdir(parents=True, exist_ok=True)
+        request_path = runtime.evidence / "request.json"
+        if not request_path.exists():
+            _write_json(
+                request_path,
+                request.to_dict() | {"task_id": task.id, "context_id": task.context_id},
+            )
+            (runtime.evidence / "handoff.md").write_bytes(request.utf8_bytes())
         try:
-            await self._run_validated(request, task.id, task.context_id, updater, evidence)
+            await self._run_validated(runtime, updater)
+        except asyncio.CancelledError:
+            await runtime.finalize(
+                kind="canceled",
+                reason="canceled by caller",
+                updater=updater,
+            )
+            raise
         except Exception as exc:  # noqa: BLE001 — convert unexpected failures to FAILED
             LOGGER.exception("execution failed")
-            await updater.failed(
-                updater.new_agent_message([new_data_part({"reason": str(exc)})])
-            )
+            if not runtime._finalized:
+                await updater.failed(
+                    updater.new_agent_message([new_data_part({"reason": str(exc)})])
+                )
+                self.state.update_execution(request.execution_id, status="failed")
+                await runtime.release_lock_if_safe()
+        finally:
+            if runtime.owned is not None and is_owned_alive(runtime.owned) and not runtime._finalized:
+                await runtime.finalize(
+                    kind="failed",
+                    reason="execution ended while worker still running",
+                    updater=updater,
+                )
+            elif runtime.lock_acquired:
+                await runtime.release_lock_if_safe()
+            self._runtimes.pop(task.id, None)
 
-    async def _run_validated(
-        self,
-        request: CodingRequest,
-        task_id: str,
-        context_id: str,
-        updater: TaskUpdater,
-        evidence: Path,
-    ) -> None:
-        lock_acquired = False
-        worker_launched = False
-        before_git = None
-        before_doc = None
+    async def _run_validated(self, runtime: ExecutionRuntime, updater: TaskUpdater) -> None:
+        request = runtime.request
         try:
             self.workspace.lock.acquire()
-            lock_acquired = True
-            before_doc = self.workspace.validate_request(
+            runtime.lock_acquired = True
+            runtime.before_doc = self.workspace.validate_request(
                 workspace_id=request.workspace_id,
                 expected_branch=request.expected_branch,
                 expected_head=request.expected_head,
                 handoff_markdown=request.handoff_markdown,
                 request_sha256=request.request_sha256,
             )
-            before_git = self.workspace.snapshot()
+            runtime.before_git = self.workspace.snapshot()
         except WorkspaceBusy as exc:
+            self.state.update_execution(request.execution_id, status="rejected")
             await updater.reject(
                 updater.new_agent_message([new_data_part({"reason": exc.reason})])
             )
+            runtime._finalized = True
+            runtime._final_kind = "rejected"
             return
         except WorkspaceError as exc:
-            if lock_acquired:
+            if runtime.lock_acquired:
                 self.workspace.lock.release()
-                lock_acquired = False
+                runtime.lock_acquired = False
+            self.state.update_execution(request.execution_id, status="rejected")
             await updater.reject(
                 updater.new_agent_message([new_data_part({"reason": exc.reason})])
             )
+            runtime._finalized = True
+            runtime._final_kind = "rejected"
             return
 
         await updater.start_work()
-        stdout_path = evidence / "stdout.json"
-        stderr_path = evidence / "stderr.txt"
+        stdout_path = runtime.evidence / "stdout.json"
+        stderr_path = runtime.evidence / "stderr.txt"
+        argv = self.adapter.argv()
+        env = child_environment()
         try:
-            worker_launched = True
-            outcome = await self.adapter.run(self.workspace.path, stdout_path, stderr_path)
+            runtime.owned = await asyncio.to_thread(
+                start_owned,
+                argv,
+                cwd=self.workspace.path,
+                env=env,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+            )
+            runtime.worker_launched = True
+            self.workspace.lock.write_owner(
+                {
+                    "execution_id": request.execution_id,
+                    "task_id": runtime.task_id,
+                    "pid": runtime.owned.pid,
+                    "pgid": runtime.owned.pgid,
+                    "start_identity": runtime.owned.start_identity,
+                }
+            )
+            self.state.update_execution(
+                request.execution_id,
+                status="running",
+                pid=runtime.owned.pid,
+                pgid=runtime.owned.pgid,
+                start_identity=runtime.owned.start_identity,
+                evidence_dir=str(runtime.evidence),
+            )
+            exit_code = await asyncio.to_thread(
+                wait_owned, runtime.owned, timeout_s=self.config.execution_timeout_s
+            )
+            if exit_code is None:
+                await runtime.finalize(
+                    kind="failed",
+                    reason=f"execution deadline exceeded ({self.config.execution_timeout_s}s)",
+                    updater=updater,
+                )
+                return
+            duration_s = time.monotonic() - runtime.started_at
+            outcome = interpret_claude_files(
+                stdout_path,
+                stderr_path,
+                exit_code=exit_code,
+                duration_s=duration_s,
+                argv=tuple(argv),
+            )
             after_git = self.workspace.snapshot()
             after_doc, transition_ok, transition_reason = self.workspace.evaluate_transition(
-                before_doc
+                runtime.before_doc
             )
             commits = tuple(
                 CommitRef(sha=sha, subject=subject)
                 for sha, subject in self.workspace.commits_between(
-                    before_git.head, after_git.head
+                    runtime.before_git.head, after_git.head
                 )
             )
             invalid_output = outcome.invalid_output
@@ -293,8 +706,8 @@ class CodingAgentExecutor(AgentExecutor):
                 workflow_id=request.workflow_id,
                 run_id=request.run_id,
                 execution_id=request.execution_id,
-                task_id=task_id,
-                context_id=context_id,
+                task_id=runtime.task_id,
+                context_id=runtime.context_id,
                 iteration=request.iteration,
                 workspace_id=request.workspace_id,
                 summary=outcome.summary,
@@ -304,11 +717,11 @@ class CodingAgentExecutor(AgentExecutor):
                 invalid_output=invalid_output,
                 invalid_handoff_transition=not transition_ok,
                 reason=reason,
-                status_before=before_doc.status,
+                status_before=runtime.before_doc.status,
                 status_after=after_doc.status,
-                branch_before=before_git.branch,
+                branch_before=runtime.before_git.branch,
                 branch_after=after_git.branch,
-                head_before=before_git.head,
+                head_before=runtime.before_git.head,
                 head_after=after_git.head,
                 commits=commits,
                 git_status=after_git.status,
@@ -318,22 +731,28 @@ class CodingAgentExecutor(AgentExecutor):
                 cost_usd=outcome.cost_usd,
                 usage_provenance=outcome.usage_provenance,
                 cost_provenance=outcome.cost_provenance,
-                evidence_dir=str(evidence),
-                plan_intact=after_doc.planner_fingerprint == before_doc.planner_fingerprint,
-                worker_launched=worker_launched,
+                evidence_dir=str(runtime.evidence),
+                plan_intact=after_doc.planner_fingerprint == runtime.before_doc.planner_fingerprint,
+                worker_launched=runtime.worker_launched,
             )
             payload = result.to_dict()
-            _write_json(evidence / "result.json", payload)
+            _write_json(runtime.evidence / "result.json", payload)
             _write_json(
-                evidence / "metadata.json",
+                runtime.evidence / "metadata.json",
                 {
                     "workflow_id": request.workflow_id,
                     "run_id": request.run_id,
                     "execution_id": request.execution_id,
-                    "task_id": task_id,
-                    "context_id": context_id,
+                    "task_id": runtime.task_id,
+                    "context_id": runtime.context_id,
                     "iteration": request.iteration,
                 },
+            )
+            self.state.update_execution(
+                request.execution_id,
+                status="failed" if failed else "completed",
+                result_json=payload,
+                recovery_required=False,
             )
             await updater.add_artifact(
                 [new_data_part(payload)],
@@ -346,10 +765,55 @@ class CodingAgentExecutor(AgentExecutor):
                 )
             else:
                 await updater.complete()
+            runtime._finalized = True
+            runtime._final_kind = "failed" if failed else "completed"
         finally:
-            if lock_acquired:
-                self.workspace.lock.release()
-                lock_acquired = False
+            if runtime.lock_acquired and (runtime.owned is None or not is_owned_alive(runtime.owned)):
+                await runtime.release_lock_if_safe()
+
+
+class ClaimAwareHandler:
+    """Select task/context IDs at the claim boundary before the SDK creates a task."""
+
+    def __init__(self, inner: DefaultRequestHandlerV2, state: SqliteState):
+        self._inner = inner
+        self._state = state
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+    async def on_message_send(self, params: SendMessageRequest, context: Any) -> Task | Any:
+        try:
+            request = _extract_coding_request(params)
+        except ContractError:
+            return await self._inner.on_message_send(params, context)
+        request_hash = request_canonical_hash(request)
+        try:
+            claim = self._state.claim(
+                execution_id=request.execution_id,
+                request_hash=request_hash,
+                request=request.to_dict(),
+                run_id=request.run_id,
+                workflow_id=request.workflow_id,
+                task_id=params.message.task_id or None,
+                context_id=params.message.context_id or None,
+            )
+        except ClaimConflict as exc:
+            raise InvalidParamsError(message=str(exc)) from exc
+        params.message.task_id = claim.task_id
+        params.message.context_id = claim.context_id
+        if claim.status in TERMINAL_EXECUTION or claim.status == "recovery_required":
+            stored = self._state.load_task(claim.task_id)
+            if stored is not None:
+                return stored
+        if not self._state.try_dispatch(request.execution_id):
+            stored = self._state.load_task(claim.task_id)
+            if stored is not None:
+                return stored
+        return await self._inner.on_message_send(params, context)
 
 
 def _unauthorized() -> JSONResponse:
@@ -366,33 +830,28 @@ def _has_valid_bearer(request: Request, credential: str) -> bool:
 
 def create_app(config: ServerConfig) -> Starlette:
     card = build_agent_card(config)
-    executor = CodingAgentExecutor(config)
-    handler = DefaultRequestHandlerV2(
+    state = SqliteState(config.resolved_state_db(), config.caller_id)
+    executor = CodingAgentExecutor(config, state)
+    inner = DefaultRequestHandlerV2(
         agent_executor=executor,
-        task_store=InMemoryTaskStore(),
+        task_store=SqliteTaskStore(state),
         agent_card=card,
     )
+    handler = ClaimAwareHandler(inner, state)
     sdk_endpoint = create_jsonrpc_routes(handler, RPC_PATH)[0].endpoint
 
     async def jsonrpc_endpoint(request: Request) -> Response:
         if not _has_valid_bearer(request, config.credential):
             return _unauthorized()
-        try:
-            body = await request.json()
-        except Exception:  # noqa: BLE001
-            return await sdk_endpoint(request)
-        method = body.get("method") if isinstance(body, dict) else None
-        if method == "CancelTask":
-            error = TaskNotCancelableError(
-                message="CancelTask is not supported until A2; the worker was not canceled"
-            )
-            return JSONResponse(build_error_response(body.get("id"), error))
         return await sdk_endpoint(request)
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: Starlette):
+        await asyncio.to_thread(executor.reconcile_startup)
         yield
+        await executor.shutdown()
         await handler.aclose()
+        state.close()
 
     return Starlette(
         routes=create_agent_card_routes(card)

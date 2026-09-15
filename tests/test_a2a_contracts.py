@@ -11,6 +11,7 @@ from handoff_a2a.contracts import (
     CODING_TASK_PROFILE,
     ContractError,
     parse_coding_request,
+    request_canonical_hash,
     snapshot_sha256,
 )
 from handoff_a2a.server import load_server_config
@@ -141,11 +142,34 @@ def test_zero_cost_survives_parse_and_missing_cost_is_invalid_json_object_ok() -
 
 def test_cli_exit_codes_distinguish_success_from_unsuccessful_terminal() -> None:
     assert execute_exit_code("TASK_STATE_COMPLETED") == 0
-    assert execute_exit_code("TASK_STATE_FAILED") != 0
-    assert execute_exit_code("TASK_STATE_REJECTED") != 0
+    assert execute_exit_code("TASK_STATE_FAILED") == 1
+    assert execute_exit_code("TASK_STATE_REJECTED") == 1
+    assert execute_exit_code("TASK_STATE_CANCELED") == 1
+    assert execute_exit_code("TASK_STATE_INPUT_REQUIRED") == 2
+    assert execute_exit_code(None) == 2
     assert task_reason(
         {"status": {"state": "TASK_STATE_REJECTED", "message": {"parts": [{"data": {"reason": "busy"}}]}}}
     ) == "busy"
+
+
+def test_canonical_request_hash_covers_more_than_snapshot() -> None:
+    markdown = "# hi\n"
+    base = {
+        "schema": CODING_TASK_PROFILE,
+        "workflow_id": "wf",
+        "run_id": "run",
+        "execution_id": "11111111-1111-1111-1111-111111111111",
+        "iteration": 1,
+        "workspace_id": "fixture",
+        "expected_branch": "main",
+        "expected_head": "abc",
+        "handoff_markdown": markdown,
+        "request_sha256": snapshot_sha256(markdown),
+    }
+    first = parse_coding_request(base)
+    second = parse_coding_request({**base, "expected_head": "def"})
+    assert request_canonical_hash(first) != request_canonical_hash(second)
+    assert snapshot_sha256(first.handoff_markdown) == snapshot_sha256(second.handoff_markdown)
 
 
 def test_wrong_shape_json_object_is_invalid_claude_result() -> None:

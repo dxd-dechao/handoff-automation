@@ -211,33 +211,45 @@ only supported path, by design.
   plan required a command outside the allowlist; either the plan is wrong or
   the allowlist needs a deliberate, human-made addition.
 
-## Experimental A2A path (A1)
+## Experimental A2A path
 
-Optional Python package. It does **not** replace `handoff execute`. Task state
-is in-memory (not restart-durable). Cancellation is unsupported. Wiring this
-path into the production CLI is later work.
+Optional Python package. It does **not** replace `handoff execute`. Tasks persist
+in a local SQLite store, duplicate `execution_id` submissions reuse the original
+task, and CancelTask/deadlines stop the owned process group before releasing the
+workspace. Wiring this path into the production CLI is later work.
 
 Profile: [`docs/a2a-coding-task-v1.md`](docs/a2a-coding-task-v1.md).
 
 ```sh
 uv sync --extra test
-uv run --extra test python -m pytest -q tests/test_a2a_contracts.py tests/test_a2a_roundtrip.py
+uv run --extra test python -m pytest -q tests/test_a2a_contracts.py tests/test_a2a_roundtrip.py tests/test_a2a_lifecycle.py
 uv run handoff-a2a --help
+uv run handoff-a2a resume --help
 ```
 
 Server config (loopback host only) supplies `host`, `port`, `workspace_id`,
 `workspace_path`, `credential_file`, `evidence_dir`, and `claude.binary` /
-`claude.model`. Start and submit:
+`claude.model`. Optional A2 keys: `state_db` (default `evidence_dir/state.sqlite`),
+`caller_id` (default `local-planner`), `execution_timeout_s` (default 3600),
+`cancel_grace_s` (default 5). Start and submit:
 
 ```sh
 uv run handoff-a2a serve --config server.json
 uv run handoff-a2a execute --repo /path/to/workspace \
   --agent-card-url http://127.0.0.1:PORT/.well-known/agent-card.json \
   --credential-file /path/to/token --workspace-id that-workspace
+uv run handoff-a2a status --run-record PATH --credential-file PATH
+uv run handoff-a2a resume --run-record PATH --credential-file PATH
+uv run handoff-a2a cancel --run-record PATH --credential-file PATH
 ```
 
-`execute` reads the local `HANDOFF.md` snapshot; there is no extra prompt
-flag. Tests must point `claude.binary` at a fake executable, never a paid CLI.
+`execute` writes a durable run record before SendMessage and reads the local
+`HANDOFF.md` snapshot; there is no extra prompt flag. Client `--timeout` only
+bounds waiting; it does not cancel the worker. Tests must point `claude.binary`
+at a fake executable, never a paid CLI. A1-era evidence without a database row
+is not a resumable task. If restart recovery reports `recovery_required`, inspect
+`.handoff-logs/execute.lock/owner.json` and `state.sqlite` and remove the lock
+only after confirming the worker is stopped.
 
 ## Planner CLI skill
 

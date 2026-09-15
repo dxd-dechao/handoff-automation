@@ -18,11 +18,34 @@ FAKE_CLAUDE = r'''#!/usr/bin/env python3
 import json, os, pathlib, re, subprocess, sys, time
 
 root = pathlib.Path.cwd()
+launches = root / "WORKER_LAUNCHES"
+launches.write_text(str(int(launches.read_text(encoding="utf-8") or "0") + 1 if launches.is_file() else 1) + "\n", encoding="utf-8")
 (root / "WORKER_STARTED").write_text("started\n", encoding="utf-8")
 leaked = [k for k in os.environ if k.startswith("ANTHROPIC_") or k.startswith("CLAUDE")]
 (root / "AUTH_PROBE").write_text("\n".join(leaked), encoding="utf-8")
 mode = (root / ".fake-mode").read_text(encoding="utf-8").strip() if (root / ".fake-mode").is_file() else "success"
 sleep_s = float((root / ".fake-sleep").read_text(encoding="utf-8").strip() or "0") if (root / ".fake-sleep").is_file() else 0.0
+if mode == "writer":
+    marker = root / "CHILD_WRITES"
+    script = root / ".child_writer.py"
+    script.write_text(
+        "import os, pathlib, time\n"
+        "p = pathlib.Path(os.environ['CHILD_MARKER'])\n"
+        "while True:\n"
+        "    p.write_text((p.read_text() if p.exists() else '') + 'x')\n"
+        "    time.sleep(0.05)\n",
+        encoding="utf-8",
+    )
+    child = subprocess.Popen(
+        [sys.executable, str(script)],
+        env={**os.environ, "CHILD_MARKER": str(marker)},
+    )
+    (root / "CHILD_PID").write_text(str(child.pid), encoding="utf-8")
+    try:
+        time.sleep(sleep_s or 30)
+    finally:
+        child.wait()
+    sys.exit(0)
 if sleep_s:
     time.sleep(sleep_s)
 
@@ -215,11 +238,14 @@ def make_server_config(
     *,
     workspace_id: str = "fixture",
     port: int | None = None,
+    execution_timeout_s: float = 3600.0,
+    cancel_grace_s: float = 1.0,
+    state_db: Path | None = None,
 ) -> tuple[ServerConfig, Path, Path]:
     token_path = root / "token"
     token_path.write_text("test-token\n", encoding="utf-8")
     evidence = root / "evidence"
-    evidence.mkdir()
+    evidence.mkdir(exist_ok=True)
     port = port or free_port()
     config = ServerConfig(
         host="127.0.0.1",
@@ -231,6 +257,9 @@ def make_server_config(
         claude=ClaudeAdapterConfig(binary=str(fake_claude), model="fake-model"),
         public_base_url=f"http://127.0.0.1:{port}",
         credential="test-token",
+        state_db=state_db or (evidence / "state.sqlite"),
+        execution_timeout_s=execution_timeout_s,
+        cancel_grace_s=cancel_grace_s,
     )
     return config, token_path, evidence
 

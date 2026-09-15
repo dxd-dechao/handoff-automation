@@ -1,6 +1,6 @@
 # A2A Executor implementation plan
 
-Status: plan approved; A1 implemented / awaiting QA after correction of CLI exit codes and Claude result validation.
+Status: A1 QA approved; A2 implemented and awaiting QA. A3/A4 not started. Human will manually launch QA; no merge/push.
 Date: 2026-09-14. Source baseline: `6201590bb98d7cc9514c04e7df14482695f8afed`.
 Open PR check: `gh pr list --state open` returned no open PRs on 2026-09-14.
 
@@ -51,8 +51,8 @@ Run the focused checks once after the final relevant change. Repeat or broaden o
 
 | ID | Deliverable | Depends on | Status | QA evidence / commit |
 |---|---|---|---|---|
-| A1 | Standalone local A2A server, Claude adapter, provider-neutral client, request/result contract, and Planner-facing CLI skill | Existing baseline | implemented / awaiting QA | d615f09; correction b9bd0aa |
-| A2 | Durable execution identity, reconnect/restart handling, and cancellation | A1 | Not started | — |
+| A1 | Standalone local A2A server, Claude adapter, provider-neutral client, request/result contract, and Planner-facing CLI skill | Existing baseline | APPROVED | d615f09 + b9bd0aa; reviewed through 123eccc; 23 A2A + 17 legacy checks and five independent CLI probes passed |
+| A2 | Durable execution identity, reconnect/restart handling, and cancellation | A1 | implemented / awaiting QA | Started at 123eccc; 31 A2A + 17 legacy checks passed on 2026-09-15; see Execution Notes for commit |
 | A3 | Wire A2A into handoff CLI, workflow status, gates, and reporting | A2 | Not started | — |
 | A4 | Codex adapter and real replacement validation through handoff CLI | A3 | Not started | — |
 
@@ -83,6 +83,10 @@ Maintain one execution lock while the worker can write and through final result 
 Add client resume/status/cancel and server deadlines. Connection timeout does not imply cancellation. Cancellation must stop and reap the owned worker and its ordinary child processes before releasing the workspace. Test this using a controlled child that launches a child process, not exotic process escape scenarios. If the host cannot stop the process tree, fail visibly and retain protection rather than claim cancellation succeeded.
 
 Acceptance: reconnect without a second worker; lost-ack retransmission dedupes; repeated identical submission after restart does not spawn again; completed task survives restart; normal cancel and deadline expiry stop the controlled process tree; known active workspace is not reused prematurely. These are the practical asynchronous failure cases, not a distributed-systems stress suite.
+
+A2 handoff decisions (2026-09-15): use one SQLite database for SDK Task snapshots and execution claims; deduplicate the full validated request by trusted caller identity + execution_id before dispatch. Save immutable client run records before submission and task IDs before polling. Add `handoff-a2a status/resume/cancel --run-record ... --credential-file ...`; the legacy `handoff` CLI and its skill stay unchanged until A3. Resume with a lost acknowledgement reuses the exact saved request/ID, only against an endpoint advertising this profile's durable deduplication support.
+
+Own a POSIX worker process group and retain its workspace reservation through stop verification and evidence capture. Explicit cancel becomes CANCELED; server deadline becomes FAILED. Unknown ownership/stop state stays reserved and surfaces standard INPUT_REQUIRED plus recovery_required metadata. After restart, preserve completed results and conservatively stop/fail interrupted work when ownership is known; seamless model-session continuation is unnecessary. Add `store.py`, `processes.py`, and focused lifecycle tests, updating existing Python client/server/adapter components. Use controlled child writers and real server restarts to verify the behavior; no paid model calls or broad fault-injection suite.
 
 ### A3 — Integrate the existing CLI and workflow
 

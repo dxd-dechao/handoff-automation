@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from handoff_a2a.contracts import ELIGIBLE_HANDOFF_STATUSES, READY_FOR_QA, snapshot_sha256
 
@@ -113,14 +115,51 @@ class ExecuteLock:
             ) from exc
         self._held = True
 
+    def write_owner(self, payload: dict[str, Any]) -> None:
+        if not self._held:
+            raise WorkspaceError("execute lock is not held")
+        (self.path / "owner.json").write_text(
+            json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+        )
+
+    def owner(self) -> dict[str, Any] | None:
+        path = self.path / "owner.json"
+        if not path.is_file():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+
     def release(self) -> None:
         if not self._held:
             return
+        owner = self.path / "owner.json"
+        if owner.exists():
+            owner.unlink()
         self.path.rmdir()
         self._held = False
 
     def held(self) -> bool:
         return self._held
+
+
+def release_lock_if_owner(workspace: Path, execution_id: str) -> bool:
+    """Remove this execution's leftover lock directory after verified stop. Never a foreign lock."""
+    lock = workspace / LOG_DIRNAME / LOCK_DIRNAME
+    owner_path = lock / "owner.json"
+    if not lock.is_dir() or not owner_path.is_file():
+        return False
+    try:
+        data = json.loads(owner_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(data, dict) or data.get("execution_id") != execution_id:
+        return False
+    owner_path.unlink()
+    try:
+        lock.rmdir()
+    except OSError:
+        return False
+    return True
 
 
 class GitWorkspace:

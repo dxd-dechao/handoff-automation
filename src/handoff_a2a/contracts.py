@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import Any, Mapping
@@ -9,6 +10,7 @@ from uuid import UUID
 
 CODING_TASK_PROFILE = "urn:handoff-automation:coding-task:v1"
 CODING_RESULT_ARTIFACT = "coding-result"
+DURABLE_DEDUP_PARAM = "durable_execution_id_deduplication"
 
 ELIGIBLE_HANDOFF_STATUSES = frozenset(
     {"READY FOR EXECUTION", "CHANGES REQUESTED"}
@@ -28,6 +30,17 @@ TERMINAL_TASK_STATES = frozenset(
         "CANCELLED",
     }
 )
+
+INTERRUPTED_TASK_STATES = frozenset(
+    {"TASK_STATE_INPUT_REQUIRED", "INPUT_REQUIRED"}
+)
+
+
+def request_canonical_hash(request: CodingRequest | Mapping[str, Any]) -> str:
+    """Hash the complete validated coding request, not only HANDOFF bytes."""
+    payload = request.to_dict() if isinstance(request, CodingRequest) else dict(request)
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return sha256(encoded.encode("utf-8")).hexdigest()
 
 
 class ContractError(ValueError):

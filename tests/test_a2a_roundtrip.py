@@ -8,9 +8,6 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from a2a.types.a2a_pb2 import CancelTaskRequest
-from a2a.utils.errors import TaskNotCancelableError
-
 from handoff_a2a.__main__ import main
 from handoff_a2a.client import CodingClient, coding_result_from_task
 from handoff_a2a.contracts import parse_coding_request, snapshot_sha256
@@ -240,23 +237,24 @@ async def test_zero_cost_survives_roundtrip(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_cancel_is_not_supported_and_does_not_stop_worker(tmp_path: Path) -> None:
+async def test_cancel_stops_worker_and_marks_canceled(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
     fake = make_fake_claude(tmp_path)
-    config, token_path, _evidence = make_server_config(tmp_path, repo, fake)
+    config, token_path, _evidence = make_server_config(tmp_path, repo, fake, cancel_grace_s=1.0)
     token = token_path.read_text().strip()
-    (repo / ".fake-sleep").write_text("0.8\n", encoding="utf-8")
+    (repo / ".fake-sleep").write_text("8\n", encoding="utf-8")
     with RunningServer(config) as server:
         client = await _client(server.card_url, token)
         try:
             submitted = await _submit(
                 client, coding_payload(repo, config.workspace_id, execution_id=str(uuid4()))
             )
-            with pytest.raises(TaskNotCancelableError):
-                await client._transport.cancel_task(CancelTaskRequest(id=submitted["id"]))
-            terminal = await client.wait(submitted["id"], timeout=15)
-            assert _state(terminal) == "TASK_STATE_COMPLETED"
-            assert (repo / "app.py").read_text() == "value = 1\n"
+            canceled = await client.cancel(submitted["id"])
+            assert _state(canceled) == "TASK_STATE_CANCELED"
+            terminal = await client.wait(submitted["id"], timeout=10)
+            assert _state(terminal) == "TASK_STATE_CANCELED"
+            assert not (repo / ".handoff-logs" / "execute.lock").exists()
+            assert (repo / "app.py").read_text() == "value = 0\n"
         finally:
             await client.close()
 

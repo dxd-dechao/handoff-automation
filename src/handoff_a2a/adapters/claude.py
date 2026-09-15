@@ -139,32 +139,49 @@ class ClaudeAdapter:
             )
             exit_code = await process.wait()
         duration_s = time.monotonic() - started
-        stdout = stdout_path.read_text(encoding="utf-8", errors="replace")
-        stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
-        parsed, invalid = parse_claude_json(stdout) if stdout.strip() else (None, True)
-        provider_error = False
-        summary = ""
-        usage = None
-        cost_usd = None
-        usage_provenance = None
-        cost_provenance = None
-        if parsed is not None:
-            provider_error = parsed.get("is_error") is True
-            summary = str(parsed.get("result") or "")
-            usage, usage_provenance = _usage_from_claude(parsed)
-            cost_usd, cost_provenance = _cost_from_claude(parsed)
-        return AdapterOutcome(
+        return interpret_claude_files(
+            stdout_path,
+            stderr_path,
             exit_code=int(exit_code),
-            stdout=stdout,
-            stderr=stderr,
             duration_s=duration_s,
-            parsed=parsed,
-            invalid_output=invalid,
-            provider_error=provider_error,
-            summary=summary,
-            usage=usage,
-            cost_usd=cost_usd,
-            usage_provenance=usage_provenance,
-            cost_provenance=cost_provenance,
             argv=tuple(argv),
         )
+
+
+def interpret_claude_files(
+    stdout_path: Path,
+    stderr_path: Path,
+    *,
+    exit_code: int,
+    duration_s: float,
+    argv: tuple[str, ...],
+) -> AdapterOutcome:
+    stdout = stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.is_file() else ""
+    stderr = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.is_file() else ""
+    parsed, invalid = parse_claude_json(stdout) if stdout.strip() else (None, True)
+    provider_error = False
+    summary = ""
+    usage = None
+    cost_usd = None
+    usage_provenance = None
+    cost_provenance = None
+    if parsed is not None:
+        provider_error = parsed.get("is_error") is True
+        summary = str(parsed.get("result") or "")
+        usage, usage_provenance = _usage_from_claude(parsed)
+        cost_usd, cost_provenance = _cost_from_claude(parsed)
+    return AdapterOutcome(
+        exit_code=int(exit_code),
+        stdout=stdout,
+        stderr=stderr,
+        duration_s=duration_s,
+        parsed=parsed,
+        invalid_output=invalid,
+        provider_error=provider_error,
+        summary=summary,
+        usage=usage,
+        cost_usd=cost_usd,
+        usage_provenance=usage_provenance,
+        cost_provenance=cost_provenance,
+        argv=argv,
+    )
