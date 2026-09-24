@@ -84,6 +84,7 @@ The integrated CLI moves Markdown to `READY FOR QA` only after a valid `COMPLETE
 - Optional config: `caller_id` (default `local-planner`), `execution_timeout_s` (default 3600), `cancel_grace_s` (default 5)
 - Execute lock is `.handoff-logs/execute.lock` (directory) plus `owner.json` when this server holds it. Unexplained locks are never deleted
 - The worker is launched in a POSIX process group. Cancel, deadline, and shutdown share one stop/reap path before lock release
+- Worker launch happens behind a spawn gate that the launch thread holds while it records ownership. Cancel, deadline, shutdown, and any lock release first close the gate, which waits out an in-flight launch. A cancel that wins before launch therefore prevents it. A worker that did launch is owned, stopped, and reaped before the lock is released, even if the SDK cancels the awaiting coroutine. `worker_started` reflects whether a process actually launched
 - After restart, identifiable owned workers are stopped and marked `FAILED`. Uncertain identity stays reserved with `recovery_required`
 - The server never writes a different remote plan over a mismatched local `HANDOFF.md`
 - Exactly one adapter per server (`claude` or `codex` block). The server owns spawn, process group, deadlines, cancel, locks, and evidence for both. Each adapter supplies only argv, the child environment, and output interpretation (`adapters/base.py`)
