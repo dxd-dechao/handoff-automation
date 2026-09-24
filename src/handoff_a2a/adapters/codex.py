@@ -18,6 +18,13 @@ Verified against codex-cli 0.156.0 (`codex exec --help`, `codex sandbox`):
   in the first live check an operator skill whose description matched
   "handoff" hijacked the ritual prompt. Target-repo skills (`.agents/skills`
   in the workspace) and Codex's bundled system skills stay available.
+- HANDOFF.md is git-excluded by `handoff init`, so Codex's ignore-aware file
+  search (`rg --files`) does not see it; in the live check Codex then guessed a
+  task from the code. `project_doc_fallback_filenames=["HANDOFF.md"]` makes
+  Codex load the workspace HANDOFF.md itself as project instructions (verified
+  with `codex debug prompt-input`). This adds no instruction text: the
+  ritual prompt stays fixed and the content is the validated snapshot. Codex
+  applies the fallback only when the workspace has no AGENTS.md.
 """
 
 from __future__ import annotations
@@ -47,6 +54,8 @@ PERMISSION_PROFILE_TOML = (
     f'permissions.{PERMISSION_PROFILE}={{extends=":workspace", '
     'filesystem={":workspace_roots"={"."="write", ".git"="write"}}}'
 )
+# The handoff snapshot must not be truncated when loaded as project doc.
+PROJECT_DOC_MAX_BYTES = 1_048_576
 USAGE_PROVENANCE = "codex.turn.completed.usage (input_tokens includes cache_read_input_tokens)"
 
 
@@ -206,6 +215,10 @@ class CodexAdapter:
             f'default_permissions="{PERMISSION_PROFILE}"',
             "-c",
             'approval_policy="never"',
+            "-c",
+            'project_doc_fallback_filenames=["HANDOFF.md"]',
+            "-c",
+            f"project_doc_max_bytes={PROJECT_DOC_MAX_BYTES}",
             "--cd",
             str(workspace),
         ]

@@ -40,6 +40,9 @@ def test_codex_argv_uses_ritual_prompt_and_restricted_sandbox(tmp_path: Path) ->
     assert argv[argv.index("--model") + 1] == "m"
     overrides = [argv[i + 1] for i, a in enumerate(argv) if a == "-c"]
     assert 'approval_policy="never"' in overrides
+    # HANDOFF.md is git-excluded; Codex loads it natively instead of via extra prompt text.
+    assert 'project_doc_fallback_filenames=["HANDOFF.md"]' in overrides
+    assert any(o.startswith("project_doc_max_bytes=") for o in overrides)
     assert 'default_permissions="handoff"' in overrides
     assert 'model_reasoning_effort="low"' in overrides
     profile = next(o for o in overrides if o.startswith("permissions.handoff="))
