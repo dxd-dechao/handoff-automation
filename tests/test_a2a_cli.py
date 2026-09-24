@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 from a2a_harness import (
+    free_port,
     RunningServer,
     git,
     make_fake_claude,
@@ -372,3 +373,263 @@ def test_round_limit_mixed_runs_and_successor(tmp_path: Path) -> None:
         assert _workflow(repo)["parent_workflow_id"]
         assert _workflow(repo)["rounds_used"] == 0
 
+
+
+def _start_early_ready_run(tmp_path: Path, sleep_s: int = 25):
+    """Approve and execute a fake worker that writes READY FOR QA early and keeps running."""
+    repo = make_repo(tmp_path)
+    _ignore_probes(repo)
+    fake = make_fake_claude(tmp_path)
+    (repo / ".fake-mode").write_text("early_ready\n", encoding="utf-8")
+    (repo / ".fake-sleep").write_text(f"{sleep_s}\n", encoding="utf-8")
+    config, token_path, _evidence = make_server_config(tmp_path, repo, fake)
+    wrapper = _wrapper(tmp_path)
+    env = _env(tmp_path, wrapper)
+    write_handoff(repo, status="DRAFT")
+    card = f"http://127.0.0.1:{config.port}/.well-known/agent-card.json"
+    _write_config(repo, card, token_path, config.workspace_id, wait=1.0)
+    return repo, config, token_path, env, card
+
+
+def _wait_for_worker(repo: Path) -> None:
+    deadline = time.time() + 15
+    while time.time() < deadline and not (repo / "WORKER_STARTED").exists():
+        time.sleep(0.05)
+    assert (repo / "WORKER_STARTED").exists()
+
+
+def _field(output: str, name: str) -> str:
+    for line in output.splitlines():
+        if line.startswith(f"{name}:"):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+def test_config_switch_to_legacy_keeps_outstanding_run_authoritative(tmp_path: Path) -> None:
+    repo, config, token_path, env, card = _start_early_ready_run(tmp_path, sleep_s=8)
+    lock = repo / ".handoff-logs" / "execute.lock"
+    with RunningServer(config):
+        _run(repo, env, "approve", check=True)
+        timed = _run(repo, env, "execute")
+        assert timed.returncode == 2, timed.stderr + timed.stdout
+        _wait_for_worker(repo)
+        assert parse_handoff((repo / "HANDOFF.md").read_text()).status == "READY FOR QA"
+
+        (repo / ".handoff-config.json").write_text('{"transport": "legacy"}\n', encoding="utf-8")
+        status = _run(repo, env, "status")
+        assert _field(status.stdout, "turn") == "WAIT", status.stdout + status.stderr
+        assert _field(status.stdout, "execution") == "WORKING"
+        assert lock.is_dir()
+
+        # New dispatch stays blocked on either transport.
+        blocked = _run(repo, env, "execute")
+        assert blocked.returncode != 0 and "outstanding" in blocked.stderr
+        assert _run(repo, env, "approve").returncode != 0
+
+        # Selecting a different endpoint must not reroute the saved run.
+        dead = f"http://127.0.0.1:{free_port()}/.well-known/agent-card.json"
+        _write_config(repo, dead, token_path, config.workspace_id, wait=30.0)
+        status = _run(repo, env, "status")
+        assert _field(status.stdout, "turn") == "WAIT", status.stdout + status.stderr
+
+        (repo / ".handoff-config.json").write_text('{"transport": "legacy"}\n', encoding="utf-8")
+        resumed = _run(repo, env, "resume")
+        assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+        assert '"outcome": "completed"' in resumed.stdout
+        assert not (repo / ".handoff-logs" / "outstanding.json").exists()
+        assert not lock.exists()
+        assert _workflow(repo)["rounds_used"] == 1
+        assert (repo / "WORKER_LAUNCHES").read_text().strip() == "1"
+        assert len(list((repo / ".handoff-logs").glob("*-manifest.json"))) == 1
+
+        # Reconciled: legacy status is Python-free again and routes to Planner QA.
+        after = _run(repo, {**env, "HANDOFF_A2A_BIN": str(tmp_path / "no-a2a")}, "status")
+        assert after.returncode == 0, after.stderr
+        assert _field(after.stdout, "turn") == "PLANNER"
+
+
+def test_config_removed_cancel_uses_saved_run_and_releases_once(tmp_path: Path) -> None:
+    repo, config, token_path, env, card = _start_early_ready_run(tmp_path, sleep_s=25)
+    lock = repo / ".handoff-logs" / "execute.lock"
+    with RunningServer(config):
+        _run(repo, env, "approve", check=True)
+        assert _run(repo, env, "execute").returncode == 2
+        _wait_for_worker(repo)
+        (repo / ".handoff-config.json").unlink()
+
+        status = _run(repo, env, "status")
+        assert _field(status.stdout, "turn") == "WAIT", status.stdout + status.stderr
+        assert lock.is_dir()
+
+        # Saved credential unavailable: visible unresolved state, nothing released.
+        moved = token_path.with_name("token.moved")
+        token_path.rename(moved)
+        missing = _run(repo, env, "status")
+        assert missing.returncode == 2
+        assert _field(missing.stdout, "turn") == "WAIT"
+        assert "credential" in _field(missing.stdout, "reason")
+        assert _run(repo, env, "resume").returncode == 2
+        assert _run(repo, env, "cancel").returncode == 2
+        assert (repo / ".handoff-logs" / "outstanding.json").is_file()
+        assert lock.is_dir()
+        moved.rename(token_path)
+
+        canceled = _run(repo, env, "cancel")
+        assert '"outcome": "canceled"' in canceled.stdout, canceled.stdout + canceled.stderr
+        assert not (repo / ".handoff-logs" / "outstanding.json").exists()
+        assert not lock.exists()
+        workflow = _workflow(repo)
+        assert workflow["rounds_used"] == 1
+        assert workflow["reserved_execution_id"] is None
+        assert workflow["dispatch_hold"] is True
+        assert (repo / "WORKER_LAUNCHES").read_text().strip() == "1"
+        manifests = list((repo / ".handoff-logs").glob("*-manifest.json"))
+        assert len(manifests) == 1
+        assert json.loads(manifests[0].read_text())["outcome"] == "canceled"
+        # A second cancel has nothing to act on.
+        again = _run(repo, env, "cancel")
+        assert again.returncode != 0
+
+
+def _watch_for(repo: Path, env: dict[str, str], until, timeout: float = 30.0) -> str:
+    """Run the public `handoff watch` until `until()` holds (or timeout), then stop it."""
+    import signal
+
+    proc = subprocess.Popen(
+        [str(HANDOFF_BIN), "watch", str(repo)],
+        env={**env, "HANDOFF_POLL_INTERVAL": "1", "PYTHONUNBUFFERED": "1"},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+    deadline = time.time() + timeout
+    try:
+        while time.time() < deadline and not until():
+            time.sleep(0.2)
+        time.sleep(2.5)  # at least two more polls: nothing further may be dispatched
+    finally:
+        os.killpg(proc.pid, signal.SIGTERM)
+        out, _ = proc.communicate(timeout=10)
+    return out
+
+
+def _setup_mode(tmp_path: Path, mode: str, *, sleep_s: int | None = None, wait: float = 20.0):
+    repo = make_repo(tmp_path)
+    _ignore_probes(repo)
+    fake = make_fake_claude(tmp_path)
+    (repo / ".fake-mode").write_text(f"{mode}\n", encoding="utf-8")
+    if sleep_s is not None:
+        (repo / ".fake-sleep").write_text(f"{sleep_s}\n", encoding="utf-8")
+    config, token_path, _evidence = make_server_config(tmp_path, repo, fake)
+    env = _env(tmp_path, _wrapper(tmp_path))
+    write_handoff(repo, status="DRAFT")
+    card = f"http://127.0.0.1:{config.port}/.well-known/agent-card.json"
+    _write_config(repo, card, token_path, config.workspace_id, wait=wait)
+    return repo, config, env
+
+
+def _launches(repo: Path) -> int:
+    path = repo / "WORKER_LAUNCHES"
+    return int(path.read_text().strip()) if path.is_file() else 0
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    ("mode", "written"),
+    [("provider_error", "READY FOR QA"), ("approved", "APPROVED"), ("mangle_plan", "READY FOR QA")],
+)
+def test_failed_delivery_is_not_routed_to_qa_and_watch_holds(tmp_path: Path, mode: str, written: str) -> None:
+    repo, config, env = _setup_mode(tmp_path, mode)
+    with RunningServer(config):
+        _run(repo, env, "approve", check=True)
+        failed = _run(repo, env, "execute")
+        assert failed.returncode == 1, failed.stderr + failed.stdout
+        document = parse_handoff((repo / "HANDOFF.md").read_text())
+        assert document.status == "READY FOR EXECUTION"
+        assert document.execution_notes  # executor evidence kept
+        status = _run(repo, env, "status")
+        assert _field(status.stdout, "turn") == "PLANNER", status.stdout
+        assert "review of failed delivery" in _field(status.stdout, "next")
+        assert repr(written) in status.stdout
+        if mode == "mangle_plan":
+            assert "changed since approval" in status.stdout
+        manifest = json.loads(next((repo / ".handoff-logs").glob("*-manifest.json")).read_text())
+        assert manifest["outcome"] == "failed"
+        assert manifest["executor_status_discarded"] == written
+        out = _watch_for(repo, env, until=lambda: False, timeout=2)
+        assert "watch will not retry" in out, out
+        assert _launches(repo) == 1
+        assert _workflow(repo)["rounds_used"] == 1
+
+
+def test_watch_after_wait_timeout_reconciles_once_and_notifies(tmp_path: Path) -> None:
+    repo, config, env = _setup_mode(tmp_path, "early_ready", sleep_s=4, wait=1.0)
+    outstanding = repo / ".handoff-logs" / "outstanding.json"
+    with RunningServer(config):
+        _run(repo, env, "approve", check=True)
+        assert _run(repo, env, "execute").returncode == 2
+        assert outstanding.is_file()
+        out = _watch_for(repo, env, until=lambda: not outstanding.exists())
+        assert not outstanding.exists(), out
+        assert out.count("NOTIFY: Handoff: READY FOR QA") == 1, out
+        assert _launches(repo) == 1
+        assert _workflow(repo)["rounds_used"] == 1
+        assert parse_handoff((repo / "HANDOFF.md").read_text()).status == "READY FOR QA"
+
+
+def test_watch_after_cancel_does_not_redispatch(tmp_path: Path) -> None:
+    repo, config, env = _setup_mode(tmp_path, "early_ready", sleep_s=25, wait=1.0)
+    with RunningServer(config):
+        _run(repo, env, "approve", check=True)
+        assert _run(repo, env, "execute").returncode == 2
+        _wait_for_worker(repo)
+        canceled = _run(repo, env, "cancel")
+        assert '"outcome": "canceled"' in canceled.stdout, canceled.stdout + canceled.stderr
+        # The worker's early READY FOR QA is not accepted from a canceled run.
+        assert parse_handoff((repo / "HANDOFF.md").read_text()).status == "READY FOR EXECUTION"
+        out = _watch_for(repo, env, until=lambda: False, timeout=2)
+        assert "watch will not retry" in out, out
+        assert _launches(repo) == 1
+        assert not (repo / ".handoff-logs" / "outstanding.json").exists()
+
+
+def test_constrained_successor_executes_on_inherited_uncommitted_work(tmp_path: Path) -> None:
+    repo, config, env = _setup_mode(tmp_path, "success")
+    with RunningServer(config):
+        _run(repo, env, "approve", check=True)
+        assert _run(repo, env, "execute").returncode == 0
+        assert (repo / "scratch.txt").is_file()  # uncommitted executor work
+        parent = _workflow(repo)["workflow_id"]
+        (repo / ".fake-mode").write_text("nonzero\n", encoding="utf-8")
+        for _ in range(2):
+            write_handoff(repo, status="CHANGES REQUESTED", notes="implemented value=1", qa="value must be 2")
+            assert _run(repo, env, "execute").returncode == 1
+        assert _workflow(repo)["rounds_used"] == 3
+        status = _run(repo, env, "status")
+        assert "scope review" in _field(status.stdout, "next"), status.stdout
+        archived = subprocess.run(
+            [str(HANDOFF_BIN), "archive", "--superseded", str(repo)], capture_output=True, text=True, env=env
+        )
+        assert archived.returncode == 0, archived.stderr
+        closed = json.loads((repo / ".handoff-logs" / "closed-workflows" / f"{parent}.json").read_text())
+        assert closed["rounds_used"] == 3 and closed["disposition"] == "superseded"
+
+        write_handoff(repo, status="DRAFT", notes="Not started.", qa="Successor: only set value = 2.")
+        assert _run(repo, env, "approve").returncode == 0
+        successor = _workflow(repo)
+        assert successor["parent_workflow_id"] == parent
+        assert successor["rounds_used"] == 0
+        assert successor["inherited_baseline"] == closed["post_run_fingerprint"]
+        (repo / ".fake-mode").write_text("fix\n", encoding="utf-8")
+        done = _run(repo, env, "execute")
+        assert done.returncode == 0, done.stderr + done.stdout
+        assert (repo / "app.py").read_text() == "value = 2\n"
+        assert (repo / "scratch.txt").read_text() == "uncommitted executor file\n"
+        assert _workflow(repo)["rounds_used"] == 1
+        assert parse_handoff((repo / "HANDOFF.md").read_text()).status == "READY FOR QA"
+        # The predecessor's counters were not reset.
+        closed_again = json.loads((repo / ".handoff-logs" / "closed-workflows" / f"{parent}.json").read_text())
+        assert closed_again["rounds_used"] == 3

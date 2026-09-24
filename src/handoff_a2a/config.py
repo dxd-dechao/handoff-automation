@@ -110,6 +110,36 @@ def load_config(repo: Path) -> HandoffConfig | None:
     return HandoffConfig(transport=transport, path=path, max_rounds=max_rounds, a2a=a2a)
 
 
+@dataclass(frozen=True)
+class RecoveryTiming:
+    """Wait/poll limits for acting on a saved run; never its endpoint or credential."""
+
+    request_timeout_s: float = 30.0
+    wait_timeout_s: float = 180.0
+    poll_interval_s: float = 1.0
+    source: str = "defaults"
+
+
+def recovery_timing(repo: Path) -> RecoveryTiming:
+    """Use current A2A timing when it is valid; otherwise defaults.
+
+    An outstanding run must stay recoverable after the configuration is switched
+    to legacy, removed, or broken, so this never raises.
+    """
+    try:
+        config = load_config(repo)
+    except ConfigError:
+        return RecoveryTiming()
+    if config is None or config.a2a is None:
+        return RecoveryTiming()
+    return RecoveryTiming(
+        request_timeout_s=config.a2a.request_timeout_s,
+        wait_timeout_s=config.a2a.wait_timeout_s,
+        poll_interval_s=config.a2a.poll_interval_s,
+        source=str(config.path),
+    )
+
+
 def require_a2a_config(repo: Path) -> tuple[HandoffConfig, A2ASettings]:
     config = load_config(repo)
     if config is None or config.transport != "a2a" or config.a2a is None:

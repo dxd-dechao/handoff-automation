@@ -105,6 +105,19 @@ is_a2a() {
   [[ "$TRANSPORT" == "a2a" ]]
 }
 
+# An outstanding A2A run stays authoritative for observation and recovery
+# even after .handoff-config.json is switched to legacy, edited, or removed:
+# its saved run record names the original endpoint and credential reference.
+has_outstanding() {
+  [[ -f "$1/.handoff-logs/outstanding.json" ]]
+}
+
+refuse_if_outstanding() {
+  if has_outstanding "$1"; then
+    die "outstanding A2A run exists; run 'handoff status', 'handoff resume', or 'handoff cancel' first"
+  fi
+}
+
 resolve_a2a_bin() {
   local bin="${HANDOFF_A2A_BIN:-handoff-a2a}"
   if [[ "$bin" == */* ]]; then
@@ -142,7 +155,7 @@ notify() { # title, body
 cmd_status() {
   local repo
   repo="$(resolve_repo "${1:-}")"
-  if is_a2a "$repo"; then
+  if has_outstanding "$repo" || is_a2a "$repo"; then
     a2a_cli "$repo" status
     return
   fi
@@ -168,6 +181,7 @@ cmd_execute() {
 
 cmd_execute_legacy() {
   local repo="$1" status
+  refuse_if_outstanding "$repo"
   status="$(read_status "$repo")"
   case "$status" in
     "READY FOR EXECUTION" | "CHANGES REQUESTED") ;;
@@ -479,9 +493,12 @@ cmd_watch() {
   local last="" status
   echo "watching $repo/HANDOFF.md every ${POLL_INTERVAL}s (Ctrl-C to stop)"
   while true; do
-    if [[ -f "$repo/.handoff-logs/outstanding.json" ]]; then
-      echo "outstanding A2A run present; refusing legacy watch dispatch (resume/cancel via A2A config)"
-      last="$(read_status "$repo")"
+    if has_outstanding "$repo"; then
+      # Observe (and reconcile a terminal) run through its saved record; never
+      # dispatch while it is outstanding.
+      echo "outstanding A2A run present; watch will not dispatch until it is reconciled"
+      a2a_cli "$repo" status || true
+      last=""
       sleep "$POLL_INTERVAL"
       continue
     fi
@@ -527,6 +544,7 @@ cmd_archive() {
   if [[ "$superseded" -eq 1 ]]; then
     die "archive --superseded requires A2A workflow state"
   fi
+  refuse_if_outstanding "$repo"
   local archive goal
   archive="$repo/HANDOFF-ARCHIVE.md"
   goal="$(read_goal "$repo")"
@@ -548,6 +566,7 @@ cmd_approve() {
     a2a_cli "$repo" approve
     return
   fi
+  refuse_if_outstanding "$repo"
   local status
   status="$(read_status "$repo")"
   case "$status" in
@@ -564,17 +583,19 @@ cmd_approve() {
   esac
 }
 
+# resume/cancel act on the saved run (endpoint, request, credential reference),
+# not on whatever transport is configured now.
 cmd_resume() {
   local repo
   repo="$(resolve_repo "${1:-}")"
-  is_a2a "$repo" || die "resume requires A2A configuration"
+  has_outstanding "$repo" || is_a2a "$repo" || die "resume requires an outstanding A2A run or A2A configuration"
   a2a_cli "$repo" resume
 }
 
 cmd_cancel() {
   local repo
   repo="$(resolve_repo "${1:-}")"
-  is_a2a "$repo" || die "cancel requires A2A configuration"
+  has_outstanding "$repo" || is_a2a "$repo" || die "cancel requires an outstanding A2A run or A2A configuration"
   a2a_cli "$repo" cancel
 }
 

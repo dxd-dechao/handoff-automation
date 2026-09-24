@@ -32,7 +32,7 @@ from handoff_a2a.client import (
     task_reason,
     verify_agent_card,
 )
-from handoff_a2a.config import ConfigError, HandoffConfig, require_a2a_config
+from handoff_a2a.config import ConfigError, HandoffConfig, recovery_timing, require_a2a_config
 from handoff_a2a.contracts import (
     CODING_TASK_PROFILE,
     ELIGIBLE_HANDOFF_STATUSES,
@@ -238,6 +238,19 @@ def _next_action(
         return "wait or run handoff resume"
     if execution == "RECOVERY":
         return "inspect recovery_required; do not dispatch again"
+    last = (workflow or {}).get("last_outcome") or {}
+    if (
+        workflow
+        and workflow.get("dispatch_hold")
+        and last.get("outcome") in {"failed", "canceled"}
+        and execution in {"IDLE", "FAILED", "CANCELED"}
+    ):
+        if exhausted(workflow):
+            return "Planner scope review; archive --superseded if a smaller successor is needed"
+        return (
+            f"Planner review of {last['outcome']} delivery (not QA); "
+            "explicit handoff execute only after review (watch will not retry)"
+        )
     if workflow and exhausted(workflow) and execution in {"IDLE", "FAILED", "CANCELED"}:
         return "Planner scope review; archive --superseded if a smaller successor is needed"
     if markdown_status == READY_FOR_QA and execution in {"COMPLETED", "IDLE"}:
@@ -360,6 +373,34 @@ def _set_ready_for_qa(repo: Path) -> None:
         path.write_text(replace_status(text, READY_FOR_QA), encoding="utf-8")
 
 
+def _submitted_status(outstanding: dict[str, Any]) -> str | None:
+    try:
+        record = load_run_record(Path(str(outstanding["run_record"])))
+        markdown = (record.get("request") or {}).get("handoff_markdown")
+    except (OSError, ValueError, KeyError, ClientError):
+        return None
+    if not isinstance(markdown, str):
+        return None
+    return parse_handoff(markdown).status or None
+
+
+def _restore_submitted_status(repo: Path, outstanding: dict[str, Any]) -> str | None:
+    """Undo an executor-written Status after an unsuccessful delivery.
+
+    Only a valid COMPLETED result may reach READY FOR QA; a failed or canceled
+    worker's early READY FOR QA (or APPROVED) must not route the Planner to QA
+    or the human to merge. Notes and code are left untouched as evidence.
+    """
+    submitted = _submitted_status(outstanding)
+    path = repo / HANDOFF_NAME
+    text = path.read_text(encoding="utf-8")
+    current = parse_handoff(text).status
+    if submitted and current != submitted:
+        path.write_text(replace_status(text, submitted), encoding="utf-8")
+        return current
+    return None
+
+
 def _reconcile(
     repo: Path,
     *,
@@ -452,20 +493,39 @@ def _reconcile(
         plan_ok = bool(result.get("plan_intact", True)) if result else False
         if ids_ok and plan_ok and stopped:
             _set_ready_for_qa(repo)
+            workflow["last_outcome"] = {
+                "execution_id": execution_id,
+                "run_id": run_id,
+                "outcome": outcome,
+                "reason": None,
+            }
             if fingerprint:
                 workflow["post_run_fingerprint"] = fingerprint
                 workflow["post_run_branch"] = None if snap is None else snap.branch
-                save_workflow(repo, workflow)
+            save_workflow(repo, workflow)
             clear_outstanding(repo)
             manifest["status_after"] = READY_FOR_QA
             write_manifest(repo, manifest)
         return manifest
     if stopped and outcome in {"failed", "canceled"}:
+        overwritten = _restore_submitted_status(repo, outstanding)
+        workflow["last_outcome"] = {
+            "execution_id": execution_id,
+            "run_id": run_id,
+            "outcome": outcome,
+            "reason": manifest.get("reason"),
+            "executor_status_discarded": overwritten,
+        }
         if fingerprint:
             workflow["post_run_fingerprint"] = fingerprint
             workflow["post_run_branch"] = None if snap is None else snap.branch
-            save_workflow(repo, workflow)
+        save_workflow(repo, workflow)
         clear_outstanding(repo)
+        if overwritten:
+            manifest["executor_status_discarded"] = overwritten
+            manifest["status_after"] = parse_handoff((repo / HANDOFF_NAME).read_text(encoding="utf-8")).status
+            write_manifest(repo, manifest)
+            append_event(repo, run_id, "status_restored", {"discarded": overwritten})
     return manifest
 
 
@@ -538,17 +598,43 @@ async def cmd_execute_async(repo: Path, *, from_watch: bool = False) -> int:
         await client.close()
 
 
+def _saved_credential(outstanding: dict[str, Any]) -> Path:
+    """Credential reference saved with the run; the current config is never consulted."""
+    raw = outstanding.get("credential_file")
+    if not raw:
+        try:
+            raw = load_run_record(Path(str(outstanding["run_record"]))).get("credential_file")
+        except (OSError, ValueError, KeyError, ClientError):
+            raw = None
+    if not raw:
+        raise UnresolvedExecution(
+            "saved run has no credential reference; cannot reach its endpoint",
+            task_id=outstanding.get("task_id"),
+            execution_id=str(outstanding.get("execution_id") or ""),
+        )
+    path = Path(str(raw))
+    if not path.is_file():
+        raise UnresolvedExecution(
+            f"saved credential reference is unavailable: {path}",
+            task_id=outstanding.get("task_id"),
+            execution_id=str(outstanding.get("execution_id") or ""),
+        )
+    return path
+
+
 async def cmd_resume_async(repo: Path) -> int:
-    _config, settings = require_a2a_config(repo)
     outstanding = load_outstanding(repo)
     if outstanding is None:
+        # Without an outstanding run, resume is only meaningful for A2A repos.
+        require_a2a_config(repo)
         raise IntegrationError("no outstanding A2A run to resume")
+    timing = recovery_timing(repo)
     record_path = Path(str(outstanding["run_record"]))
     try:
         payload = await resume_from_record(
             record_path=record_path,
-            credential_file=Path(str(outstanding.get("credential_file") or settings.credential_file)),
-            timeout=settings.wait_timeout_s,
+            credential_file=_saved_credential(outstanding),
+            timeout=timing.wait_timeout_s,
         )
     except UnresolvedExecution as exc:
         _reconcile(repo, outstanding=outstanding, task=None, result=None, unresolved=True, reason=str(exc))
@@ -569,15 +655,21 @@ async def cmd_resume_async(repo: Path) -> int:
 
 
 async def cmd_cancel_async(repo: Path) -> int:
-    _config, settings = require_a2a_config(repo)
     outstanding = load_outstanding(repo)
     if outstanding is None:
+        require_a2a_config(repo)
         raise IntegrationError("no outstanding A2A run to cancel")
     record_path = Path(str(outstanding["run_record"]))
-    payload = await cancel_from_record(
-        record_path=record_path,
-        credential_file=Path(str(outstanding.get("credential_file") or settings.credential_file)),
-    )
+    try:
+        payload = await cancel_from_record(
+            record_path=record_path,
+            credential_file=_saved_credential(outstanding),
+            timeout=recovery_timing(repo).request_timeout_s,
+        )
+    except UnresolvedExecution as exc:
+        _reconcile(repo, outstanding=outstanding, task=None, result=None, unresolved=True, reason=str(exc))
+        print(f"handoff: unresolved: {exc}", file=sys.stderr)
+        return 2
     task = payload.get("task") or {}
     result = coding_result_from_task(task) if isinstance(task, dict) else None
     manifest = _reconcile(
@@ -602,9 +694,13 @@ async def cmd_status_async(repo: Path) -> int:
     if outstanding:
         execution = "UNRESOLVED"
         record_path = Path(str(outstanding["run_record"]))
-        cred = Path(str(outstanding.get("credential_file") or ""))
         try:
-            payload = await status_from_record(record_path=record_path, credential_file=cred)
+            cred = _saved_credential(outstanding)
+            payload = await status_from_record(
+                record_path=record_path,
+                credential_file=cred,
+                timeout=recovery_timing(repo).request_timeout_s,
+            )
             state = payload.get("state")
             task = payload.get("task") if isinstance(payload.get("task"), dict) else {
                 "id": payload.get("task_id"),
@@ -640,9 +736,17 @@ async def cmd_status_async(repo: Path) -> int:
                 execution = "WORKING"
             reason = payload.get("reason")
         except Exception as exc:  # noqa: BLE001 — status must stay honest when the endpoint is down
-            reason = f"endpoint unavailable: {exc}"
+            reason = f"saved endpoint or credential unavailable: {exc}"
             execution = "UNRESOLVED"
     turn = _turn(document.status)
+    last = (workflow or {}).get("last_outcome") or {}
+    if (
+        workflow
+        and workflow.get("dispatch_hold")
+        and last.get("outcome") in {"failed", "canceled"}
+        and not outstanding
+    ):
+        turn = "PLANNER"
     if execution in {"WORKING", "SUBMITTED", "UNRESOLVED", "RECOVERY"}:
         turn = "WAIT" if execution != "RECOVERY" else "RECOVERY"
     print(f"repo:   {repo}")
@@ -658,6 +762,14 @@ async def cmd_status_async(repo: Path) -> int:
         )
         if workflow.get("dispatch_hold"):
             print("hold:   automatic dispatch blocked")
+        last = workflow.get("last_outcome") or {}
+        if last.get("outcome"):
+            detail = f" ({last['reason']})" if last.get("reason") else ""
+            print(f"last:   {last['outcome']} run {last.get('run_id')}{detail}")
+            if last.get("executor_status_discarded"):
+                print(f"        executor-written Status {last['executor_status_discarded']!r} was not accepted")
+        if workflow.get("approved_plan_hash") and approved_plan_hash(markdown) != workflow.get("approved_plan_hash"):
+            print("plan:   changed since approval; re-approval required before execution")
         if workflow.get("parent_workflow_id"):
             print(f"parent: {workflow.get('parent_workflow_id')}")
     if outstanding:
@@ -669,6 +781,10 @@ async def cmd_status_async(repo: Path) -> int:
     if execution in {"UNRESOLVED", "RECOVERY", "WORKING"}:
         return 2 if execution != "WORKING" else 0
     return 0
+
+
+# Refusals watch reports and keeps observing through (e.g. config switched mid-watch).
+_WATCH_ERRORS = (IntegrationError, ConfigError, WorkflowError, ClientError, WorkspaceBusy, WorkspaceError)
 
 
 async def cmd_watch_async(repo: Path, interval: float) -> int:
@@ -686,7 +802,7 @@ async def cmd_watch_async(repo: Path, interval: float) -> int:
             else:
                 try:
                     await cmd_resume_async(repo)
-                except IntegrationError as exc:
+                except _WATCH_ERRORS as exc:
                     print(f"handoff: {exc}", file=sys.stderr)
             workflow = load_workflow(repo) or {}
             still = load_outstanding(repo)
@@ -715,7 +831,7 @@ async def cmd_watch_async(repo: Path, interval: float) -> int:
                 else:
                     try:
                         await cmd_execute_async(repo, from_watch=True)
-                    except IntegrationError as exc:
+                    except _WATCH_ERRORS as exc:
                         print(f"handoff: {exc}", file=sys.stderr)
                         print("execute failed; watching for the next status change")
             elif status in {READY_FOR_QA, "APPROVED"}:
