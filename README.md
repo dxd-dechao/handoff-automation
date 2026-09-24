@@ -1,32 +1,93 @@
 # handoff-automation
 
-Removes the human courier from the two-agent HANDOFF.md workflow
-(PLANNER in Cursor / Claude Code desktop, EXECUTOR = headless Claude Code
-CLI on a separate account) while keeping:
+Coordinates the two-agent HANDOFF.md workflow. The default legacy path runs a
+headless Claude Code Executor; the managed A2A path supports Claude Code,
+Codex, or Cursor CLI Executors. A Planner can use the CLI or a supported agent
+host. Both paths keep:
 
 - separate accounts for planner and executor,
-- fresh executor context on every run (`claude -p` starts cold),
+- fresh executor context on every run (each headless run starts cold),
 - **HANDOFF.md as the only channel between the agents**,
 - human gates for plan approval and merging.
 
-## Setup
+For the earlier A1–A5 assessment and broader remaining product goals, see
+[product status](docs/product-status.md) and the [implementation plan](docs/implementation-plan.md).
 
-1. **Executor account.** The `claude` CLI (`~/.local/bin/claude`) must be
-  logged into the executor account (run `claude /login` once in a terminal).
-   The planner runs in Cursor / the desktop app on its own account; this tool
-   never touches it.
+## Current status (2026-09-24)
+
+The A6 CLI-usability and Cursor changes are present in this checkout, and the
+root handoff is **APPROVED**. `handoff init` generates the managed JSON and
+local credentials; Cursor is supported as a CLI Planner and as an Executor;
+`handoff model` changes the Executor between runs or queues a change with
+`--after-current`. The A6 QA report records **157 Python tests and 17 smoke
+checks passing**. See the [CLI guide](docs/cli-setup-and-models.md) and
+[A6 QA evidence and limitations](docs/qa-a6-cli-usability.md).
+
+Validation is not universal: Cursor CLI Planner and Cursor Grok/Composer
+Executor runs were live-exercised, but Cursor Editor skill discovery and
+invocation still need a manual check. A live Codex continuation was correctly
+rejected when it edited Planner-owned QA content, so successful cross-provider
+correction is not demonstrated. `--after-current` has fake-worker coverage,
+not a live-provider check. No quality, speed, or cost claim is made.
+
+## Quick start (managed A2A: Claude, Codex, or Cursor Executor)
+
+No JSON to write. `handoff init` generates every file; the other commands
+start the local service and change models later.
+
+```sh
+export PATH="$HOME/Documents/GitHub/handoff-automation/bin:$PATH"
+(cd ~/Documents/GitHub/handoff-automation && uv sync)     # once: the A2A runtime
+
+handoff models "/path/to/project" --provider cursor        # real IDs for this account
+handoff init "/path/to/project" --transport a2a --executor cursor --model "<model-id>" --planner cursor
+handoff server start "/path/to/project"
+
+# Planner: Cursor CLI (live-exercised; Cursor Editor skill is an alternative):
+handoff planner "/path/to/project" --provider cursor --model "<model-id>"
+# ... Planner writes a DRAFT; after you approve in chat:
+handoff approve "/path/to/project"
+handoff watch "/path/to/project"                           # or: handoff execute
+
+handoff model "/path/to/project"                           # selected / active / pending
+handoff model "/path/to/project" --provider codex --model "<model-id>"                  # between runs
+handoff model "/path/to/project" --provider cursor --model "<model-id>" --after-current # during a run
+```
+
+On a terminal, bare `handoff init "/path/to/project"` asks for the transport,
+provider, model (from the provider's own list), and Planner host. Nothing is
+chosen for you. The full, tested sequence, recovery steps, and limitations
+are in [docs/cli-setup-and-models.md](docs/cli-setup-and-models.md).
+
+## Setup (legacy direct-Claude path)
+
+`handoff init "/path/to/project" --transport legacy` keeps the original
+Python-free path described below.
+
+1. **Executor account (legacy mode only).** This subsection applies only to
+   `--transport legacy`, whose Executor is Claude Code. Log the `claude` CLI
+   into the Executor account once (`claude /login`). The Planner remains
+   separate; this legacy path does not launch or authenticate it.
+
+   Managed A2A supports Claude, Codex, and Cursor as Executors. Log in with
+   the selected provider's own CLI (`claude /login`, `codex login`, or
+   `cursor-agent login`) and follow the [A2A setup guide](docs/cli-setup-and-models.md).
 2. **PATH.** Add this repo's `bin` to your PATH, e.g. in `~/.zshrc`:
   ```sh
    export PATH="$HOME/Documents/handoff-automation/bin:$PATH"
   ```
 3. **Install the protocol into a target repo:**
   ```sh
-   handoff init ~/path/to/repo
+   handoff init ~/path/to/repo --transport legacy
   ```
    This copies `templates/HANDOFF.md` to the repo root and adds `HANDOFF.md`,
-   `HANDOFF-ARCHIVE.md`, and `.handoff-logs/` to `.git/info/exclude` —
-   local-only excludes, deliberately **not** `.gitignore`, because the handoff
-   machinery is this machine's workflow, not part of the project.
+   `HANDOFF-ARCHIVE.md`, `.handoff-logs/`, and `.handoff-config.json` to the
+   repository's local exclude file (`git rev-parse --git-path info/exclude`,
+   so linked worktrees work) — local-only excludes, deliberately **not**
+   `.gitignore`. Re-running `handoff init` on an already-initialized repo does
+   not rewrite `HANDOFF.md`; it only ensures those excludes. Do not commit
+   `.handoff-config.json`. In a non-interactive shell, bare `handoff init` on a
+   new repo prints the flag-based commands and changes nothing.
 4. **Executor permission allowlist.** `handoff init` installs this
    automatically; for a repo that was init'ed earlier, run:
   ```sh
@@ -60,10 +121,12 @@ CLI on a separate account) while keeping:
 
 
 
-## The loop
+## Legacy direct-Claude loop
 
-Two ways to run it. Both keep the same two human gates (plan approval,
-merge) and the same channel rule (agents talk only through HANDOFF.md).
+This section describes `--transport legacy`. For the managed A2A flow, use the
+Quick start above and the [CLI guide](docs/cli-setup-and-models.md). The legacy
+loop has two ways to run it; both retain human plan-approval and merge gates,
+and use HANDOFF.md as the agent-to-agent channel.
 
 **Drive mode — everything happens in the planner chat:**
 
@@ -100,13 +163,15 @@ second `execute` fail loudly rather than double-run the executor.
 Day-to-day:
 
 ```sh
-handoff status [repo]    # whose turn is it, what's the task
-handoff watch  [repo]    # leave running: auto-executes executor turns,
-                         # desktop-notifies on planner/human turns
-handoff execute [repo]   # one executor run, manually
-handoff runs   [repo]    # list past executor runs (from manifests)
+handoff status [repo]    # Markdown status, execution state, whose turn
+handoff approve [repo]   # record approval (A2A receipt) or activate a legacy DRAFT
+handoff execute [repo]   # one executor run
+handoff resume  [repo]   # reconnect to an outstanding A2A run
+handoff cancel  [repo]   # request A2A cancellation and reconcile
+handoff watch   [repo]   # leave running: auto-executes eligible executor turns
+handoff runs    [repo]   # list past executor runs (from manifests)
 handoff archive [repo]   # snapshot the finished task before PLANNER
-                         # writes the next plan
+                         # writes the next plan (`--superseded` for exhausted A2A work)
 ```
 
 `watch` polls the `Status:` line (default 30s, `HANDOFF_POLL_INTERVAL` to
@@ -116,7 +181,7 @@ watching. If an executor run fails without changing the status, watch does
 **not** retry until the status line changes — fix the problem, then touch the
 status (or run `handoff execute` by hand).
 
-### Audit trail
+### Legacy Claude audit trail
 
 Every `handoff execute` run produces three files in `$repo/.handoff-logs/`
 (git-excluded), keyed by a run ID (`YYYYMMDD-HHMMSS-PID`):
@@ -153,7 +218,7 @@ who types the ritual phrase, not the channel — the planner invokes the
 executor only through `handoff execute`, which cannot carry extra
 instructions.
 
-## Limitations (intentional)
+## Legacy Claude limitations (intentional)
 
 - **The executor runs headless (**`claude -p`**), so it cannot answer permission
 prompts.** Anything outside the allowlist simply fails. That is the point:
@@ -178,7 +243,7 @@ mangles the heading structure, `handoff status` reports `UNKNOWN` and
 
 
 
-## Smoke test result (2026-07-15)
+## Legacy smoke test result (2026-07-15)
 
 Verified end-to-end against a throwaway repo: `handoff init`, a trivial
 planned task ("create hello.txt containing 'hello'") set to
@@ -196,7 +261,7 @@ vars before launching the executor, so it always runs on its own stored
 account — this also prevents the planner's credentials from ever leaking into
 an executor run.
 
-## Troubleshooting
+## Legacy Claude troubleshooting
 
 - `claude: command not found` — set `HANDOFF_CLAUDE_BIN=/Users/CHEN_Dechao/.local/bin/claude`
 or fix PATH.
@@ -208,6 +273,156 @@ login; `handoff execute` now strips those vars itself. Note this also means
 you cannot authenticate the executor via env vars — the stored login is the
 only supported path, by design.
 - Executor "did nothing" — read the log in `.handoff-logs/`. Most often the
-plan required a command outside the allowlist; either the plan is wrong or
-the allowlist needs a deliberate, human-made addition.
+  plan required a command outside the allowlist; either the plan is wrong or
+  the allowlist needs a deliberate, human-made addition.
 
+## Managed A2A execution and advanced endpoint compatibility
+
+Without `.handoff-config.json`, `handoff` stays on the legacy direct-Claude
+path and does not import Python. For normal A2A use, follow the Quick start:
+`handoff init --transport a2a` generates the managed configuration and
+`handoff server start` starts its local service. You do not need to create or
+populate JSON files yourself.
+
+The remaining details cover the lower-level server and compatibility with
+older, manually configured endpoints, which remain supported for
+`execute`/`resume`/`status`/`cancel`. The JSON example below is only for that
+advanced manual setup, not the recommended managed flow. Managed `server` and
+`model` commands do not alter older endpoints; `handoff init "<repo>"
+--transport a2a --executor ... --model ...` migrates one explicitly (it refuses
+while work is unresolved, keeps the workspace ID and a copy of the old
+settings, and leaves external credentials and databases alone).
+
+### Advanced: manually configured endpoint
+
+Manually configured example (placeholders only; never commit secrets):
+
+```json
+{
+  "transport": "a2a",
+  "max_rounds": 3,
+  "a2a": {
+    "agent_card_url": "http://127.0.0.1:8765/.well-known/agent-card.json",
+    "workspace_id": "my-project",
+    "credential_file": "/path/to/local-token",
+    "request_timeout_s": 30,
+    "wait_timeout_s": 180,
+    "poll_interval_s": 1
+  }
+}
+```
+
+Relative `credential_file` paths resolve against the target repo. Invalid or
+unknown transport fails; it does not fall back to legacy. `HANDOFF_MODEL` and
+`HANDOFF_CLAUDE_BIN` apply to legacy only. Point `HANDOFF_A2A_BIN` at the
+`handoff-a2a` executable if it is not on `PATH`. Start the server yourself:
+
+```sh
+uv sync --extra test
+uv run handoff-a2a serve --config server.json
+handoff approve /path/to/workspace
+handoff execute /path/to/workspace
+handoff resume /path/to/workspace
+handoff cancel /path/to/workspace
+```
+
+Server config (loopback host only; generated as `.handoff-logs/server.json`
+in managed repos) supplies `host`, `port`, `workspace_id`, `workspace_path`,
+`credential_file`, `evidence_dir`, and exactly one Executor adapter:
+
+- `"claude": {"binary": "claude", "model": "..."}` runs `claude -p "execute the
+  handoff" --permission-mode acceptEdits --output-format json`. Allowed
+  commands come from the target repo's `.claude/settings.local.json`
+  (`handoff permissions`).
+- `"codex": {"binary": "codex", "model": "...", "reasoning_effort": "medium"}`
+  (`reasoning_effort` is optional) runs `codex exec --json
+  --ignore-user-config` with `approval_policy="never"` and a `handoff`
+  permission profile. That profile extends Codex's `:workspace` sandbox with
+  write access to `.git`, so the Executor can commit. Network stays off, so
+  push/PR cannot reach a remote. The user's `~/.codex/config.toml` (hooks,
+  plugins, default model) and user-scope skills are ignored; the stored Codex
+  login is used. HANDOFF.md is git-excluded, so the validated snapshot is
+  passed to Codex as `developer_instructions`, alongside the repo's own
+  AGENTS.md guidance.
+  Inherited `OPENAI_*` / `CODEX_API_KEY` values (and a Cursor Planner shell's
+  `CURSOR_*`) are stripped. Codex reports no
+  price, so `cost_usd` stays `null`. These sandboxes are not equivalent to
+  Claude's permission file (for example, Codex may also write temp
+  directories).
+- `"cursor": {"binary": "cursor-agent", "model": "..."}` (optional
+  `api_key_file`) runs `cursor-agent --print --output-format stream-json
+  --model <id> --workspace <repo> --trust --force --sandbox enabled "execute
+  the handoff"`. `--force` (required for print-mode edits) is paired with a
+  per-run `CURSOR_CONFIG_DIR` whose deny rules block `git push/merge/remote`,
+  `gh`, the `handoff` CLI, and nested agents, and whose sandbox gives shell
+  commands no network. The stored Cursor login is used; inherited `CURSOR_*`
+  and other providers' credentials are stripped. The validated snapshot is
+  delivered as a temporary, git-excluded `.cursor/rules/handoff-executor-<execution_id>.mdc`
+  (always applied, alongside AGENTS.md and existing rules; removed once the
+  worker stops). The model Cursor reports is recorded next to the requested
+  one. Cursor reports no price, so `cost_usd` stays `null`.
+
+In a managed repo, `handoff model` replaces the Executor: it restarts the
+one owned server on the same port and database with the next
+`config_generation`, and the Agent Card advertises `workspace_id` and
+`config_generation` so `execute`/`watch` never dispatch to a service that is
+not running the selection. With a manually configured endpoint, replacing
+the Executor still means running another server and pointing
+`a2a.agent_card_url` at it after the previous run is reconciled. Planner
+steps and the client do not change. Existing Claude-only server configs keep
+working. Optional keys: `state_db` (default `evidence_dir/state.sqlite`),
+`caller_id` (default `local-planner`), `execution_timeout_s` (default 3600),
+`cancel_grace_s` (default 5). The integrated CLI also requires Agent Card
+`workspace_code_fingerprint` and `durable_execution_id_deduplication`. Client
+wait timeout does not cancel the worker.
+
+An outstanding run stays authoritative after the config changes. If
+`.handoff-config.json` is switched to legacy, pointed at another endpoint, or
+removed while a run is outstanding, `status` still shows WAIT/RECOVERY.
+`resume`/`cancel` use the run's saved endpoint and credential reference
+(default wait limits apply when no A2A config is present). No new execution
+starts until the run is reconciled. A failed or canceled delivery does not
+keep an Executor-written `READY FOR QA`/`APPROVED`: reconciliation restores the
+submitted Status, and `status` routes to Planner review. Its dispatch hold
+also survives config changes: `handoff watch` (A2A or legacy) will not
+redispatch, and only an explicit `handoff execute` clears the hold. Development helper:
+
+```sh
+uv run --extra test python -m pytest -q
+uv run handoff-a2a --help
+uv run handoff-a2a execute --repo /path/to/workspace \
+  --agent-card-url http://127.0.0.1:PORT/.well-known/agent-card.json \
+  --credential-file /path/to/token --workspace-id that-workspace
+```
+
+Tests must point `claude.binary` / `codex.binary` / `cursor.binary` at a fake
+executable, never a paid CLI. The explicit live checks
+`scripts/a2a_live_check.py --confirm-live` and
+`scripts/a2a_cursor_live_check.py --confirm-live` make real, paid model calls
+against disposable fixtures ([A4 results](docs/a2a-replacement-results.md),
+[A6 results](docs/qa-a6-cli-usability.md)). If
+restart recovery reports `recovery_required`, inspect
+`.handoff-logs/execute.lock/owner.json` and `state.sqlite` and remove the lock
+only after confirming the worker is stopped.
+
+Profile: [`docs/a2a-coding-task-v1.md`](docs/a2a-coding-task-v1.md).
+
+## Planner CLI skill
+
+Source: [`skills/handoff-cli/SKILL.md`](skills/handoff-cli/SKILL.md).
+`handoff init "<repo>" --planner cursor` copies it into the project's
+`.cursor/skills/handoff-cli` (git-excluded, never over an unrelated skill);
+for other hosts, copy or symlink the folder into a skill directory the host
+searches. It drives the **existing** `handoff` commands for plan / execute /
+QA / drive / status intents, including `approve`, `resume`, `cancel`, and
+`model`. It does not add `handoff plan` and does not talk to A2A itself.
+
+In Cursor: pick the Planner model in the editor's model picker (Agent mode;
+Plan/Ask modes cannot write the DRAFT) and type `/handoff-cli`, or run
+`handoff planner "<repo>" --provider cursor --model "<id>"` for an
+interactive Cursor CLI session. Neither changes the Executor selection.
+The Cursor CLI Planner was live-exercised; Editor skill discovery and
+invocation remain a manual, pending check (see the A6 QA report).
+
+See [Cursor skills](https://cursor.com/docs/skills) and
+[skill loading guidance](https://learn.chatgpt.com/docs/build-skills).

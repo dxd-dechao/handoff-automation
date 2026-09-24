@@ -1,0 +1,179 @@
+"""Optional target-repository `.handoff-config.json` for the production CLI."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from handoff_a2a.workspace import CONFIG_NAME
+
+
+class ConfigError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class A2ASettings:
+    agent_card_url: str
+    workspace_id: str
+    credential_file: Path
+    request_timeout_s: float = 30.0
+    wait_timeout_s: float = 180.0
+    poll_interval_s: float = 1.0
+
+
+MANAGED_SCHEMA = "urn:handoff-automation:managed-service:v1"
+
+
+@dataclass(frozen=True)
+class ManagedSettings:
+    """Pointer to the CLI-generated local service; the selection lives in server_config."""
+
+    server_config: Path
+    planner_host: str | None = None
+
+
+@dataclass(frozen=True)
+class HandoffConfig:
+    transport: str
+    path: Path
+    max_rounds: int = 3
+    a2a: A2ASettings | None = None
+    managed: ManagedSettings | None = None
+    raw: dict[str, Any] | None = None
+
+
+def _positive_number(raw: Any, name: str, default: float) -> float:
+    if raw is None:
+        return default
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ConfigError(f"{name} must be a positive number")
+    value = float(raw)
+    if value <= 0:
+        raise ConfigError(f"{name} must be a positive number")
+    return value
+
+
+def _positive_int(raw: Any, name: str, default: int) -> int:
+    if raw is None:
+        return default
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        raise ConfigError(f"{name} must be a positive integer")
+    return raw
+
+
+def config_path(repo: Path) -> Path:
+    return repo / CONFIG_NAME
+
+
+def load_config(repo: Path) -> HandoffConfig | None:
+    """Return None when the file is absent (legacy). Invalid files raise ConfigError."""
+    path = config_path(repo)
+    if not path.is_file():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"malformed {CONFIG_NAME}: {exc.msg}") from exc
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{CONFIG_NAME} must be a JSON object")
+    transport = raw.get("transport")
+    if not isinstance(transport, str) or not transport:
+        raise ConfigError("transport must be a non-empty string")
+    if transport not in {"legacy", "a2a"}:
+        raise ConfigError(f"unknown transport {transport!r}")
+    max_rounds = _positive_int(raw.get("max_rounds"), "max_rounds", 3)
+    a2a: A2ASettings | None = None
+    if transport == "a2a":
+        block = raw.get("a2a")
+        if not isinstance(block, dict):
+            raise ConfigError("a2a configuration object is required when transport is a2a")
+        card = block.get("agent_card_url")
+        workspace_id = block.get("workspace_id")
+        cred = block.get("credential_file")
+        if not isinstance(card, str) or not card.strip():
+            raise ConfigError("a2a.agent_card_url is required")
+        if not isinstance(workspace_id, str) or not workspace_id.strip():
+            raise ConfigError("a2a.workspace_id is required")
+        if not isinstance(cred, str) or not cred.strip():
+            raise ConfigError("a2a.credential_file is required")
+        credential_file = Path(cred).expanduser()
+        if not credential_file.is_absolute():
+            credential_file = (repo / credential_file).resolve()
+        else:
+            credential_file = credential_file.resolve()
+        if not credential_file.is_file():
+            raise ConfigError(f"credential-file not found: {credential_file}")
+        a2a = A2ASettings(
+            agent_card_url=card.strip(),
+            workspace_id=workspace_id.strip(),
+            credential_file=credential_file,
+            request_timeout_s=_positive_number(
+                block.get("request_timeout_s"), "a2a.request_timeout_s", 30.0
+            ),
+            wait_timeout_s=_positive_number(
+                block.get("wait_timeout_s"), "a2a.wait_timeout_s", 180.0
+            ),
+            poll_interval_s=_positive_number(
+                block.get("poll_interval_s"), "a2a.poll_interval_s", 1.0
+            ),
+        )
+    managed = _managed(repo, raw.get("managed"))
+    return HandoffConfig(
+        transport=transport, path=path, max_rounds=max_rounds, a2a=a2a, managed=managed, raw=raw
+    )
+
+
+def _managed(repo: Path, block: Any) -> ManagedSettings | None:
+    if block is None:
+        return None
+    if not isinstance(block, dict) or block.get("schema") != MANAGED_SCHEMA:
+        raise ConfigError(f"managed block must use schema {MANAGED_SCHEMA}")
+    server = block.get("server_config")
+    if not isinstance(server, str) or not server.strip():
+        raise ConfigError("managed.server_config is required")
+    server_path = Path(server).expanduser()
+    if not server_path.is_absolute():
+        server_path = repo / server_path
+    planner = block.get("planner") if isinstance(block.get("planner"), dict) else {}
+    host = planner.get("host") if isinstance(planner.get("host"), str) else None
+    return ManagedSettings(server_config=server_path.resolve(), planner_host=host)
+
+
+@dataclass(frozen=True)
+class RecoveryTiming:
+    """Wait/poll limits for acting on a saved run; never its endpoint or credential."""
+
+    request_timeout_s: float = 30.0
+    wait_timeout_s: float = 180.0
+    poll_interval_s: float = 1.0
+    source: str = "defaults"
+
+
+def recovery_timing(repo: Path) -> RecoveryTiming:
+    """Use current A2A timing when it is valid; otherwise defaults.
+
+    An outstanding run must stay recoverable after the configuration is switched
+    to legacy, removed, or broken, so this never raises.
+    """
+    try:
+        config = load_config(repo)
+    except ConfigError:
+        return RecoveryTiming()
+    if config is None or config.a2a is None:
+        return RecoveryTiming()
+    return RecoveryTiming(
+        request_timeout_s=config.a2a.request_timeout_s,
+        wait_timeout_s=config.a2a.wait_timeout_s,
+        poll_interval_s=config.a2a.poll_interval_s,
+        source=str(config.path),
+    )
+
+
+def require_a2a_config(repo: Path) -> tuple[HandoffConfig, A2ASettings]:
+    config = load_config(repo)
+    if config is None or config.transport != "a2a" or config.a2a is None:
+        raise ConfigError("A2A transport is not configured")
+    return config, config.a2a

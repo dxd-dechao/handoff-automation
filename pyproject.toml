@@ -1,0 +1,30 @@
+[project]
+name = "handoff-a2a"
+version = "0.1.0"
+description = "Optional A2A execution path for the HANDOFF.md two-agent workflow"
+requires-python = ">=3.11"
+dependencies = [
+  "a2a-sdk[http-server]==1.1.2",
+  "httpx",
+  "uvicorn",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8",
+  "pytest-asyncio>=0.24",
+]
+
+[project.scripts]
+handoff-a2a = "handoff_a2a.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_a2a_*.py"]
+pythonpath = ["tests", "."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
