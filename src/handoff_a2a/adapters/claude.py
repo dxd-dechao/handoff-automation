@@ -4,15 +4,30 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from handoff_a2a.adapters.base import (
+    RITUAL_PROMPT,
+    AdapterOutcome,
+    as_count,
+    read_outputs,
+    strip_environment,
+)
 from handoff_a2a.contracts import Usage
 
-RITUAL_PROMPT = "execute the handoff"
+__all__ = [
+    "RITUAL_PROMPT",
+    "AdapterOutcome",
+    "ClaudeAdapter",
+    "ClaudeAdapterConfig",
+    "child_environment",
+    "interpret_claude_files",
+    "parse_claude_json",
+]
+
 _STRIP_PREFIXES = ("ANTHROPIC_", "CLAUDE")
 
 
@@ -22,30 +37,9 @@ class ClaudeAdapterConfig:
     model: str
 
 
-@dataclass(frozen=True)
-class AdapterOutcome:
-    exit_code: int
-    stdout: str
-    stderr: str
-    duration_s: float
-    parsed: Mapping[str, Any] | None
-    invalid_output: bool
-    provider_error: bool
-    summary: str
-    usage: Usage | None
-    cost_usd: float | None
-    usage_provenance: str | None
-    cost_provenance: str | None
-    argv: tuple[str, ...]
-
-
 def child_environment(base: Mapping[str, str] | None = None) -> dict[str, str]:
     """Drop inherited provider auth so the child uses its own stored login."""
-    env = dict(os.environ if base is None else base)
-    for key in list(env):
-        if key.startswith(_STRIP_PREFIXES):
-            del env[key]
-    return env
+    return strip_environment(_STRIP_PREFIXES, base=base)
 
 
 def is_claude_result(data: Any) -> bool:
@@ -73,15 +67,9 @@ def _usage_from_claude(data: Mapping[str, Any]) -> tuple[Usage | None, str | Non
     usage = data.get("usage")
     if not isinstance(usage, dict):
         return None, None
+
     def as_int(name: str) -> int | None:
-        value = usage.get(name)
-        if value is None:
-            return None
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            return None
-        if float(value) != int(value):
-            return None
-        return int(value)
+        return as_count(usage.get(name))
 
     parsed = Usage(
         input_tokens=as_int("input_tokens"),
@@ -104,10 +92,31 @@ def _cost_from_claude(data: Mapping[str, Any]) -> tuple[float | None, str | None
 
 
 class ClaudeAdapter:
+    provider = "claude"
+    display_name = "Claude"
+
     def __init__(self, config: ClaudeAdapterConfig):
         self.config = config
+        self.model = config.model
 
-    def argv(self) -> list[str]:
+    def child_environment(self, base: Mapping[str, str] | None = None) -> dict[str, str]:
+        return child_environment(base)
+
+    def interpret(
+        self,
+        stdout_path: Path,
+        stderr_path: Path,
+        *,
+        exit_code: int,
+        duration_s: float,
+        argv: tuple[str, ...],
+    ) -> AdapterOutcome:
+        return interpret_claude_files(
+            stdout_path, stderr_path, exit_code=exit_code, duration_s=duration_s, argv=argv
+        )
+
+    def argv(self, workspace: Path | None = None) -> list[str]:
+        # Claude runs in the server-chosen cwd; the workspace needs no flag.
         return [
             self.config.binary,
             "-p",
@@ -156,8 +165,7 @@ def interpret_claude_files(
     duration_s: float,
     argv: tuple[str, ...],
 ) -> AdapterOutcome:
-    stdout = stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.is_file() else ""
-    stderr = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.is_file() else ""
+    stdout, stderr = read_outputs(stdout_path, stderr_path)
     parsed, invalid = parse_claude_json(stdout) if stdout.strip() else (None, True)
     provider_error = False
     summary = ""
@@ -184,4 +192,5 @@ def interpret_claude_files(
         usage_provenance=usage_provenance,
         cost_provenance=cost_provenance,
         argv=argv,
+        provider_error_detail="provider reported is_error=true" if provider_error else None,
     )

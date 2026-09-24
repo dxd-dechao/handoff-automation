@@ -47,11 +47,11 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from handoff_a2a.adapters.claude import (
-    ClaudeAdapter,
+from handoff_a2a.adapters import (
+    AdapterConfig,
     ClaudeAdapterConfig,
-    child_environment,
-    interpret_claude_files,
+    CodexAdapterConfig,
+    build_adapter,
 )
 from handoff_a2a.contracts import (
     CODING_RESULT_ARTIFACT,
@@ -140,16 +140,23 @@ class ServerConfig:
     workspace_path: Path
     credential_file: Path
     evidence_dir: Path
-    claude: ClaudeAdapterConfig
+    claude: ClaudeAdapterConfig | None
     public_base_url: str
     credential: str
     state_db: Path | None = None
     caller_id: str = "local-planner"
     execution_timeout_s: float = 3600.0
     cancel_grace_s: float = 5.0
+    codex: CodexAdapterConfig | None = None
 
     def resolved_state_db(self) -> Path:
         return Path(self.state_db) if self.state_db is not None else self.evidence_dir / "state.sqlite"
+
+    def executor(self) -> AdapterConfig:
+        """Exactly one adapter per server; replacing the Executor means another endpoint."""
+        if (self.claude is None) == (self.codex is None):
+            raise ValueError("configure exactly one executor adapter: claude or codex")
+        return self.codex if self.codex is not None else self.claude  # type: ignore[return-value]
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -180,12 +187,26 @@ def load_server_config(path: Path) -> ServerConfig:
     if not isinstance(port, int) or isinstance(port, bool) or port < 1 or port > 65535:
         raise ValueError("port must be an integer 1-65535")
     claude_raw = raw.get("claude")
-    if not isinstance(claude_raw, dict):
-        raise ValueError("claude adapter config is required")
-    binary = str(claude_raw.get("binary") or "")
-    model = str(claude_raw.get("model") or "")
+    codex_raw = raw.get("codex")
+    if (claude_raw is None) == (codex_raw is None):
+        raise ValueError("configure exactly one executor adapter: claude or codex")
+    claude_config: ClaudeAdapterConfig | None = None
+    codex_config: CodexAdapterConfig | None = None
+    name = "claude" if claude_raw is not None else "codex"
+    block = claude_raw if claude_raw is not None else codex_raw
+    if not isinstance(block, dict):
+        raise ValueError(f"{name} adapter config must be an object")
+    binary = str(block.get("binary") or "")
+    model = str(block.get("model") or "")
     if not binary or not model:
-        raise ValueError("claude.binary and claude.model are required")
+        raise ValueError(f"{name}.binary and {name}.model are required")
+    if name == "claude":
+        claude_config = ClaudeAdapterConfig(binary=binary, model=model)
+    else:
+        effort = block.get("reasoning_effort")
+        if effort is not None and (not isinstance(effort, str) or not effort.strip()):
+            raise ValueError("codex.reasoning_effort must be a non-empty string")
+        codex_config = CodexAdapterConfig(binary=binary, model=model, reasoning_effort=effort)
     credential_file = Path(str(raw.get("credential_file") or "")).expanduser()
     if not credential_file.is_file():
         raise ValueError(f"credential-file not found: {credential_file}")
@@ -214,7 +235,8 @@ def load_server_config(path: Path) -> ServerConfig:
         workspace_path=workspace_path.resolve(),
         credential_file=credential_file.resolve(),
         evidence_dir=evidence_dir.resolve(),
-        claude=ClaudeAdapterConfig(binary=binary, model=model),
+        claude=claude_config,
+        codex=codex_config,
         public_base_url=public,
         credential=credential,
         state_db=Path(str(state_db_raw)).expanduser().resolve() if state_db_raw else None,
@@ -224,20 +246,28 @@ def load_server_config(path: Path) -> ServerConfig:
     )
 
 
-def _extension_params() -> Struct:
+def _extension_params(adapter: Any) -> Struct:
     params = Struct()
     params.update(
-        {DURABLE_DEDUP_PARAM: True, WORKSPACE_FINGERPRINT_PARAM: True}
+        {
+            DURABLE_DEDUP_PARAM: True,
+            WORKSPACE_FINGERPRINT_PARAM: True,
+            # Informational identity for evidence; clients must not branch on it.
+            "executor_provider": adapter.provider,
+            "executor_model": adapter.model,
+        }
     )
     return params
 
 
 def build_agent_card(config: ServerConfig) -> AgentCard:
     rpc_url = f"{config.public_base_url}{RPC_PATH}"
+    adapter = build_adapter(config.executor())
     return AgentCard(
-        name="handoff-a2a Claude Executor",
+        name=f"handoff-a2a {adapter.display_name} Executor",
         description=(
-            "Experimental local coding Executor. Tasks persist in a local SQLite "
+            f"Experimental local coding Executor backed by {adapter.display_name} "
+            f"({adapter.model}). Tasks persist in a local SQLite "
             "store. Duplicate execution_id submissions reuse the original task. "
             "A COMPLETED task is ready for independent Planner QA, not APPROVED."
         ),
@@ -257,7 +287,7 @@ def build_agent_card(config: ServerConfig) -> AgentCard:
                     uri=CODING_TASK_PROFILE,
                     required=True,
                     description="HANDOFF.md snapshot coding-task profile v1",
-                    params=_extension_params(),
+                    params=_extension_params(adapter),
                 )
             ],
         ),
@@ -479,7 +509,7 @@ class CodingAgentExecutor(AgentExecutor):
         self.config = config
         self.state = state
         self.workspace = GitWorkspace(config.workspace_id, config.workspace_path)
-        self.adapter = ClaudeAdapter(config.claude)
+        self.adapter = build_adapter(config.executor())
         self.config.evidence_dir.mkdir(parents=True, exist_ok=True)
         self._runtimes: dict[str, ExecutionRuntime] = {}
 
@@ -743,8 +773,8 @@ class CodingAgentExecutor(AgentExecutor):
         await updater.start_work()
         stdout_path = runtime.evidence / "stdout.json"
         stderr_path = runtime.evidence / "stderr.txt"
-        argv = self.adapter.argv()
-        env = child_environment()
+        argv = self.adapter.argv(self.workspace.path)
+        env = self.adapter.child_environment()
         try:
             runtime.owned = await asyncio.to_thread(
                 start_owned,
@@ -799,7 +829,7 @@ class CodingAgentExecutor(AgentExecutor):
             if runtime._finalized or runtime._closing:
                 return
             duration_s = time.monotonic() - runtime.started_at
-            outcome = interpret_claude_files(
+            outcome = self.adapter.interpret(
                 stdout_path,
                 stderr_path,
                 exit_code=exit_code,
@@ -827,7 +857,7 @@ class CodingAgentExecutor(AgentExecutor):
             if outcome.exit_code != 0:
                 reason = f"subprocess exited {outcome.exit_code}"
             elif provider_error:
-                reason = "provider reported is_error=true"
+                reason = outcome.provider_error_detail or "provider reported an error"
             elif invalid_output:
                 reason = "provider output was missing or not valid JSON"
             elif not transition_ok:
@@ -881,6 +911,8 @@ class CodingAgentExecutor(AgentExecutor):
                     "task_id": runtime.task_id,
                     "context_id": runtime.context_id,
                     "iteration": request.iteration,
+                    "executor_provider": self.adapter.provider,
+                    "executor_model": self.adapter.model,
                 },
             )
             self.state.update_execution(

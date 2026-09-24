@@ -13,16 +13,27 @@ import uvicorn
 
 from handoff_a2a.contracts import CODING_TASK_PROFILE, snapshot_sha256
 from handoff_a2a.server import ServerConfig, create_app
-from handoff_a2a.adapters.claude import ClaudeAdapterConfig
+from handoff_a2a.adapters import ClaudeAdapterConfig, CodexAdapterConfig
+
+PROVIDERS = ("claude", "codex")
 
 FAKE_CLAUDE = r'''#!/usr/bin/env python3
 import json, os, pathlib, re, subprocess, sys, time
 
+# Invoked as `codex exec --json ... --cd <workspace> <prompt>` or as
+# `claude -p <prompt> ... --output-format json`; emit the matching format.
+CODEX = len(sys.argv) > 1 and sys.argv[1] == "exec"
+if CODEX:
+    os.chdir(sys.argv[sys.argv.index("--cd") + 1])
 root = pathlib.Path.cwd()
+(root / "ARGV_PROBE").write_text(json.dumps(sys.argv[1:]), encoding="utf-8")
 launches = root / "WORKER_LAUNCHES"
 launches.write_text(str(int(launches.read_text(encoding="utf-8") or "0") + 1 if launches.is_file() else 1) + "\n", encoding="utf-8")
 (root / "WORKER_STARTED").write_text("started\n", encoding="utf-8")
-leaked = [k for k in os.environ if k.startswith("ANTHROPIC_") or k.startswith("CLAUDE")]
+leaked = [
+    k for k in os.environ
+    if k.startswith(("ANTHROPIC_", "CLAUDE", "OPENAI_")) or k in ("CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
+]
 (root / "AUTH_PROBE").write_text("\n".join(leaked), encoding="utf-8")
 mode = (root / ".fake-mode").read_text(encoding="utf-8").strip() if (root / ".fake-mode").is_file() else "success"
 sleep_s = float((root / ".fake-sleep").read_text(encoding="utf-8").strip() or "0") if (root / ".fake-sleep").is_file() else 0.0
@@ -91,7 +102,20 @@ def set_value(value):
     subprocess.run(["git", "add", "app.py"], check=True, cwd=root)
     subprocess.run(["git", "commit", "-qm", f"feat: set value to {value}"], cwd=root)
 
+def codex_events(text, is_error=False, usage=None):
+    events = [{"type": "thread.started", "thread_id": "fake-thread"}, {"type": "turn.started"}]
+    if is_error:
+        events.append({"type": "turn.failed", "error": {"message": text}})
+    else:
+        events.append({"type": "item.completed", "item": {"id": "item_0", "type": "agent_message", "text": text}})
+        events.append({"type": "turn.completed", "usage": usage or {"input_tokens": 1, "cached_input_tokens": 0, "output_tokens": 2}})
+    for event in events:
+        sys.stdout.write(json.dumps(event) + "\n")
+
 def result_json(**overrides):
+    if CODEX:
+        codex_events(overrides.get("result", "fake worker done"), overrides.get("is_error", False))
+        return
     payload = {
         "type": "result",
         "subtype": "success",
@@ -132,6 +156,9 @@ if mode == "provider_error":
 if mode == "cost_missing":
     set_value(1)
     write_handoff(set_notes(set_status(text, "READY FOR QA"), "cost omitted"))
+    if CODEX:
+        codex_events("ok", usage={"input_tokens": 4, "cached_input_tokens": 3, "output_tokens": 5})
+        sys.exit(0)
     payload = {
         "type": "result",
         "subtype": "success",
@@ -246,8 +273,8 @@ def make_repo(root: Path, branch: str = "main") -> Path:
     return repo
 
 
-def make_fake_claude(root: Path) -> Path:
-    path = root / "fake-claude"
+def make_fake_claude(root: Path, provider: str = "claude") -> Path:
+    path = root / f"fake-{provider}"
     path.write_text(FAKE_CLAUDE, encoding="utf-8")
     path.chmod(0o755)
     return path
@@ -274,7 +301,11 @@ def write_server_json(path: Path, config: ServerConfig) -> Path:
                 "execution_timeout_s": config.execution_timeout_s,
                 "cancel_grace_s": config.cancel_grace_s,
                 "public_base_url": config.public_base_url,
-                "claude": {"binary": config.claude.binary, "model": config.claude.model},
+                **(
+                    {"claude": {"binary": config.claude.binary, "model": config.claude.model}}
+                    if config.claude is not None
+                    else {"codex": {"binary": config.codex.binary, "model": config.codex.model}}
+                ),
             },
             indent=2,
         )
@@ -294,6 +325,7 @@ def make_server_config(
     execution_timeout_s: float = 3600.0,
     cancel_grace_s: float = 1.0,
     state_db: Path | None = None,
+    provider: str = "claude",
 ) -> tuple[ServerConfig, Path, Path]:
     token_path = root / "token"
     token_path.write_text("test-token\n", encoding="utf-8")
@@ -307,7 +339,8 @@ def make_server_config(
         workspace_path=repo,
         credential_file=token_path,
         evidence_dir=evidence,
-        claude=ClaudeAdapterConfig(binary=str(fake_claude), model="fake-model"),
+        claude=ClaudeAdapterConfig(binary=str(fake_claude), model="fake-model") if provider == "claude" else None,
+        codex=CodexAdapterConfig(binary=str(fake_claude), model="fake-model") if provider == "codex" else None,
         public_base_url=f"http://127.0.0.1:{port}",
         credential="test-token",
         state_db=state_db or (evidence / "state.sqlite"),

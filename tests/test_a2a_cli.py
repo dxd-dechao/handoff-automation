@@ -8,7 +8,10 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from a2a_harness import (
+    PROVIDERS,
     free_port,
     RunningServer,
     git,
@@ -31,6 +34,7 @@ def _ignore_probes(repo: Path) -> None:
                 "WORKER_STARTED",
                 "WORKER_LAUNCHES",
                 "AUTH_PROBE",
+                "ARGV_PROBE",
                 "CHILD_WRITES",
                 "CHILD_PID",
                 ".child_writer.py",
@@ -148,11 +152,12 @@ def test_invalid_a2a_config_does_not_fall_back(tmp_path: Path) -> None:
     assert not list((repo / ".handoff-logs").glob("*-manifest.json"))
 
 
-def test_approve_execute_correction_and_dirty_refusals(tmp_path: Path) -> None:
+@pytest.mark.parametrize("provider", PROVIDERS)
+def test_approve_execute_correction_and_dirty_refusals(tmp_path: Path, provider: str) -> None:
     repo = make_repo(tmp_path)
     _ignore_probes(repo)
-    fake = make_fake_claude(tmp_path)
-    config, token_path, _evidence = make_server_config(tmp_path, repo, fake)
+    fake = make_fake_claude(tmp_path, provider)
+    config, token_path, _evidence = make_server_config(tmp_path, repo, fake, provider=provider)
     wrapper = _wrapper(tmp_path)
     env = _env(tmp_path, wrapper)
     write_handoff(repo, status="DRAFT")
@@ -184,9 +189,15 @@ def test_approve_execute_correction_and_dirty_refusals(tmp_path: Path) -> None:
         assert (repo / "scratch.txt").read_text() == "uncommitted executor file\n"
         assert _workflow(repo)["workflow_id"] == workflow_id
         assert _workflow(repo)["rounds_used"] == 2
-        for path in (repo / ".handoff-logs").glob("*-manifest.json"):
+        manifests = sorted((repo / ".handoff-logs").glob("*-manifest.json"))
+        assert len(manifests) == 2
+        for path in manifests:
             body = path.read_text(encoding="utf-8")
             assert "test-token" not in body
+            manifest = json.loads(body)
+            assert manifest["workflow_id"] == workflow_id
+            assert manifest["endpoint_name"].lower().endswith(f"{provider} executor")
+        assert len({json.loads(m.read_text())["task_id"] for m in manifests}) == 2
     assert (repo / "AUTH_PROBE").read_text() == ""
 
 
@@ -375,14 +386,14 @@ def test_round_limit_mixed_runs_and_successor(tmp_path: Path) -> None:
 
 
 
-def _start_early_ready_run(tmp_path: Path, sleep_s: int = 25):
+def _start_early_ready_run(tmp_path: Path, sleep_s: int = 25, provider: str = "claude"):
     """Approve and execute a fake worker that writes READY FOR QA early and keeps running."""
     repo = make_repo(tmp_path)
     _ignore_probes(repo)
-    fake = make_fake_claude(tmp_path)
+    fake = make_fake_claude(tmp_path, provider)
     (repo / ".fake-mode").write_text("early_ready\n", encoding="utf-8")
     (repo / ".fake-sleep").write_text(f"{sleep_s}\n", encoding="utf-8")
-    config, token_path, _evidence = make_server_config(tmp_path, repo, fake)
+    config, token_path, _evidence = make_server_config(tmp_path, repo, fake, provider=provider)
     wrapper = _wrapper(tmp_path)
     env = _env(tmp_path, wrapper)
     write_handoff(repo, status="DRAFT")
@@ -448,8 +459,9 @@ def test_config_switch_to_legacy_keeps_outstanding_run_authoritative(tmp_path: P
         assert _field(after.stdout, "turn") == "PLANNER"
 
 
-def test_config_removed_cancel_uses_saved_run_and_releases_once(tmp_path: Path) -> None:
-    repo, config, token_path, env, card = _start_early_ready_run(tmp_path, sleep_s=25)
+@pytest.mark.parametrize("provider", PROVIDERS)
+def test_config_removed_cancel_uses_saved_run_and_releases_once(tmp_path: Path, provider: str) -> None:
+    repo, config, token_path, env, card = _start_early_ready_run(tmp_path, sleep_s=25, provider=provider)
     lock = repo / ".handoff-logs" / "execute.lock"
     with RunningServer(config):
         _run(repo, env, "approve", check=True)
@@ -514,14 +526,16 @@ def _watch_for(repo: Path, env: dict[str, str], until, timeout: float = 30.0) ->
     return out
 
 
-def _setup_mode(tmp_path: Path, mode: str, *, sleep_s: int | None = None, wait: float = 20.0):
+def _setup_mode(
+    tmp_path: Path, mode: str, *, sleep_s: int | None = None, wait: float = 20.0, provider: str = "claude"
+):
     repo = make_repo(tmp_path)
     _ignore_probes(repo)
-    fake = make_fake_claude(tmp_path)
+    fake = make_fake_claude(tmp_path, provider)
     (repo / ".fake-mode").write_text(f"{mode}\n", encoding="utf-8")
     if sleep_s is not None:
         (repo / ".fake-sleep").write_text(f"{sleep_s}\n", encoding="utf-8")
-    config, token_path, _evidence = make_server_config(tmp_path, repo, fake)
+    config, token_path, _evidence = make_server_config(tmp_path, repo, fake, provider=provider)
     env = _env(tmp_path, _wrapper(tmp_path))
     write_handoff(repo, status="DRAFT")
     card = f"http://127.0.0.1:{config.port}/.well-known/agent-card.json"
@@ -534,15 +548,20 @@ def _launches(repo: Path) -> int:
     return int(path.read_text().strip()) if path.is_file() else 0
 
 
-import pytest  # noqa: E402
-
 
 @pytest.mark.parametrize(
-    ("mode", "written"),
-    [("provider_error", "READY FOR QA"), ("approved", "APPROVED"), ("mangle_plan", "READY FOR QA")],
+    ("mode", "written", "provider"),
+    [
+        ("provider_error", "READY FOR QA", "claude"),
+        ("provider_error", "READY FOR QA", "codex"),
+        ("approved", "APPROVED", "claude"),
+        ("mangle_plan", "READY FOR QA", "claude"),
+    ],
 )
-def test_failed_delivery_is_not_routed_to_qa_and_watch_holds(tmp_path: Path, mode: str, written: str) -> None:
-    repo, config, env = _setup_mode(tmp_path, mode)
+def test_failed_delivery_is_not_routed_to_qa_and_watch_holds(
+    tmp_path: Path, mode: str, written: str, provider: str
+) -> None:
+    repo, config, env = _setup_mode(tmp_path, mode, provider=provider)
     with RunningServer(config):
         _run(repo, env, "approve", check=True)
         failed = _run(repo, env, "execute")

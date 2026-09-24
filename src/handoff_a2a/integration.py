@@ -451,6 +451,7 @@ def _reconcile(
             "context_id": (task or {}).get("contextId") or (task or {}).get("context_id"),
             "transport": "a2a",
             "endpoint": outstanding.get("agent_card_url"),
+            "endpoint_name": outstanding.get("agent_name") or manifest.get("endpoint_name"),
             "started_at": outstanding.get("created_at") or manifest.get("started_at"),
             "finished_at": utc_now() if stopped and not unresolved else None,
             "outcome": outcome,
@@ -553,6 +554,9 @@ async def cmd_execute_async(repo: Path, *, from_watch: bool = False) -> int:
     outstanding = load_outstanding(repo) or {}
     client = await _connect(settings)
     try:
+        assert client._card is not None
+        outstanding["agent_name"] = client._card.name
+        save_outstanding(repo, outstanding)
         task = await client.submit(request)
         record = _update_record_from_task(record, task)
         persist_run_record(record_path, record, latest_repo=repo)

@@ -26,6 +26,7 @@ from handoff_a2a.contracts import CODING_TASK_PROFILE, parse_coding_request
 from handoff_a2a.processes import process_start_identity
 from handoff_a2a.store import SqliteState
 from a2a_harness import (
+    PROVIDERS,
     RunningServer,
     coding_payload,
     git,
@@ -323,13 +324,14 @@ async def test_uncertain_ownership_retains_lock(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_cancel_and_deadline_stop_child_writer(tmp_path: Path) -> None:
+@pytest.mark.parametrize("provider", PROVIDERS)
+async def test_cancel_and_deadline_stop_child_writer(tmp_path: Path, provider: str) -> None:
     repo = make_repo(tmp_path)
-    fake = make_fake_claude(tmp_path)
+    fake = make_fake_claude(tmp_path, provider)
     (repo / ".fake-mode").write_text("writer\n", encoding="utf-8")
     (repo / ".fake-sleep").write_text("20\n", encoding="utf-8")
     config, token_path, evidence = make_server_config(
-        tmp_path, repo, fake, cancel_grace_s=1.0, execution_timeout_s=3600.0
+        tmp_path, repo, fake, cancel_grace_s=1.0, execution_timeout_s=3600.0, provider=provider
     )
     token = token_path.read_text().strip()
     with RunningServer(config) as server:
@@ -364,6 +366,7 @@ async def test_cancel_and_deadline_stop_child_writer(tmp_path: Path) -> None:
         cancel_grace_s=1.0,
         execution_timeout_s=0.4,
         state_db=tmp_path / "deadline.sqlite",
+        provider=provider,
     )
     token = token_path.read_text().strip()
     with RunningServer(deadline_config) as server:

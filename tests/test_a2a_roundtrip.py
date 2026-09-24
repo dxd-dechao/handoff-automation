@@ -12,6 +12,7 @@ from handoff_a2a.__main__ import main
 from handoff_a2a.client import CodingClient, coding_result_from_task
 from handoff_a2a.contracts import parse_coding_request, snapshot_sha256
 from a2a_harness import (
+    PROVIDERS,
     RunningServer,
     coding_payload,
     git,
@@ -39,12 +40,17 @@ async def _submit(client: CodingClient, payload: dict) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_roundtrip_success_and_correction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("provider", PROVIDERS)
+async def test_roundtrip_success_and_correction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str
+) -> None:
     repo = make_repo(tmp_path)
-    fake = make_fake_claude(tmp_path)
-    config, token_path, evidence = make_server_config(tmp_path, repo, fake)
+    fake = make_fake_claude(tmp_path, provider)
+    config, token_path, evidence = make_server_config(tmp_path, repo, fake, provider=provider)
     token = token_path.read_text().strip()
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "should-not-leak")
+    monkeypatch.setenv("OPENAI_API_KEY", "should-not-leak")
+    monkeypatch.setenv("CODEX_API_KEY", "should-not-leak")
     with RunningServer(config) as server:
         client = await _client(server.card_url, token)
         try:
@@ -62,15 +68,22 @@ async def test_roundtrip_success_and_correction(tmp_path: Path, monkeypatch: pyt
             assert result["run_id"] == "run-a"
             assert result["execution_id"] == first["execution_id"]
             assert result["task_id"] == submitted["id"]
-            assert result["cost_usd"] == 0.0
+            if provider == "claude":
+                assert result["cost_usd"] == 0.0
+                assert result["usage"]["cache_creation_input_tokens"] == 0
+            else:
+                assert result["cost_usd"] is None  # Codex reports no price
+                assert result["usage"]["cache_creation_input_tokens"] is None
             assert result["usage"]["input_tokens"] == 1
-            assert result["usage"]["cache_creation_input_tokens"] == 0
+            assert result["usage"]["output_tokens"] == 2
             assert (repo / "app.py").read_text() == "value = 1\n"
             assert "READY FOR QA" in (repo / "HANDOFF.md").read_text()
             assert (evidence / first["execution_id"] / "result.json").is_file()
             assert (evidence / first["execution_id"] / "handoff.md").is_file()
             assert not (repo / ".handoff-logs" / "execute.lock").exists()
-            assert (repo / "AUTH_PROBE").read_text() == ""
+            leaked = (repo / "AUTH_PROBE").read_text().split()
+            own = ("ANTHROPIC_", "CLAUDE") if provider == "claude" else ("OPENAI_", "CODEX_", "ANTHROPIC_")
+            assert not [name for name in leaked if name.startswith(own)]
 
             write_handoff(
                 repo,
@@ -165,10 +178,10 @@ async def test_refusals_before_worker(tmp_path: Path) -> None:
         assert not (repo / "WORKER_STARTED").exists()
 
 
-async def _run_mode(tmp_path: Path, mode: str) -> tuple[dict, dict, Path]:
+async def _run_mode(tmp_path: Path, mode: str, provider: str = "claude") -> tuple[dict, dict, Path]:
     repo = make_repo(tmp_path)
-    fake = make_fake_claude(tmp_path)
-    config, token_path, evidence = make_server_config(tmp_path, repo, fake)
+    fake = make_fake_claude(tmp_path, provider)
+    config, token_path, evidence = make_server_config(tmp_path, repo, fake, provider=provider)
     token = token_path.read_text().strip()
     (repo / ".fake-mode").write_text(mode + "\n", encoding="utf-8")
     with RunningServer(config) as server:
@@ -186,61 +199,78 @@ async def _run_mode(tmp_path: Path, mode: str) -> tuple[dict, dict, Path]:
 
 
 @pytest.mark.asyncio
-async def test_nonzero_exit_is_failed(tmp_path: Path) -> None:
-    terminal, result, _evidence = await _run_mode(tmp_path, "nonzero")
+@pytest.mark.parametrize("provider", PROVIDERS)
+async def test_nonzero_exit_is_failed(tmp_path: Path, provider: str) -> None:
+    terminal, result, _evidence = await _run_mode(tmp_path, "nonzero", provider)
     assert _state(terminal) == "TASK_STATE_FAILED"
     assert result["exit_code"] == 3
     assert result["worker_launched"] is True
 
 
 @pytest.mark.asyncio
-async def test_exit_zero_provider_error_is_failed(tmp_path: Path) -> None:
-    terminal, result, _evidence = await _run_mode(tmp_path, "provider_error")
+@pytest.mark.parametrize("provider", PROVIDERS)
+async def test_exit_zero_provider_error_is_failed(tmp_path: Path, provider: str) -> None:
+    terminal, result, _evidence = await _run_mode(tmp_path, "provider_error", provider)
     assert _state(terminal) == "TASK_STATE_FAILED"
     assert result["exit_code"] == 0
     assert result["provider_error"] is True
+    assert result["reason"]  # provider-specific detail surfaces through the neutral field
 
 
 @pytest.mark.asyncio
-async def test_malformed_result_is_failed(tmp_path: Path) -> None:
-    terminal, result, _evidence = await _run_mode(tmp_path, "malformed")
+@pytest.mark.parametrize("provider", PROVIDERS)
+async def test_malformed_result_is_failed(tmp_path: Path, provider: str) -> None:
+    terminal, result, _evidence = await _run_mode(tmp_path, "malformed", provider)
     assert _state(terminal) == "TASK_STATE_FAILED"
     assert result["invalid_output"] is True
 
 
 @pytest.mark.asyncio
-async def test_wrong_shape_json_object_is_failed(tmp_path: Path) -> None:
-    terminal, result, evidence = await _run_mode(tmp_path, "wrong_shape")
+@pytest.mark.parametrize("provider", PROVIDERS)
+async def test_wrong_shape_json_object_is_failed(tmp_path: Path, provider: str) -> None:
+    terminal, result, evidence = await _run_mode(tmp_path, "wrong_shape", provider)
     assert _state(terminal) == "TASK_STATE_FAILED"
     assert result["invalid_output"] is True
     assert result["provider_error"] is False
     raw = (evidence / result["execution_id"] / "stdout.json").read_text(encoding="utf-8")
-    assert "not a Claude result" in raw
+    assert "not a Claude result" in raw  # raw provider output preserved as evidence
 
 
 @pytest.mark.asyncio
-async def test_missing_cost_stays_null_and_zero_usage_survives(tmp_path: Path) -> None:
-    terminal, result, evidence = await _run_mode(tmp_path, "cost_missing")
+@pytest.mark.parametrize("provider", PROVIDERS)
+async def test_missing_cost_stays_null_and_zero_usage_survives(tmp_path: Path, provider: str) -> None:
+    terminal, result, evidence = await _run_mode(tmp_path, "cost_missing", provider)
     assert _state(terminal) == "TASK_STATE_COMPLETED"
     assert result.get("cost_usd") is None
     assert result["usage"]["input_tokens"] == 4
+    assert result["usage"]["output_tokens"] == 5
     assert (evidence / result["execution_id"] / "stderr.txt").exists()
 
 
 @pytest.mark.asyncio
-async def test_zero_cost_survives_roundtrip(tmp_path: Path) -> None:
-    terminal, result, _evidence = await _run_mode(tmp_path, "success")
+@pytest.mark.parametrize("provider", PROVIDERS)
+async def test_zero_cost_survives_roundtrip(tmp_path: Path, provider: str) -> None:
+    terminal, result, _evidence = await _run_mode(tmp_path, "success", provider)
     assert _state(terminal) == "TASK_STATE_COMPLETED"
-    assert result["cost_usd"] == 0.0
-    assert result["usage"]["cache_creation_input_tokens"] == 0
+    if provider == "claude":
+        assert result["cost_usd"] == 0.0  # a real zero is kept, not nulled
+        assert result["usage"]["cache_creation_input_tokens"] == 0
+        assert result["cost_provenance"] == "claude.total_cost_usd"
+    else:
+        assert result["cost_usd"] is None and result["cost_provenance"] is None
+        assert result["usage"]["cache_read_input_tokens"] == 0  # a real zero is kept
+        assert result["usage_provenance"].startswith("codex.")
 
 
 
 @pytest.mark.asyncio
-async def test_cancel_stops_worker_and_marks_canceled(tmp_path: Path) -> None:
+@pytest.mark.parametrize("provider", PROVIDERS)
+async def test_cancel_stops_worker_and_marks_canceled(tmp_path: Path, provider: str) -> None:
     repo = make_repo(tmp_path)
-    fake = make_fake_claude(tmp_path)
-    config, token_path, _evidence = make_server_config(tmp_path, repo, fake, cancel_grace_s=1.0)
+    fake = make_fake_claude(tmp_path, provider)
+    config, token_path, _evidence = make_server_config(
+        tmp_path, repo, fake, cancel_grace_s=1.0, provider=provider
+    )
     token = token_path.read_text().strip()
     (repo / ".fake-sleep").write_text("8\n", encoding="utf-8")
     with RunningServer(config) as server:
