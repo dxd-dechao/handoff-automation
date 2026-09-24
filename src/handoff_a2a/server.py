@@ -773,7 +773,7 @@ class CodingAgentExecutor(AgentExecutor):
         await updater.start_work()
         stdout_path = runtime.evidence / "stdout.json"
         stderr_path = runtime.evidence / "stderr.txt"
-        argv = self.adapter.argv(self.workspace.path)
+        argv = self.adapter.argv(self.workspace.path, request.handoff_markdown)
         env = self.adapter.child_environment()
         try:
             runtime.owned = await asyncio.to_thread(

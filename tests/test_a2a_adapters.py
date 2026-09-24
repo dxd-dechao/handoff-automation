@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -31,7 +35,9 @@ def _interpret(tmp_path: Path, lines: list[str], exit_code: int = 0):
 
 
 def test_codex_argv_uses_ritual_prompt_and_restricted_sandbox(tmp_path: Path) -> None:
-    argv = CodexAdapter(CodexAdapterConfig(binary="codex", model="m", reasoning_effort="low")).argv(tmp_path)
+    argv = CodexAdapter(CodexAdapterConfig(binary="codex", model="m", reasoning_effort="low")).argv(
+        tmp_path, "# HANDOFF\n"
+    )
     assert argv[:3] == ["codex", "exec", "--json"]
     assert argv[-1] == RITUAL_PROMPT
     assert argv.count(RITUAL_PROMPT) == 1
@@ -40,9 +46,9 @@ def test_codex_argv_uses_ritual_prompt_and_restricted_sandbox(tmp_path: Path) ->
     assert argv[argv.index("--model") + 1] == "m"
     overrides = [argv[i + 1] for i, a in enumerate(argv) if a == "-c"]
     assert 'approval_policy="never"' in overrides
-    # HANDOFF.md is git-excluded; Codex loads it natively instead of via extra prompt text.
-    assert 'project_doc_fallback_filenames=["HANDOFF.md"]' in overrides
-    assert any(o.startswith("project_doc_max_bytes=") for o in overrides)
+    # HANDOFF.md is git-excluded; the validated snapshot travels as developer instructions.
+    assert any(o.startswith("developer_instructions=") for o in overrides)
+    assert not any(o.startswith("project_doc") for o in overrides)
     assert 'default_permissions="handoff"' in overrides
     assert 'model_reasoning_effort="low"' in overrides
     profile = next(o for o in overrides if o.startswith("permissions.handoff="))
@@ -174,7 +180,7 @@ def test_codex_disables_user_scope_skills_but_not_workspace_skills(
     monkeypatch.delenv("CODEX_HOME", raising=False)
     files = user_skill_files()
     assert [f.parent.name for f in files] == ["orca-cli", "personal"]
-    argv = CodexAdapter(CodexAdapterConfig(binary="codex", model="m")).argv(workspace)
+    argv = CodexAdapter(CodexAdapterConfig(binary="codex", model="m")).argv(workspace, "# HANDOFF\n")
     override = next(a for a in argv if a.startswith("skills.config="))
     assert str(home / ".agents" / "skills" / "orca-cli" / "SKILL.md") in override
     assert override.count("enabled=false") == 2
@@ -185,5 +191,77 @@ def test_codex_disables_user_scope_skills_but_not_workspace_skills(
 def test_codex_without_user_skills_adds_no_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
-    argv = CodexAdapter(CodexAdapterConfig(binary="codex", model="m")).argv(tmp_path)
+    argv = CodexAdapter(CodexAdapterConfig(binary="codex", model="m")).argv(tmp_path, "# HANDOFF\n")
     assert not any(a.startswith("skills.config=") for a in argv)
+
+
+TRICKY_HANDOFF = (
+    Path(__file__).resolve().parents[1] / "templates" / "HANDOFF.md"
+).read_text(encoding="utf-8").replace(
+    "_(no task planned yet — PLANNER overwrites this section)_",
+    'HANDOFF-SENTINEL-7Q: quotes " \' \\ backslash, tab\t, emoji 🚀, CJK 交接, DEL \x7f, ctrl \x01, """triple"""',
+)
+
+
+def _codex_overrides(workspace: Path, markdown: str) -> list[str]:
+    argv = CodexAdapter(CodexAdapterConfig(binary="codex", model="m")).argv(workspace, markdown)
+    return [argv[i + 1] for i, a in enumerate(argv) if a == "-c"]
+
+
+def test_codex_handoff_override_round_trips_as_toml(tmp_path: Path) -> None:
+    from handoff_a2a.adapters.codex import HANDOFF_HEADER
+
+    value = next(o for o in _codex_overrides(tmp_path, TRICKY_HANDOFF) if o.startswith("developer_instructions="))
+    parsed = tomllib.loads(value)
+    assert parsed["developer_instructions"] == HANDOFF_HEADER + TRICKY_HANDOFF
+
+
+def test_codex_argv_reads_workspace_handoff_when_snapshot_absent(tmp_path: Path) -> None:
+    (tmp_path / "HANDOFF.md").write_text("# HANDOFF\nfrom-disk\n", encoding="utf-8")
+    value = next(o for o in _codex_overrides(tmp_path, None) if o.startswith("developer_instructions="))
+    assert "from-disk" in tomllib.loads(value)["developer_instructions"]
+
+
+def _model_input_text(raw: str) -> str:
+    strings: list[str] = []
+
+    def walk(node: object) -> None:
+        if isinstance(node, str):
+            strings.append(node)
+        elif isinstance(node, dict):
+            for item in node.values():
+                walk(item)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(json.loads(raw))
+    return "\n".join(strings)
+
+
+@pytest.mark.skipif(shutil.which("codex") is None, reason="codex CLI not installed")
+@pytest.mark.parametrize("guidance", ["AGENTS.md", "AGENTS.override.md", None])
+def test_codex_model_input_carries_full_handoff_and_repo_guidance(tmp_path: Path, guidance: str | None) -> None:
+    """Model-free: render Codex's actual model input with the adapter's overrides."""
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    (repo / "HANDOFF.md").write_text(TRICKY_HANDOFF, encoding="utf-8")
+    (repo / ".git" / "info" / "exclude").write_text("HANDOFF.md\n", encoding="utf-8")
+    if guidance:
+        (repo / guidance).write_text(f"REPO-GUIDANCE-SENTINEL from {guidance}\n", encoding="utf-8")
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    args: list[str] = []
+    for override in _codex_overrides(repo, TRICKY_HANDOFF):
+        args += ["-c", override]
+    env = {**os.environ, "CODEX_HOME": str(codex_home)}
+    rendered = subprocess.run(
+        ["codex", "debug", "prompt-input", *args, RITUAL_PROMPT],
+        cwd=repo, env=env, capture_output=True, text=True, timeout=60,
+    )
+    assert rendered.returncode == 0, rendered.stderr[-2000:]
+    text = _model_input_text(rendered.stdout)
+    assert TRICKY_HANDOFF in text  # the complete validated handoff, byte for byte
+    if guidance:
+        assert f"REPO-GUIDANCE-SENTINEL from {guidance}" in text
+    assert text.count("HANDOFF-SENTINEL-7Q") == 1  # delivered once, not duplicated

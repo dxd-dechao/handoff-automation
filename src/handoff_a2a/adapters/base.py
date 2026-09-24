@@ -41,7 +41,9 @@ class ExecutorAdapter(Protocol):
     display_name: str
     model: str
 
-    def argv(self, workspace: Path) -> list[str]: ...
+    def argv(self, workspace: Path, handoff_markdown: str | None = None) -> list[str]:
+        """Native command. `handoff_markdown` is the validated submitted snapshot."""
+        ...
 
     def child_environment(self, base: Mapping[str, str] | None = None) -> dict[str, str]: ...
 

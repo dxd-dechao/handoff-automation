@@ -20,11 +20,12 @@ Verified against codex-cli 0.156.0 (`codex exec --help`, `codex sandbox`):
   in the workspace) and Codex's bundled system skills stay available.
 - HANDOFF.md is git-excluded by `handoff init`, so Codex's ignore-aware file
   search (`rg --files`) does not see it; in the live check Codex then guessed a
-  task from the code. `project_doc_fallback_filenames=["HANDOFF.md"]` makes
-  Codex load the workspace HANDOFF.md itself as project instructions (verified
-  with `codex debug prompt-input`). This adds no instruction text: the
-  ritual prompt stays fixed and the content is the validated snapshot. Codex
-  applies the fallback only when the workspace has no AGENTS.md.
+  task from the code. The validated handoff snapshot is therefore delivered as
+  `developer_instructions`, which Codex adds alongside the repository's own
+  AGENTS.md / AGENTS.override.md guidance (a project-doc fallback would be
+  dropped whenever AGENTS.md exists). Verified with `codex debug
+  prompt-input`. The ritual prompt stays fixed; the only added text is a
+  one-line provenance header naming the file.
 """
 
 from __future__ import annotations
@@ -54,8 +55,7 @@ PERMISSION_PROFILE_TOML = (
     f'permissions.{PERMISSION_PROFILE}={{extends=":workspace", '
     'filesystem={":workspace_roots"={"."="write", ".git"="write"}}}'
 )
-# The handoff snapshot must not be truncated when loaded as project doc.
-PROJECT_DOC_MAX_BYTES = 1_048_576
+HANDOFF_HEADER = "The following is the verbatim content of HANDOFF.md at the workspace root.\n\n"
 USAGE_PROVENANCE = "codex.turn.completed.usage (input_tokens includes cache_read_input_tokens)"
 
 
@@ -76,6 +76,17 @@ def user_skill_files(env: Mapping[str, str] | None = None) -> list[Path]:
             if skill.is_file():
                 found.append(skill.resolve())
     return found
+
+
+def toml_string(text: str) -> str:
+    """TOML basic string for a `-c key=value` override (UTF-8 kept; DEL escaped)."""
+    return json.dumps(text, ensure_ascii=False).replace("\x7f", "\\u007f")
+
+
+def handoff_override(workspace: Path, handoff_markdown: str | None) -> str:
+    if handoff_markdown is None:
+        handoff_markdown = (workspace / "HANDOFF.md").read_text(encoding="utf-8")
+    return f"developer_instructions={toml_string(HANDOFF_HEADER + handoff_markdown)}"
 
 
 def disable_skills_override(skill_files: list[Path]) -> str | None:
@@ -202,7 +213,7 @@ class CodexAdapter:
         self.config = config
         self.model = config.model
 
-    def argv(self, workspace: Path) -> list[str]:
+    def argv(self, workspace: Path, handoff_markdown: str | None = None) -> list[str]:
         argv = [
             self.config.binary,
             "exec",
@@ -217,9 +228,7 @@ class CodexAdapter:
             "-c",
             'approval_policy="never"',
             "-c",
-            'project_doc_fallback_filenames=["HANDOFF.md"]',
-            "-c",
-            f"project_doc_max_bytes={PROJECT_DOC_MAX_BYTES}",
+            handoff_override(workspace, handoff_markdown),
             "--cd",
             str(workspace),
         ]

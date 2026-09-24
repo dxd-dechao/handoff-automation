@@ -115,8 +115,8 @@ class ClaudeAdapter:
             stdout_path, stderr_path, exit_code=exit_code, duration_s=duration_s, argv=argv
         )
 
-    def argv(self, workspace: Path | None = None) -> list[str]:
-        # Claude runs in the server-chosen cwd; the workspace needs no flag.
+    def argv(self, workspace: Path | None = None, handoff_markdown: str | None = None) -> list[str]:
+        # Claude runs in the server-chosen cwd and reads HANDOFF.md itself.
         return [
             self.config.binary,
             "-p",
