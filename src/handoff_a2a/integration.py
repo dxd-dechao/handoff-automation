@@ -83,7 +83,17 @@ from handoff_a2a.workspace import (
     replace_status,
     submit_lock,
 )
+import httpx
 from google.protobuf.json_format import MessageToDict
+
+from handoff_a2a.selection import (
+    SelectionError,
+    apply_pending as apply_pending_selection,
+    expected_card as managed_expected_card,
+    is_managed,
+    status_lines as managed_status_lines,
+)
+from handoff_a2a.setup import SetupError
 
 
 HOLD_AFTER_RECORD = "HANDOFF_A2A_HOLD_AFTER_RECORD"
@@ -93,6 +103,13 @@ class IntegrationError(Exception):
     def __init__(self, message: str, *, exit_code: int = 1):
         super().__init__(message)
         self.exit_code = exit_code
+
+
+class DispatchDeferred(IntegrationError):
+    """Dispatch cannot happen yet (lock busy, managed service not verified).
+
+    Watch retries at its next poll instead of waiting for a status change.
+    """
 
 
 def _die(message: str, code: int = 1) -> int:
@@ -144,6 +161,43 @@ def _card_supports_fingerprint(card: Any) -> bool:
         params = MessageToDict(ext.params) if ext.HasField("params") else {}
         return bool(params.get(WORKSPACE_FINGERPRINT_PARAM))
     return False
+
+
+def _card_params(card: Any) -> dict[str, Any]:
+    for ext in card.capabilities.extensions:
+        if ext.uri == CODING_TASK_PROFILE:
+            return MessageToDict(ext.params) if ext.HasField("params") else {}
+    return {}
+
+
+def executor_identity(card: Any) -> dict[str, Any]:
+    """Identity the endpoint advertised when this run was submitted (immutable per run)."""
+    params = _card_params(card)
+    generation = params.get("config_generation")
+    if isinstance(generation, float) and generation.is_integer():
+        generation = int(generation)
+    return {
+        "provider": params.get("executor_provider"),
+        "model": params.get("executor_model"),
+        "config_generation": generation,
+        "endpoint_name": card.name,
+    }
+
+
+def verify_managed_card(repo: Path, card: Any) -> None:
+    """A managed service must be running exactly the selected configuration."""
+    expected = managed_expected_card(repo)
+    if expected is None:
+        return
+    params = _card_params(card)
+    if isinstance(params.get("config_generation"), float):
+        params["config_generation"] = int(params["config_generation"])
+    wrong = [key for key, value in expected.items() if params.get(key) != value]
+    if wrong:
+        raise DispatchDeferred(
+            "the managed service is not running the selected Executor "
+            f"(mismatch: {', '.join(wrong)}); run handoff server start (or handoff model to inspect)"
+        )
 
 
 def _lock_owner(repo: Path) -> dict[str, Any] | None:
@@ -280,7 +334,9 @@ def cmd_approve(repo: Path) -> int:
     return 0
 
 
-def _prepare_request(repo: Path, config: HandoffConfig, settings: Any) -> tuple[dict[str, Any], dict[str, Any], Any]:
+def _prepare_request(
+    repo: Path, config: HandoffConfig, settings: Any, *, check_only: bool = False
+) -> tuple[dict[str, Any], dict[str, Any], Any]:
     markdown = (repo / HANDOFF_NAME).read_text(encoding="utf-8")
     document = parse_handoff(markdown)
     workflow = require_workflow(repo)
@@ -300,7 +356,7 @@ def _prepare_request(repo: Path, config: HandoffConfig, settings: Any) -> tuple[
         raise IntegrationError("checked-out branch does not match the approved workflow branch")
     if load_outstanding(repo):
         raise IntegrationError("outstanding A2A run exists; resume or cancel it instead of starting another")
-    if workflow.get("dispatch_hold"):
+    if workflow.get("dispatch_hold") and not check_only:
         workflow = set_dispatch_hold(repo, workflow, False)
     if rounds_available(workflow) < 1:
         raise IntegrationError(
@@ -318,6 +374,8 @@ def _prepare_request(repo: Path, config: HandoffConfig, settings: Any) -> tuple[
         raise IntegrationError(
             "workspace code does not match the last recorded post-run snapshot"
         )
+    if check_only:
+        return {}, workflow, None
     execution_id = str(uuid.uuid4())
     iteration = len(workflow.get("consumed_execution_ids") or []) + 1
     run_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"
@@ -452,6 +510,11 @@ def _reconcile(
             "transport": "a2a",
             "endpoint": outstanding.get("agent_card_url"),
             "endpoint_name": outstanding.get("agent_name") or manifest.get("endpoint_name"),
+            "executor": {
+                **(outstanding.get("executor") or manifest.get("executor") or {}),
+                "reported_model": (result or {}).get("executor_reported_model")
+                or (manifest.get("executor") or {}).get("reported_model"),
+            },
             "started_at": outstanding.get("created_at") or manifest.get("started_at"),
             "finished_at": utc_now() if stopped and not unresolved else None,
             "outcome": outcome,
@@ -538,25 +601,65 @@ async def _wait_task(client: CodingClient, task_id: str, settings: Any) -> dict[
     )
 
 
+def dispatch_gate(repo: Path) -> None:
+    """Apply a queued Executor selection (managed repos) before a new worker can start."""
+    if not is_managed(repo):
+        return
+    try:
+        outcome = apply_pending_selection(repo)
+    except SelectionError as exc:
+        raise DispatchDeferred(str(exc)) from exc
+    except SetupError as exc:
+        raise IntegrationError(str(exc)) from exc
+    if outcome == "deferred":
+        raise DispatchDeferred("a queued Executor change is waiting for the service to be idle")
+
+
 async def cmd_execute_async(repo: Path, *, from_watch: bool = False) -> int:
-    config, settings = require_a2a_config(repo)
+    require_a2a_config(repo)
     if from_watch:
         workflow = load_workflow(repo)
         if workflow and workflow.get("dispatch_hold"):
             raise IntegrationError("watch will not clear a dispatch hold; use explicit execute")
-    with submit_lock(repo):
-        require_a2a_config(repo)
+    if load_outstanding(repo):
+        raise IntegrationError("outstanding A2A run exists; resume or cancel it")
+    dispatch_gate(repo)
+    try:
+        lock = submit_lock(repo)
+        lock.acquire()
+    except WorkspaceBusy as exc:
+        raise DispatchDeferred(f"submission or service change in progress: {exc}") from exc
+    client: CodingClient | None = None
+    try:
+        # Snapshot the effective configuration under the lock that a model
+        # switch also takes, and verify the endpoint before anything is saved.
+        config, settings = require_a2a_config(repo)
         if load_outstanding(repo):
             raise IntegrationError("outstanding A2A run exists; resume or cancel it")
+        _prepare_request(repo, config, settings, check_only=True)
+        try:
+            client = await _connect(settings)
+        except (httpx.HTTPError, OSError) as exc:
+            raise DispatchDeferred(f"Executor endpoint unavailable ({exc}); run handoff server start") from exc
+        verify_managed_card(repo, client._card)
         record, _workflow, request = _prepare_request(repo, config, settings)
+    except BaseException:
+        if client is not None:
+            await client.close()
+        lock.release()
+        raise
+    lock.release()
     _pause_if_held()
     record_path = Path(str(run_record_path(repo, request.execution_id)))
     outstanding = load_outstanding(repo) or {}
-    client = await _connect(settings)
     try:
         assert client._card is not None
+        identity = executor_identity(client._card)
         outstanding["agent_name"] = client._card.name
+        outstanding["executor"] = identity
         save_outstanding(repo, outstanding)
+        record["executor"] = identity
+        persist_run_record(record_path, record, latest_repo=repo)
         task = await client.submit(request)
         record = _update_record_from_task(record, task)
         persist_run_record(record_path, record, latest_repo=repo)
@@ -776,6 +879,8 @@ async def cmd_status_async(repo: Path) -> int:
             print("plan:   changed since approval; re-approval required before execution")
         if workflow.get("parent_workflow_id"):
             print(f"parent: {workflow.get('parent_workflow_id')}")
+    for line in managed_status_lines(repo):
+        print(line)
     if outstanding:
         print(f"run:    {outstanding.get('run_id')}")
         print(f"task:   {outstanding.get('task_id') or '(ack unknown; resume to retransmit)'}")
@@ -788,15 +893,32 @@ async def cmd_status_async(repo: Path) -> int:
 
 
 # Refusals watch reports and keeps observing through (e.g. config switched mid-watch).
-_WATCH_ERRORS = (IntegrationError, ConfigError, WorkflowError, ClientError, WorkspaceBusy, WorkspaceError)
+_WATCH_ERRORS = (IntegrationError, ConfigError, WorkflowError, ClientError, WorkspaceBusy, WorkspaceError, SetupError)
+
+
+def _idle_selection_tick(repo: Path, last_message: str | None) -> str | None:
+    """Apply a queued selection once ownership is certain; report changes once."""
+    if not is_managed(repo):
+        return None
+    try:
+        apply_pending_selection(repo)
+    except (SelectionError, SetupError) as exc:
+        message = f"handoff: {exc}"
+        if message != last_message:
+            print(message, file=sys.stderr)
+        return message
+    return None
 
 
 async def cmd_watch_async(repo: Path, interval: float) -> int:
     last_status = ""
     last_notified = None
+    last_deferred: str | None = None
     print(f"watching {repo}/HANDOFF.md every {int(interval)}s (Ctrl-C to stop)")
     while True:
         outstanding = load_outstanding(repo)
+        if not outstanding:
+            last_deferred = _idle_selection_tick(repo, last_deferred) or last_deferred
         if outstanding:
             await cmd_status_async(repo)
             record_path = Path(str(outstanding["run_record"]))
@@ -826,7 +948,8 @@ async def cmd_watch_async(repo: Path, interval: float) -> int:
         workflow = load_workflow(repo)
         status = document.status
         if status != last_status:
-            print(f"[{time.strftime('%H:%M:%S')}] status: {status} ({_turn(status)}'s turn)")
+            if last_deferred is None or not last_deferred.startswith("handoff: dispatch deferred"):
+                print(f"[{time.strftime('%H:%M:%S')}] status: {status} ({_turn(status)}'s turn)")
             if status in ELIGIBLE_HANDOFF_STATUSES:
                 if workflow and workflow.get("dispatch_hold"):
                     print("execute held after failed delivery; watch will not retry")
@@ -835,9 +958,18 @@ async def cmd_watch_async(repo: Path, interval: float) -> int:
                 else:
                     try:
                         await cmd_execute_async(repo, from_watch=True)
+                    except DispatchDeferred as exc:
+                        message = f"handoff: dispatch deferred: {exc}"
+                        if message != last_deferred:
+                            print(message, file=sys.stderr)
+                            print("watch will retry at the next poll")
+                        last_deferred = message
+                        time.sleep(interval)
+                        continue  # keep last_status: retry this dispatch
                     except _WATCH_ERRORS as exc:
                         print(f"handoff: {exc}", file=sys.stderr)
                         print("execute failed; watching for the next status change")
+                    last_deferred = None
             elif status in {READY_FOR_QA, "APPROVED"}:
                 key = (status, (workflow or {}).get("workflow_id"))
                 if key != last_notified:
@@ -903,7 +1035,7 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(cmd_watch_async(repo, args.interval))
         if args.command == "archive":
             return cmd_archive(repo, superseded=bool(args.superseded))
-    except (ConfigError, WorkflowError, IntegrationError, ClientError, WorkspaceBusy, WorkspaceError) as exc:
+    except (ConfigError, WorkflowError, IntegrationError, ClientError, WorkspaceBusy, WorkspaceError, SetupError) as exc:
         code = getattr(exc, "exit_code", 1)
         if isinstance(exc, UnresolvedExecution):
             code = 2

@@ -23,24 +23,36 @@ POLL_INTERVAL="${HANDOFF_POLL_INTERVAL:-30}"
 
 usage() {
   cat <<'EOF'
-usage: handoff <subcommand> [repo-path]     (repo-path defaults to $PWD)
+usage: handoff <subcommand> [repo-path] [options]     (repo-path defaults to $PWD)
 
+setup
+  init      set up a repo. On a terminal it asks; scripted:
+              handoff init <repo> --transport a2a --executor <claude|codex|cursor> \
+                  --model "<model-id>" [--planner cursor] [--reasoning-effort <e>] [--port <n>]
+              handoff init <repo> --transport legacy     (Python-free direct Claude)
+            Generates every JSON/token/skill file; re-running preserves them.
+  models    handoff models <repo> --provider <name>: model IDs the installed CLI reports
+  server    handoff server start|status|stop <repo> [--port <n>]: the managed local service
+  model     handoff model <repo>: selected / active / pending Executor
+            handoff model <repo> --provider <name> --model "<id>" [--after-current]
+            handoff model <repo> --cancel-pending
+  planner   handoff planner <repo> --provider cursor --model "<id>": interactive Cursor Planner
+  permissions  merge the Claude executor allowlist into .claude/settings.local.json
+
+workflow
   status    print Markdown status, execution state, whose turn, and the current Goal
+  approve   record plan approval (A2A receipt) or activate a legacy DRAFT
   execute   run the executor (only when it's the executor's turn)
+  watch     poll Status; auto-execute on executor turns, notify on human/planner turns
   resume    reconnect to an outstanding A2A run
   cancel    request cancellation of an outstanding A2A run
-  approve   record plan approval (A2A receipt) or activate a legacy DRAFT
   runs      list past executor runs from their manifests
-  watch     poll Status; auto-execute on executor turns, notify on human/planner turns
   archive   append Current Task / Execution Notes / QA Feedback to HANDOFF-ARCHIVE.md
             (add --superseded to close an exhausted A2A workflow)
-  init      install the protocol template into a repo (local git excludes, not .gitignore)
-  permissions  merge the executor allowlist into the repo's .claude/settings.local.json
-               (machine-local, git-ignored), adapted to the repo's package manager
-               (yarn/pnpm/npm, detected via lockfile)
 
-env: HANDOFF_CLAUDE_BIN (default: claude), HANDOFF_MODEL (default: bedrock.claude-opus-4-8),
-     HANDOFF_POLL_INTERVAL seconds (default: 30), HANDOFF_A2A_BIN (optional A2A executable)
+env: HANDOFF_CLAUDE_BIN (default: claude), HANDOFF_MODEL (legacy; default: bedrock.claude-opus-4-8),
+     HANDOFF_CODEX_BIN, HANDOFF_CURSOR_BIN (provider CLIs for init/models/model),
+     HANDOFF_POLL_INTERVAL seconds (default: 30), HANDOFF_A2A_BIN (A2A runtime executable)
 EOF
 }
 
@@ -70,7 +82,7 @@ turn_for() {
   case "$1" in
     "READY FOR EXECUTION" | "CHANGES REQUESTED") echo "EXECUTOR" ;;
     "READY FOR QA") echo "PLANNER" ;;
-    "APPROVED") echo "HUMAN" ;;
+    "APPROVED" | "DRAFT") echo "HUMAN" ;;
     *) echo "UNKNOWN" ;;
   esac
 }
@@ -135,14 +147,38 @@ refuse_if_outstanding() {
 }
 
 resolve_a2a_bin() {
-  local bin="${HANDOFF_A2A_BIN:-handoff-a2a}"
-  if [[ "$bin" == */* ]]; then
-    [[ -x "$bin" ]] || die "HANDOFF_A2A_BIN is not executable: $bin"
+  local bin="${HANDOFF_A2A_BIN:-}"
+  if [[ -n "$bin" ]]; then
+    if [[ "$bin" == */* ]]; then
+      [[ -x "$bin" ]] || die "HANDOFF_A2A_BIN is not executable: $bin"
+    else
+      command -v "$bin" >/dev/null 2>&1 || die "HANDOFF_A2A_BIN '$bin' is not on PATH"
+    fi
     printf '%s\n' "$bin"
     return 0
   fi
-  command -v "$bin" >/dev/null 2>&1 || die "A2A is configured but '$bin' is not on PATH (set HANDOFF_A2A_BIN)"
-  printf '%s\n' "$bin"
+  if command -v handoff-a2a >/dev/null 2>&1; then
+    printf '%s\n' "handoff-a2a"
+    return 0
+  fi
+  # This installation's own runtime (created by `uv sync` in the checkout).
+  local own="$SCRIPT_DIR/../.venv/bin/handoff-a2a"
+  if [[ -x "$own" ]]; then
+    printf '%s\n' "$own"
+    return 0
+  fi
+  die "the A2A runtime (handoff-a2a) is not installed. Set it up once with:
+  (cd \"$(cd "$SCRIPT_DIR/.." && pwd)\" && uv sync)
+or point HANDOFF_A2A_BIN at an existing handoff-a2a executable"
+}
+
+# Managed setup/service/selection verbs run in the Python runtime.
+a2a_manage() {
+  local command="$1"
+  shift
+  local bin
+  bin="$(resolve_a2a_bin)"
+  "$bin" "$command" "$@"
 }
 
 a2a_cli() {
@@ -181,6 +217,9 @@ cmd_status() {
   echo "status: ${status:-"(no Status line found)"}"
   echo "turn:   $(turn_for "$status")"
   echo "goal:   $(read_goal "$repo")"
+  if [[ "$status" == "DRAFT" ]]; then
+    echo "next:   human plan review, then handoff approve"
+  fi
 }
 
 cmd_execute() {
@@ -476,10 +515,10 @@ cmd_runs() {
     return 0
   fi
 
-  printf '%-22s  %-24s  %6s  %4s  %8s  %8s  %8s  %-16s  %s\n' \
-    "RUN ID" "FINISHED" "WALL" "EXIT" "IN TOK" "OUT TOK" "COST" "STATUS AFTER" "COMMITS"
-  printf '%-22s  %-24s  %6s  %4s  %8s  %8s  %8s  %-16s  %s\n' \
-    "------" "--------" "----" "----" "------" "-------" "----" "------------" "-------"
+  printf '%-22s  %-24s  %6s  %4s  %8s  %8s  %8s  %-16s  %-7s  %s\n' \
+    "RUN ID" "FINISHED" "WALL" "EXIT" "IN TOK" "OUT TOK" "COST" "STATUS AFTER" "COMMITS" "EXECUTOR"
+  printf '%-22s  %-24s  %6s  %4s  %8s  %8s  %8s  %-16s  %-7s  %s\n' \
+    "------" "--------" "----" "----" "------" "-------" "----" "------------" "-------" "--------"
 
   local m
   for m in "${manifests[@]}"; do
@@ -498,10 +537,14 @@ cmd_runs() {
        elif (.cost_usd != null) then ("$" + (.cost_usd | tostring))
        else "n/a" end),
       (.status_after // .outcome // "n/a"),
-      ((.git.commits // []) | length | tostring)
-    ] | @tsv' "$m" | while IFS=$'\t' read -r rid fin wall ex itin outk cost sa cc; do
-      printf '%-22s  %-24s  %6s  %4s  %8s  %8s  %8s  %-16s  %s\n' \
-        "$rid" "$fin" "$wall" "$ex" "$itin" "$outk" "$cost" "$sa" "$cc"
+      ((.git.commits // []) | length | tostring),
+      (if (.executor.provider != null) then
+         (.executor.provider + "/" + (.executor.model // "?")
+          + (if .executor.config_generation != null then " g" + (.executor.config_generation | tostring) else "" end))
+       else "n/a" end)
+    ] | @tsv' "$m" | while IFS=$'\t' read -r rid fin wall ex itin outk cost sa cc exe; do
+      printf '%-22s  %-24s  %6s  %4s  %8s  %8s  %8s  %-16s  %-7s  %s\n' \
+        "$rid" "$fin" "$wall" "$ex" "$itin" "$outk" "$cost" "$sa" "$cc" "$exe"
     done
   done
 }
@@ -705,18 +748,139 @@ cmd_permissions() {
   echo "review:    cat $settings   (local-only; not part of the repo's git history)"
 }
 
-cmd_init() {
-  local repo="${1:-$PWD}"
-  repo="$(cd "$repo" 2>/dev/null && pwd)" || die "no such directory: ${1:-$PWD}"
-  [[ -d "$repo/.git" ]] || die "not a git repository: $repo"
-  local exclude="$repo/.git/info/exclude"
-  mkdir -p "$repo/.git/info"
-  local p
-  for p in HANDOFF.md HANDOFF-ARCHIVE.md .handoff-logs/ .claude/settings.local.json .handoff-config.json; do
+# Local exclude file via git plumbing: linked worktrees have a .git *file*.
+git_exclude_file() {
+  git -C "$1" rev-parse --path-format=absolute --git-path info/exclude
+}
+
+ensure_excludes() {
+  local repo="$1" exclude p
+  shift
+  exclude="$(git_exclude_file "$repo")" || die "cannot locate the git exclude file for $repo"
+  mkdir -p "$(dirname "$exclude")"
+  for p in "$@"; do
     grep -qxF "$p" "$exclude" 2>/dev/null || echo "$p" >> "$exclude"
   done
+}
+
+# Copy the repository-owned Planner skill into the project's .cursor/skills,
+# never over an unrelated or tracked skill (legacy path; A2A init does this in Python).
+install_planner_skill_legacy() {
+  local repo="$1" src="$SCRIPT_DIR/../skills/handoff-cli" dest="$1/.cursor/skills/handoff-cli"
+  if [[ -e "$dest" || -L "$dest" ]]; then
+    if [[ ! -L "$dest" ]] && [[ -z "$(git -C "$repo" ls-files -- .cursor/skills/handoff-cli)" ]] \
+      && diff -rq "$src" "$dest" >/dev/null 2>&1; then
+      echo "planner skill already installed: $dest"
+      return 0
+    fi
+    die ".cursor/skills/handoff-cli already exists with different or tracked content; not overwriting it"
+  fi
+  mkdir -p "$(dirname "$dest")"
+  cp -R "$src" "$dest"
+  ensure_excludes "$repo" ".cursor/skills/handoff-cli/"
+  echo "installed Planner skill: $dest (project-local; type /handoff-cli in Cursor)"
+}
+
+init_choices_hint() {
+  local repo="$1"
+  cat >&2 <<EOF
+handoff: choose how to set up $repo (no terminal to ask on):
+  handoff init "$repo" --transport a2a --executor <claude|codex|cursor> --model "<model-id>" [--planner cursor]
+  handoff init "$repo" --transport legacy
+list model IDs first: handoff models "$repo" --provider <claude|codex|cursor>
+nothing was changed
+EOF
+}
+
+cmd_init() {
+  local repo="" transport="" planner="" arg
+  local -a choice=()
+  while [[ $# -gt 0 ]]; do
+    arg="$1"
+    case "$arg" in
+      --transport) transport="${2:-}"; shift 2 || die "--transport needs a value" ;;
+      --transport=*) transport="${arg#*=}"; shift ;;
+      --planner) planner="${2:-}"; choice+=("$arg" "${2:-}"); shift 2 || die "--planner needs a value" ;;
+      --planner=*) planner="${arg#*=}"; choice+=("$arg"); shift ;;
+      --executor | --model | --reasoning-effort | --port)
+        [[ $# -ge 2 ]] || die "$arg needs a value"
+        choice+=("$arg" "$2"); shift 2 ;;
+      --executor=* | --model=* | --reasoning-effort=* | --port=*) choice+=("$arg"); shift ;;
+      -*) die "unknown init option: $arg (try --help)" ;;
+      *)
+        [[ -z "$repo" ]] || die "init takes one repo path (got '$repo' and '$arg')"
+        repo="$arg"; shift ;;
+    esac
+  done
+  local given="${repo:-$PWD}"
+  repo="$(cd "$given" 2>/dev/null && pwd)" || die "no such directory: $given"
+  repo="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null)" || die "not a git repository: $repo"
+  case "$planner" in "" | cursor | none) ;; *) die "unknown --planner '$planner' (cursor or none)" ;; esac
   if git -C "$repo" ls-files --error-unmatch .handoff-config.json >/dev/null 2>&1; then
     die ".handoff-config.json is already tracked; refuse to treat secrets as git-excluded"
+  fi
+
+  if [[ -z "$transport" ]]; then
+    local has_executor_choice=0 c
+    for c in ${choice[@]+"${choice[@]}"}; do
+      case "$c" in --executor* | --model* | --reasoning-effort* | --port*) has_executor_choice=1 ;; esac
+    done
+    if [[ $has_executor_choice -eq 1 ]]; then
+      transport="a2a"
+    elif [[ -f "$repo/HANDOFF.md" ]]; then
+      transport="existing" # bare re-init: nondestructive
+    elif [[ -t 0 && -t 1 ]]; then
+      local answer=""
+      while [[ "$answer" != "a2a" && "$answer" != "legacy" ]]; do
+        read -r -p "Transport [a2a = choose Claude/Codex/Cursor Executor and model; legacy = direct Claude]: " answer </dev/tty
+      done
+      transport="$answer"
+    else
+      init_choices_hint "$repo"
+      exit 2
+    fi
+  fi
+
+  case "$transport" in
+    legacy) cmd_init_legacy "$repo" "$planner" ;;
+    existing)
+      ensure_excludes "$repo" HANDOFF.md HANDOFF-ARCHIVE.md .handoff-logs/ .claude/settings.local.json .handoff-config.json
+      if [[ -f "$repo/.handoff-config.json" ]] && jq -e '.managed != null' "$repo/.handoff-config.json" >/dev/null 2>&1; then
+        a2a_manage setup "$repo" --template "$TEMPLATE_DIR/HANDOFF.md" ${choice[@]+"${choice[@]}"}
+      else
+        [[ "$planner" == "cursor" ]] && install_planner_skill_legacy "$repo"
+        echo "already initialized: $repo/HANDOFF.md (ensured local excludes; nothing else changed)"
+        echo "managed A2A setup: handoff init \"$repo\" --transport a2a --executor <provider> --model \"<model-id>\""
+      fi
+      ;;
+    a2a)
+      local -a interactive=()
+      local c2 missing=1
+      for c2 in ${choice[@]+"${choice[@]}"}; do case "$c2" in --model*) missing=0 ;; esac; done
+      if [[ ! -f "$repo/.handoff-config.json" ]] || ! jq -e '.managed != null' "$repo/.handoff-config.json" >/dev/null 2>&1; then
+        if [[ $missing -eq 1 ]]; then
+          if [[ -t 0 && -t 1 ]]; then
+            interactive=(--interactive)
+          else
+            init_choices_hint "$repo"
+            exit 2
+          fi
+        fi
+      fi
+      a2a_manage setup "$repo" --template "$TEMPLATE_DIR/HANDOFF.md" ${interactive[@]+"${interactive[@]}"} ${choice[@]+"${choice[@]}"}
+      if jq -e 'has("claude")' "$repo/.handoff-logs/server.json" >/dev/null 2>&1; then
+        cmd_permissions "$repo"
+      fi
+      ;;
+    *) die "unknown --transport '$transport' (a2a or legacy)" ;;
+  esac
+}
+
+cmd_init_legacy() {
+  local repo="$1" planner="${2:-}"
+  ensure_excludes "$repo" HANDOFF.md HANDOFF-ARCHIVE.md .handoff-logs/ .claude/settings.local.json .handoff-config.json
+  if [[ "$planner" == "cursor" ]]; then
+    install_planner_skill_legacy "$repo"
   fi
   if [[ -f "$repo/HANDOFF.md" ]]; then
     echo "already initialized: $repo/HANDOFF.md (ensured local excludes, including .handoff-config.json)"
@@ -725,17 +889,19 @@ cmd_init() {
   [[ -f "$TEMPLATE_DIR/HANDOFF.md" ]] || die "template not found: $TEMPLATE_DIR/HANDOFF.md"
 
   cp "$TEMPLATE_DIR/HANDOFF.md" "$repo/HANDOFF.md"
-  echo "initialized: $repo/HANDOFF.md (excluded locally via .git/info/exclude)"
+  echo "initialized: $repo/HANDOFF.md (excluded locally via $(git_exclude_file "$repo"))"
   cmd_permissions "$repo"
 }
 
 command="${1:-}"
 shift || true
 case "$command" in
-  status | execute | runs | watch | init | permissions | approve | resume | cancel)
+  status | execute | runs | watch | permissions | approve | resume | cancel)
     "cmd_$command" "${1:-}"
     ;;
+  init) cmd_init "$@" ;;
   archive) cmd_archive "$@" ;;
+  models | model | server | planner) a2a_manage "$command" "$@" ;;
   -h | --help | "") usage ;;
   *) die "unknown subcommand: $command (try --help)" ;;
 esac

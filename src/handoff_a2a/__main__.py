@@ -21,6 +21,21 @@ from handoff_a2a.integration import main as integration_main
 from handoff_a2a.server import load_server_config, serve
 
 
+def _module(name: str):
+    import importlib
+
+    return lambda: importlib.import_module(f"handoff_a2a.{name}")
+
+
+MANAGED_COMMANDS = {
+    "setup": _module("setup"),
+    "models": _module("providers"),
+    "model": _module("selection"),
+    "server": _module("service"),
+    "planner": _module("planner"),
+}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="handoff-a2a",
@@ -31,6 +46,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
+
+    # Managed setup/service/selection commands parse their own arguments.
+    for name, help_text in (
+        ("setup", "generate managed A2A configuration (handoff init)"),
+        ("models", "list models the installed provider CLI reports (handoff models)"),
+        ("model", "show or change the Executor selection (handoff model)"),
+        ("server", "start/status/stop the managed local service (handoff server)"),
+        ("planner", "launch an interactive Cursor Planner (handoff planner)"),
+    ):
+        managed = sub.add_parser(name, help=help_text, add_help=False)
+        managed.add_argument("args", nargs=argparse.REMAINDER)
 
     serve_cmd = sub.add_parser("serve", help="start a loopback-only Executor server")
     serve_cmd.add_argument("--config", required=True, type=Path, help="server.json")
@@ -93,8 +119,12 @@ def _print_unresolved(exc: UnresolvedExecution) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw = sys.argv[1:] if argv is None else list(argv)
+    if raw and raw[0] in MANAGED_COMMANDS:
+        # argparse REMAINDER cannot start with an option, so hand off directly.
+        return MANAGED_COMMANDS[raw[0]]().main(raw[1:])
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw)
     if args.command == "serve":
         config = load_server_config(args.config)
         serve(config)

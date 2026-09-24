@@ -24,12 +24,25 @@ class A2ASettings:
     poll_interval_s: float = 1.0
 
 
+MANAGED_SCHEMA = "urn:handoff-automation:managed-service:v1"
+
+
+@dataclass(frozen=True)
+class ManagedSettings:
+    """Pointer to the CLI-generated local service; the selection lives in server_config."""
+
+    server_config: Path
+    planner_host: str | None = None
+
+
 @dataclass(frozen=True)
 class HandoffConfig:
     transport: str
     path: Path
     max_rounds: int = 3
     a2a: A2ASettings | None = None
+    managed: ManagedSettings | None = None
+    raw: dict[str, Any] | None = None
 
 
 def _positive_number(raw: Any, name: str, default: float) -> float:
@@ -107,7 +120,26 @@ def load_config(repo: Path) -> HandoffConfig | None:
                 block.get("poll_interval_s"), "a2a.poll_interval_s", 1.0
             ),
         )
-    return HandoffConfig(transport=transport, path=path, max_rounds=max_rounds, a2a=a2a)
+    managed = _managed(repo, raw.get("managed"))
+    return HandoffConfig(
+        transport=transport, path=path, max_rounds=max_rounds, a2a=a2a, managed=managed, raw=raw
+    )
+
+
+def _managed(repo: Path, block: Any) -> ManagedSettings | None:
+    if block is None:
+        return None
+    if not isinstance(block, dict) or block.get("schema") != MANAGED_SCHEMA:
+        raise ConfigError(f"managed block must use schema {MANAGED_SCHEMA}")
+    server = block.get("server_config")
+    if not isinstance(server, str) or not server.strip():
+        raise ConfigError("managed.server_config is required")
+    server_path = Path(server).expanduser()
+    if not server_path.is_absolute():
+        server_path = repo / server_path
+    planner = block.get("planner") if isinstance(block.get("planner"), dict) else {}
+    host = planner.get("host") if isinstance(planner.get("host"), str) else None
+    return ManagedSettings(server_config=server_path.resolve(), planner_host=host)
 
 
 @dataclass(frozen=True)
