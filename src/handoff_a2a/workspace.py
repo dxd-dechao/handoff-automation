@@ -60,8 +60,14 @@ def read_status(text: str) -> str:
 
 
 def read_declared_branch(text: str) -> str:
+    """Branch field value; Markdown code decoration (`name`) is not part of the name."""
     match = _BRANCH_RE.search(text)
-    return match.group(1).strip() if match else ""
+    if not match:
+        return ""
+    value = match.group(1).strip()
+    if len(value) > 2 and value.startswith("`") and value.endswith("`") and "`" not in value[1:-1]:
+        value = value[1:-1].strip()
+    return value
 
 
 def _section(text: str, heading: str) -> str:

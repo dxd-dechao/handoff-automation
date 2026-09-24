@@ -371,7 +371,7 @@ class Workflow:
 
     def setup(self) -> None:
         self.base = make_fixture(self.repo)
-        init = self.handoff("init")
+        init = self.handoff("init", "--transport", "legacy")  # the old script writes its own A2A config
         if init.returncode != 0:
             raise RuntimeError(f"handoff init failed: {init.stderr}")
         allow_fixture_tests(self.repo)

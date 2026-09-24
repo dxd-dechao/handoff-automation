@@ -108,3 +108,11 @@ def test_missing_config_is_legacy_and_unknown_transport_fails(tmp_path: Path) ->
     )
     with pytest.raises(ConfigError, match="unknown transport"):
         load_config(repo)
+
+
+def test_decorated_branch_field_names_the_plain_branch() -> None:
+    from handoff_a2a.workspace import read_declared_branch
+
+    assert read_declared_branch("**Branch:** `live/clamp`\n") == "live/clamp"
+    assert read_declared_branch("**Branch:** live/clamp\n") == "live/clamp"
+    assert read_declared_branch("**Branch:** `a` or `b`\n") == "`a` or `b`"  # not a single code span

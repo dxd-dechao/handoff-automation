@@ -192,6 +192,8 @@ def test_delivery_rule_is_collision_safe_excluded_and_removed(tmp_path: Path) ->
     assert "do not run the `handoff`" in body
     config = json.loads((Path(prep.env["CURSOR_CONFIG_DIR"]) / "cli-config.json").read_text())
     assert set(DENY_RULES) <= set(config["permissions"]["deny"])
+    for rule in ("Read(.handoff-logs/credentials/**)", "Write(.handoff-logs/**)", "Write(.handoff-config.json)"):
+        assert rule in config["permissions"]["deny"]
     exclude = git(repo, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude").stdout.strip()
     assert RULE_EXCLUDE_PATTERN in Path(exclude).read_text().splitlines()
     assert git(repo, "status", "--porcelain").stdout.count("handoff-executor") == 0

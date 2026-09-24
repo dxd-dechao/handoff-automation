@@ -11,10 +11,15 @@ This file is the coordination surface between two AI coding agents working on
 this repository. It is portable: copy it to the root of any project to use the
 same workflow there.
 
-- **Planner/QA agent** — an agent in the Cursor IDE (e.g. Fable 5). Writes the
-  plan, reviews the result. Referred to below as **PLANNER**.
-- **Executor agent** — Claude Code in a terminal. Implements the plan. Referred
-  to below as **EXECUTOR**.
+- **Planner/QA agent** — a human-facing agent (the Cursor editor or
+  `handoff planner` Cursor CLI session, Codex, or Claude) using the
+  `handoff-cli` skill. Writes the plan, reviews the result. Referred to below
+  as **PLANNER**.
+- **Executor agent** — a headless Claude Code, Codex, or Cursor CLI run
+  started by the `handoff` CLI with the fixed prompt "execute the handoff".
+  Implements the plan. Referred to below as **EXECUTOR**. Which provider and
+  model it uses is CLI configuration (`handoff model`), chosen independently
+  of the Planner's own model; it never changes this file's plan.
 
 The two agents share no chat context. Everything they need to know from each
 other must be in this file, the git history, or the code itself. The human
@@ -77,7 +82,9 @@ Safety properties you can rely on: `handoff execute` refuses to run when it
 is not the executor's turn, strips your session's auth environment so the
 executor always runs on its own account, and takes a per-repo lock so a
 concurrent `handoff watch` cannot double-run the executor (don't run one
-anyway). Everything the executor must know still goes through this file —
+anyway). If the human asks for a different Executor model between rounds,
+use `handoff model` (add `--after-current` while a run is in progress); the
+approval, round count, and branch carry over unchanged. Everything the executor must know still goes through this file —
 drive mode changes who types the ritual phrase, not the channel.
 
 ### Rules for PLANNER (plan + QA)
@@ -104,6 +111,9 @@ drive mode changes who types the ritual phrase, not the channel.
 - **Work on a branch** named in `Current Task` (create it if it doesn't
   exist). Commit as you go with clear messages; do not push or open PRs
   unless the human asks.
+- **Implement directly.** A headless EXECUTOR (Claude, Codex, or Cursor) must
+  not invoke the `handoff-cli` skill, the `handoff` CLI, or another agent;
+  those are the PLANNER's and the human's tools.
 - **Stay in scope.** Implement exactly what `Current Task` asks. If the plan
   is wrong or blocked, stop and record the problem in `Execution Notes` under
   "Questions / blockers" instead of improvising a different design.

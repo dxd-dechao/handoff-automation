@@ -79,6 +79,11 @@ DENY_RULES = (
     "Shell(codex)",
     "Write(.git/config)",
     "Write(.git/hooks/**)",
+    # The workflow's own state: the local service token, server/run state,
+    # and client routing are never the Executor's to read or change.
+    "Read(.handoff-logs/credentials/**)",
+    "Write(.handoff-logs/**)",
+    "Write(.handoff-config.json)",
 )
 ALLOW_RULES = ("Read(**)", "Write(**)", "Shell(git)", "Shell(ls)")
 

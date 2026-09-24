@@ -1,18 +1,50 @@
 # handoff-automation
 
 Removes the human courier from the two-agent HANDOFF.md workflow
-(PLANNER in Cursor / Claude Code desktop, EXECUTOR = headless Claude Code
-CLI on a separate account) while keeping:
+(PLANNER in Cursor, Codex, or Claude; EXECUTOR = a headless Claude Code,
+Codex, or Cursor CLI run on its own account) while keeping:
 
 - separate accounts for planner and executor,
-- fresh executor context on every run (`claude -p` starts cold),
+- fresh executor context on every run (each headless run starts cold),
 - **HANDOFF.md as the only channel between the agents**,
 - human gates for plan approval and merging.
 
 For the optional A2A work, see [current product status and remaining work](docs/product-status.md)
 and the [implementation plan](docs/implementation-plan.md).
 
-## Setup
+## Quick start (managed A2A: Claude, Codex, or Cursor Executor)
+
+No JSON to write. `handoff init` generates every file; the other commands
+start the local service and change models later.
+
+```sh
+export PATH="$HOME/Documents/GitHub/handoff-automation/bin:$PATH"
+(cd ~/Documents/GitHub/handoff-automation && uv sync)     # once: the A2A runtime
+
+handoff models "/path/to/project" --provider cursor        # real IDs for this account
+handoff init "/path/to/project" --transport a2a --executor cursor --model "<model-id>" --planner cursor
+handoff server start "/path/to/project"
+
+# Planner: Cursor editor (/handoff-cli) or the Cursor CLI:
+handoff planner "/path/to/project" --provider cursor --model "<model-id>"
+# ... Planner writes a DRAFT; after you approve in chat:
+handoff approve "/path/to/project"
+handoff watch "/path/to/project"                           # or: handoff execute
+
+handoff model "/path/to/project"                           # selected / active / pending
+handoff model "/path/to/project" --provider codex --model "<model-id>"                  # between runs
+handoff model "/path/to/project" --provider cursor --model "<model-id>" --after-current # during a run
+```
+
+On a terminal, bare `handoff init "/path/to/project"` asks for the transport,
+provider, model (from the provider's own list), and Planner host. Nothing is
+chosen for you. The full, tested sequence, recovery steps, and limitations
+are in [docs/cli-setup-and-models.md](docs/cli-setup-and-models.md).
+
+## Setup (legacy direct-Claude path)
+
+`handoff init "/path/to/project" --transport legacy` keeps the original
+Python-free path described below.
 
 1. **Executor account.** The `claude` CLI (`~/.local/bin/claude`) must be
   logged into the executor account (run `claude /login` once in a terminal).
@@ -24,14 +56,16 @@ and the [implementation plan](docs/implementation-plan.md).
   ```
 3. **Install the protocol into a target repo:**
   ```sh
-   handoff init ~/path/to/repo
+   handoff init ~/path/to/repo --transport legacy
   ```
    This copies `templates/HANDOFF.md` to the repo root and adds `HANDOFF.md`,
-   `HANDOFF-ARCHIVE.md`, `.handoff-logs/`, and `.handoff-config.json` to
-   `.git/info/exclude` — local-only excludes, deliberately **not** `.gitignore`.
-   Re-running `handoff init` on an already-initialized repo does not rewrite
-   `HANDOFF.md`; it only ensures those excludes. Do not commit
-   `.handoff-config.json`.
+   `HANDOFF-ARCHIVE.md`, `.handoff-logs/`, and `.handoff-config.json` to the
+   repository's local exclude file (`git rev-parse --git-path info/exclude`,
+   so linked worktrees work) — local-only excludes, deliberately **not**
+   `.gitignore`. Re-running `handoff init` on an already-initialized repo does
+   not rewrite `HANDOFF.md`; it only ensures those excludes. Do not commit
+   `.handoff-config.json`. In a non-interactive shell, bare `handoff init` on a
+   new repo prints the flag-based commands and changes nothing.
 4. **Executor permission allowlist.** `handoff init` installs this
    automatically; for a repo that was init'ed earlier, run:
   ```sh
@@ -221,11 +255,17 @@ only supported path, by design.
 ## Optional A2A execution
 
 Absent `.handoff-config.json`, `handoff` stays on the legacy direct-Claude path
-and does not import Python. Set `transport` to `a2a` only in a target
-repository you intend to switch; do not enable it in this implementation
-checkout while building the path.
+and does not import Python. Use `handoff init --transport a2a` (Quick start)
+to generate a managed configuration; do not enable it in this implementation
+checkout while building the path. The rest of this section describes the
+server and the older, manually configured endpoints, which remain supported
+for `execute`/`resume`/`status`/`cancel`. Managed `server`/`model` commands
+refuse to touch them; `handoff init "<repo>" --transport a2a --executor ...
+--model ...` migrates one explicitly (it refuses while work is unresolved,
+keeps the workspace ID and a copy of the old settings, and leaves external
+credentials and databases alone).
 
-Example (placeholders only; never commit secrets):
+Manually configured example (placeholders only; never commit secrets):
 
 ```json
 {
@@ -256,9 +296,9 @@ handoff resume /path/to/workspace
 handoff cancel /path/to/workspace
 ```
 
-Server config (loopback host only) supplies `host`, `port`, `workspace_id`,
-`workspace_path`, `credential_file`, `evidence_dir`, and exactly one Executor
-adapter:
+Server config (loopback host only; generated as `.handoff-logs/server.json`
+in managed repos) supplies `host`, `port`, `workspace_id`, `workspace_path`,
+`credential_file`, `evidence_dir`, and exactly one Executor adapter:
 
 - `"claude": {"binary": "claude", "model": "..."}` runs `claude -p "execute the
   handoff" --permission-mode acceptEdits --output-format json`. Allowed
@@ -278,11 +318,28 @@ adapter:
   price, so `cost_usd` stays `null`. These sandboxes are not equivalent to
   Claude's permission file (for example, Codex may also write temp
   directories).
+- `"cursor": {"binary": "cursor-agent", "model": "..."}` (optional
+  `api_key_file`) runs `cursor-agent --print --output-format stream-json
+  --model <id> --workspace <repo> --trust --force --sandbox enabled "execute
+  the handoff"`. `--force` (required for print-mode edits) is paired with a
+  per-run `CURSOR_CONFIG_DIR` whose deny rules block `git push/merge/remote`,
+  `gh`, the `handoff` CLI, and nested agents, and whose sandbox gives shell
+  commands no network. The stored Cursor login is used; inherited `CURSOR_*`
+  and other providers' credentials are stripped. The validated snapshot is
+  delivered as a temporary, git-excluded `.cursor/rules/handoff-executor-<execution_id>.mdc`
+  (always applied, alongside AGENTS.md and existing rules; removed once the
+  worker stops). The model Cursor reports is recorded next to the requested
+  one. Cursor reports no price, so `cost_usd` stays `null`.
 
-Replacing the Executor means running another server (for example, a Codex one
-for the same `workspace_path`) and pointing `a2a.agent_card_url` at it after
-the previous run is reconciled. Planner steps and the client do not change.
-Existing Claude-only server configs keep working. Optional keys: `state_db` (default `evidence_dir/state.sqlite`),
+In a managed repo, `handoff model` replaces the Executor: it restarts the
+one owned server on the same port and database with the next
+`config_generation`, and the Agent Card advertises `workspace_id` and
+`config_generation` so `execute`/`watch` never dispatch to a service that is
+not running the selection. With a manually configured endpoint, replacing
+the Executor still means running another server and pointing
+`a2a.agent_card_url` at it after the previous run is reconciled. Planner
+steps and the client do not change. Existing Claude-only server configs keep
+working. Optional keys: `state_db` (default `evidence_dir/state.sqlite`),
 `caller_id` (default `local-planner`), `execution_timeout_s` (default 3600),
 `cancel_grace_s` (default 5). The integrated CLI also requires Agent Card
 `workspace_code_fingerprint` and `durable_execution_id_deduplication`. Client
@@ -307,10 +364,12 @@ uv run handoff-a2a execute --repo /path/to/workspace \
   --credential-file /path/to/token --workspace-id that-workspace
 ```
 
-Tests must point `claude.binary` / `codex.binary` at a fake executable, never a
-paid CLI. The explicit live check `scripts/a2a_live_check.py --confirm-live`
-makes real, paid model calls against disposable fixtures
-([results](docs/a2a-replacement-results.md)). If
+Tests must point `claude.binary` / `codex.binary` / `cursor.binary` at a fake
+executable, never a paid CLI. The explicit live checks
+`scripts/a2a_live_check.py --confirm-live` and
+`scripts/a2a_cursor_live_check.py --confirm-live` make real, paid model calls
+against disposable fixtures ([A4 results](docs/a2a-replacement-results.md),
+[A6 results](docs/qa-a6-cli-usability.md)). If
 restart recovery reports `recovery_required`, inspect
 `.handoff-logs/execute.lock/owner.json` and `state.sqlite` and remove the lock
 only after confirming the worker is stopped.
@@ -319,10 +378,18 @@ Profile: [`docs/a2a-coding-task-v1.md`](docs/a2a-coding-task-v1.md).
 
 ## Planner CLI skill
 
-Source: [`skills/handoff-cli/SKILL.md`](skills/handoff-cli/SKILL.md). Copy or
-symlink that folder into a skill directory your Planner host searches (project
-or user-level). It drives the **existing** `handoff` commands for plan /
-execute / QA / drive / status intents, including `approve`, `resume`, and
-`cancel`. It does not add `handoff plan` and does not talk to A2A itself.
+Source: [`skills/handoff-cli/SKILL.md`](skills/handoff-cli/SKILL.md).
+`handoff init "<repo>" --planner cursor` copies it into the project's
+`.cursor/skills/handoff-cli` (git-excluded, never over an unrelated skill);
+for other hosts, copy or symlink the folder into a skill directory the host
+searches. It drives the **existing** `handoff` commands for plan / execute /
+QA / drive / status intents, including `approve`, `resume`, `cancel`, and
+`model`. It does not add `handoff plan` and does not talk to A2A itself.
 
-See [skill loading guidance](https://learn.chatgpt.com/docs/build-skills).
+In Cursor: pick the Planner model in the editor's model picker (Agent mode;
+Plan/Ask modes cannot write the DRAFT) and type `/handoff-cli`, or run
+`handoff planner "<repo>" --provider cursor --model "<id>"` for an
+interactive Cursor CLI session. Neither changes the Executor selection.
+
+See [Cursor skills](https://cursor.com/docs/skills) and
+[skill loading guidance](https://learn.chatgpt.com/docs/build-skills).

@@ -2,6 +2,14 @@
 
 Reviewed: **2026-09-24**. Checkout: `codex/a2a-executor-mvp`, commit `1e09ec58f4f059c9d7f3e01fe875eb01b99ce588`.
 
+**A6 update (2026-09-24, Executor self-report; independent Planner QA pending).** Branch `codex/a6-cli-setup-cursor-model-switch` from `7ee6d78`. The three user requirements are implemented through public commands:
+
+1. `handoff init` generates every JSON, token, exclude, and optional Cursor skill file (guided on a TTY or scripted by flags), and preserves them on re-init. `handoff server start|status|stop` runs a verified local service.
+2. Cursor works as Executor (`adapters/cursor.py`) and as Planner (project-local skill; `handoff planner` launches the Cursor CLI).
+3. `handoff model` switches the Executor between executions, or with `--after-current` during one, without JSON edits or restarting the server or watch.
+
+Live, one approved workflow used a Cursor CLI Planner draft, Cursor Grok and Composer executions, a Codex continuation, and Planner QA. The Codex continuation's delivery failed because it edited the QA section; it was correctly refused. Cursor editor skill discovery is still a manual pending step. See [the A6 report](qa-a6-cli-usability.md) and [setup guide](cli-setup-and-models.md). The sections below predate A6.
+
 **The scoped local A2A MVP passes Planner QA.** R1/R2 were accepted previously; A5 now resolves R3 startup cancellation. **99 Python tests and 17 legacy checks pass.** The original independent cancellation probe passes 4/4 runs across both fake providers, with no surviving worker or delayed write after cancellation. Deterministic regressions cover cancellation before/during launch, child cleanup, and safe workspace reuse. See the [final QA report](qa-a5-2026-09-24.md).
 
 Root `HANDOFF.md` is **A5-CANCEL-STARTUP, APPROVED**, after its first execution. The three-execution predecessor remains archived as **superseded, not approved**, preserving its history. No further implementation correction or paid comparison is required for this scope. Human merge/push and target-repository adoption remain pending; legacy remains the default.

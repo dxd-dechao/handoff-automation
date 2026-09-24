@@ -1,5 +1,7 @@
 # A2A Executor implementation plan
 
+**A6-CLI-USABILITY-CURSOR (2026-09-24): executed; READY FOR QA.** Generated setup (`init`/`models`), managed service (`server`), Executor model selection within a workflow (`model`, `--after-current`), Cursor Executor adapter, and Cursor CLI/editor Planner integration, on `codex/a6-cli-setup-cursor-model-switch`. Evidence and limits: [qa-a6-cli-usability.md](qa-a6-cli-usability.md). The earlier status below remains the record for A1–A5.
+
 **Planner QA, 2026-09-24, reviewed `1e09ec5`: APPROVED for the scoped local MVP.** A5 resolves the last material blocker (R3 startup cancellation). 99 Python tests and 17 legacy checks pass; the original independent cancel probe passes 4/4 runs across both fake adapters. R1/R2 and the retained live replacement evidence remain accepted. See the [final QA report](qa-a5-2026-09-24.md). Root HANDOFF.md is **A5-CANCEL-STARTUP, APPROVED**, after one execution; the predecessor retains its three executions and superseded history. No further implementation round or paid comparison is requested. Human merge/push/adoption remain separate. Full skill-host workflow and third-party interoperability remain disclosed limitations.
 
 Continuation (2026-09-24, Executor): the A3-A4-COMPLETE handoff was executed. The A3 correction, Codex adapter, live replacement evidence, and skill host checks in Codex CLI are done; Cursor host discovery is untested. See product-status.md "Continuation results". The original Planner subsequently approved the scoped MVP after A5, as recorded above.
