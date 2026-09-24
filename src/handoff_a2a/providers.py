@@ -250,8 +250,9 @@ def validate_model(
     if listing.available:
         ids = {item.id for item in listing.models}
         if base not in ids and provider == "codex":
-            # The Codex catalog is not exhaustive (it omits models earlier live
-            # runs used successfully), so absence is not detectable rejection.
+            # The Codex catalog is the CLI's bundled/refreshed list, not account
+            # entitlement, and Codex configurations for other model providers
+            # accept IDs outside it; absence is reported, not treated as rejection.
             notes.append(f"not in {listing.source}; a rejection will surface as a provider error")
             return Validation(
                 provider, model, listing.binary, listing.version, "unverified",
