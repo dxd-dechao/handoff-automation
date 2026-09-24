@@ -9,7 +9,7 @@ conversion of the provider's output files into a neutral outcome.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
@@ -36,6 +36,19 @@ class AdapterOutcome:
     provider_error_detail: str | None = None
 
 
+@dataclass(frozen=True)
+class RunPreparation:
+    """Per-run launch additions from an adapter's optional `prepare_run` hook.
+
+    `env` is merged into the stripped child environment; `artifacts` are
+    recorded in evidence and handed back to `cleanup_run` once the worker is
+    confirmed stopped.
+    """
+
+    env: Mapping[str, str] = field(default_factory=dict)
+    artifacts: Mapping[str, Any] = field(default_factory=dict)
+
+
 class ExecutorAdapter(Protocol):
     provider: str
     display_name: str
@@ -46,6 +59,11 @@ class ExecutorAdapter(Protocol):
         ...
 
     def child_environment(self, base: Mapping[str, str] | None = None) -> dict[str, str]: ...
+
+    # Optional hooks (Cursor): `prepare_run(workspace, execution_id,
+    # handoff_markdown, run_dir) -> RunPreparation` before launch and
+    # `cleanup_run(workspace, execution_id, preparation) -> bool` after the
+    # worker is confirmed stopped. Adapters without them need no per-run files.
 
     def interpret(
         self,

@@ -35,6 +35,7 @@ def _ignore_probes(repo: Path) -> None:
                 "WORKER_LAUNCHES",
                 "AUTH_PROBE",
                 "ARGV_PROBE",
+                "DELIVERY_PROBE",
                 "CHILD_WRITES",
                 "CHILD_PID",
                 ".child_writer.py",

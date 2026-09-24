@@ -13,26 +13,70 @@ import uvicorn
 
 from handoff_a2a.contracts import CODING_TASK_PROFILE, snapshot_sha256
 from handoff_a2a.server import ServerConfig, create_app
-from handoff_a2a.adapters import ClaudeAdapterConfig, CodexAdapterConfig
+from handoff_a2a.adapters import ClaudeAdapterConfig, CodexAdapterConfig, CursorAdapterConfig
 
-PROVIDERS = ("claude", "codex")
+PROVIDERS = ("claude", "codex", "cursor")
 
 FAKE_CLAUDE = r'''#!/usr/bin/env python3
 import json, os, pathlib, re, subprocess, sys, time
 
-# Invoked as `codex exec --json ... --cd <workspace> <prompt>` or as
-# `claude -p <prompt> ... --output-format json`; emit the matching format.
+# Invoked as `codex exec --json ... --cd <workspace> <prompt>`, as
+# `claude -p <prompt> ... --output-format json`, or as
+# `cursor-agent --print --output-format stream-json ... --workspace <ws> <prompt>`;
+# emit the matching format. Discovery commands (version/status/models) answer
+# without touching any workspace.
+ARGS = sys.argv[1:]
+AUTH_OK = os.environ.get("FAKE_PROVIDER_AUTH", "ok") == "ok"
+FAKE_MODELS = [m for m in os.environ.get("FAKE_PROVIDER_MODELS", "fake-model,other-model,grok-4.7-high").split(",") if m]
+if ARGS and ARGS[0] in ("--version", "-v"):
+    print(os.environ.get("FAKE_PROVIDER_VERSION", "fake-cli 1.0.0"))
+    sys.exit(0)
+if ARGS[:2] == ["debug", "models"]:
+    print(json.dumps({"models": [{"slug": m, "display_name": m.upper()} for m in FAKE_MODELS]}))
+    sys.exit(0)
+if ARGS and ARGS[0] in ("status", "whoami"):
+    print("\u2713 Logged in as fake@example.invalid" if AUTH_OK else "Not logged in")
+    sys.exit(0 if AUTH_OK else 1)
+if ARGS and (ARGS[0] == "models" or "--list-models" in ARGS):
+    if not AUTH_OK:
+        print("Authentication required", file=sys.stderr)
+        sys.exit(1)
+    print("Available models\n")
+    for m in FAKE_MODELS:
+        print(f"{m} - {m.replace('-', ' ').title()}")
+    sys.exit(0)
+if ARGS and ARGS[0] not in ("exec", "-p", "--print") and "--print" not in ARGS and "-p" not in ARGS:
+    # Interactive launch (e.g. the Cursor Planner): record argv/env and exit.
+    probe = os.environ.get("FAKE_INTERACTIVE_PROBE")
+    if probe:
+        pathlib.Path(probe).write_text(json.dumps({"argv": ARGS, "cwd": os.getcwd()}), encoding="utf-8")
+    sys.exit(0)
 CODEX = len(sys.argv) > 1 and sys.argv[1] == "exec"
+CURSOR = "--print" in ARGS and "--workspace" in ARGS
 if CODEX:
     os.chdir(sys.argv[sys.argv.index("--cd") + 1])
+if CURSOR:
+    os.chdir(ARGS[ARGS.index("--workspace") + 1])
 root = pathlib.Path.cwd()
 (root / "ARGV_PROBE").write_text(json.dumps(sys.argv[1:]), encoding="utf-8")
+if CURSOR:
+    rules = sorted((root / ".cursor" / "rules").glob("handoff-executor-*.mdc")) if (root / ".cursor" / "rules").is_dir() else []
+    cfg_dir = os.environ.get("CURSOR_CONFIG_DIR")
+    cfg = pathlib.Path(cfg_dir) / "cli-config.json" if cfg_dir else None
+    (root / "DELIVERY_PROBE").write_text(json.dumps({
+        "rules": [r.name for r in rules],
+        "rule_has_handoff": bool(rules) and (root / "HANDOFF.md").read_text(encoding="utf-8") in rules[0].read_text(encoding="utf-8"),
+        "config": json.loads(cfg.read_text(encoding="utf-8")) if cfg and cfg.is_file() else None,
+        "planner_skill_present": (root / ".cursor" / "skills" / "handoff-cli" / "SKILL.md").is_file(),
+        "model": ARGS[ARGS.index("--model") + 1],
+    }), encoding="utf-8")
 launches = root / "WORKER_LAUNCHES"
 launches.write_text(str(int(launches.read_text(encoding="utf-8") or "0") + 1 if launches.is_file() else 1) + "\n", encoding="utf-8")
 (root / "WORKER_STARTED").write_text("started\n", encoding="utf-8")
 leaked = [
     k for k in os.environ
     if k.startswith(("ANTHROPIC_", "CLAUDE", "OPENAI_")) or k in ("CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
+    or (k.startswith("CURSOR_") and k != "CURSOR_CONFIG_DIR")
 ]
 (root / "AUTH_PROBE").write_text("\n".join(leaked), encoding="utf-8")
 mode = (root / ".fake-mode").read_text(encoding="utf-8").strip() if (root / ".fake-mode").is_file() else "success"
@@ -112,9 +156,25 @@ def codex_events(text, is_error=False, usage=None):
     for event in events:
         sys.stdout.write(json.dumps(event) + "\n")
 
+def cursor_events(text, is_error=False, usage=None):
+    model = ARGS[ARGS.index("--model") + 1]
+    events = [
+        {"type": "system", "subtype": "init", "apiKeySource": "login", "cwd": str(root), "session_id": "fake-session", "model": "Fake " + model, "permissionMode": "default"},
+        {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}, "session_id": "fake-session"},
+    ]
+    result = {"type": "result", "subtype": "error" if is_error else "success", "is_error": is_error, "duration_ms": 10, "duration_api_ms": 5, "result": text, "session_id": "fake-session", "request_id": "fake-request"}
+    if usage is not False:
+        result["usage"] = usage or {"inputTokens": 1, "outputTokens": 2, "cacheReadTokens": 0, "cacheWriteTokens": 0}
+    events.append(result)
+    for event in events:
+        sys.stdout.write(json.dumps(event) + "\n")
+
 def result_json(**overrides):
     if CODEX:
         codex_events(overrides.get("result", "fake worker done"), overrides.get("is_error", False))
+        return
+    if CURSOR:
+        cursor_events(overrides.get("result", "fake worker done"), overrides.get("is_error", False))
         return
     payload = {
         "type": "result",
@@ -158,6 +218,9 @@ if mode == "cost_missing":
     write_handoff(set_notes(set_status(text, "READY FOR QA"), "cost omitted"))
     if CODEX:
         codex_events("ok", usage={"input_tokens": 4, "cached_input_tokens": 3, "output_tokens": 5})
+        sys.exit(0)
+    if CURSOR:
+        cursor_events("ok", usage={"inputTokens": 4, "outputTokens": 5})
         sys.exit(0)
     payload = {
         "type": "result",
@@ -308,11 +371,7 @@ def write_server_json(path: Path, config: ServerConfig) -> Path:
                 "execution_timeout_s": config.execution_timeout_s,
                 "cancel_grace_s": config.cancel_grace_s,
                 "public_base_url": config.public_base_url,
-                **(
-                    {"claude": {"binary": config.claude.binary, "model": config.claude.model}}
-                    if config.claude is not None
-                    else {"codex": {"binary": config.codex.binary, "model": config.codex.model}}
-                ),
+                config.executor_name(): {"binary": config.executor().binary, "model": config.executor().model},
             },
             indent=2,
         )
@@ -348,6 +407,7 @@ def make_server_config(
         evidence_dir=evidence,
         claude=ClaudeAdapterConfig(binary=str(fake_claude), model="fake-model") if provider == "claude" else None,
         codex=CodexAdapterConfig(binary=str(fake_claude), model="fake-model") if provider == "codex" else None,
+        cursor=CursorAdapterConfig(binary=str(fake_claude), model="fake-model") if provider == "cursor" else None,
         public_base_url=f"http://127.0.0.1:{port}",
         credential="test-token",
         state_db=state_db or (evidence / "state.sqlite"),

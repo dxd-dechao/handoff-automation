@@ -7,6 +7,7 @@ import contextlib
 import hmac
 import json
 import logging
+import subprocess
 import threading
 import time
 import uuid
@@ -49,9 +50,12 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from handoff_a2a.adapters import (
+    PROVIDER_NAMES,
     AdapterConfig,
     ClaudeAdapterConfig,
     CodexAdapterConfig,
+    CursorAdapterConfig,
+    RunPreparation,
     build_adapter,
 )
 from handoff_a2a.contracts import (
@@ -149,15 +153,25 @@ class ServerConfig:
     execution_timeout_s: float = 3600.0
     cancel_grace_s: float = 5.0
     codex: CodexAdapterConfig | None = None
+    cursor: CursorAdapterConfig | None = None
+    # Managed configurations number each Executor selection; the Agent Card
+    # advertises it so clients can verify which selection a server is running.
+    config_generation: int | None = None
 
     def resolved_state_db(self) -> Path:
         return Path(self.state_db) if self.state_db is not None else self.evidence_dir / "state.sqlite"
 
     def executor(self) -> AdapterConfig:
-        """Exactly one adapter per server; replacing the Executor means another endpoint."""
-        if (self.claude is None) == (self.codex is None):
-            raise ValueError("configure exactly one executor adapter: claude or codex")
-        return self.codex if self.codex is not None else self.claude  # type: ignore[return-value]
+        """Exactly one adapter per server process; a model change restarts the server."""
+        configured = [c for c in (self.claude, self.codex, self.cursor) if c is not None]
+        if len(configured) != 1:
+            raise ValueError("configure exactly one executor adapter: claude, codex, or cursor")
+        return configured[0]
+
+    def executor_name(self) -> str:
+        return {ClaudeAdapterConfig: "claude", CodexAdapterConfig: "codex", CursorAdapterConfig: "cursor"}[
+            type(self.executor())
+        ]
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -187,14 +201,14 @@ def load_server_config(path: Path) -> ServerConfig:
     port = raw.get("port")
     if not isinstance(port, int) or isinstance(port, bool) or port < 1 or port > 65535:
         raise ValueError("port must be an integer 1-65535")
-    claude_raw = raw.get("claude")
-    codex_raw = raw.get("codex")
-    if (claude_raw is None) == (codex_raw is None):
-        raise ValueError("configure exactly one executor adapter: claude or codex")
+    present = [name for name in PROVIDER_NAMES if raw.get(name) is not None]
+    if len(present) != 1:
+        raise ValueError("configure exactly one executor adapter: claude, codex, or cursor")
     claude_config: ClaudeAdapterConfig | None = None
     codex_config: CodexAdapterConfig | None = None
-    name = "claude" if claude_raw is not None else "codex"
-    block = claude_raw if claude_raw is not None else codex_raw
+    cursor_config: CursorAdapterConfig | None = None
+    name = present[0]
+    block = raw[name]
     if not isinstance(block, dict):
         raise ValueError(f"{name} adapter config must be an object")
     binary = str(block.get("binary") or "")
@@ -203,11 +217,19 @@ def load_server_config(path: Path) -> ServerConfig:
         raise ValueError(f"{name}.binary and {name}.model are required")
     if name == "claude":
         claude_config = ClaudeAdapterConfig(binary=binary, model=model)
-    else:
+    elif name == "codex":
         effort = block.get("reasoning_effort")
         if effort is not None and (not isinstance(effort, str) or not effort.strip()):
             raise ValueError("codex.reasoning_effort must be a non-empty string")
         codex_config = CodexAdapterConfig(binary=binary, model=model, reasoning_effort=effort)
+    else:
+        key_file = block.get("api_key_file")
+        if key_file is not None and (not isinstance(key_file, str) or not key_file.strip()):
+            raise ValueError("cursor.api_key_file must be a non-empty path")
+        cursor_config = CursorAdapterConfig(binary=binary, model=model, api_key_file=key_file)
+    generation = raw.get("config_generation")
+    if generation is not None and (isinstance(generation, bool) or not isinstance(generation, int) or generation < 1):
+        raise ValueError("config_generation must be a positive integer")
     credential_file = Path(str(raw.get("credential_file") or "")).expanduser()
     if not credential_file.is_file():
         raise ValueError(f"credential-file not found: {credential_file}")
@@ -238,6 +260,8 @@ def load_server_config(path: Path) -> ServerConfig:
         evidence_dir=evidence_dir.resolve(),
         claude=claude_config,
         codex=codex_config,
+        cursor=cursor_config,
+        config_generation=generation,
         public_base_url=public,
         credential=credential,
         state_db=Path(str(state_db_raw)).expanduser().resolve() if state_db_raw else None,
@@ -247,17 +271,20 @@ def load_server_config(path: Path) -> ServerConfig:
     )
 
 
-def _extension_params(adapter: Any) -> Struct:
+def _extension_params(adapter: Any, config: ServerConfig) -> Struct:
     params = Struct()
-    params.update(
-        {
-            DURABLE_DEDUP_PARAM: True,
-            WORKSPACE_FINGERPRINT_PARAM: True,
-            # Informational identity for evidence; clients must not branch on it.
-            "executor_provider": adapter.provider,
-            "executor_model": adapter.model,
-        }
-    )
+    values: dict[str, Any] = {
+        DURABLE_DEDUP_PARAM: True,
+        WORKSPACE_FINGERPRINT_PARAM: True,
+        # Identity for evidence and managed-service verification. The coding
+        # contract itself never branches on provider.
+        "executor_provider": adapter.provider,
+        "executor_model": adapter.model,
+        "workspace_id": config.workspace_id,
+    }
+    if config.config_generation is not None:
+        values["config_generation"] = config.config_generation
+    params.update(values)
     return params
 
 
@@ -288,7 +315,7 @@ def build_agent_card(config: ServerConfig) -> AgentCard:
                     uri=CODING_TASK_PROFILE,
                     required=True,
                     description="HANDOFF.md snapshot coding-task profile v1",
-                    params=_extension_params(adapter),
+                    params=_extension_params(adapter, config),
                 )
             ],
         ),
@@ -350,6 +377,36 @@ class ExecutionRuntime:
         self._closing = False
         self._final_kind: str | None = None
         self.started_at = time.monotonic()
+        self.preparation: RunPreparation | None = None
+        self._prepared = False
+
+    def prepare_delivery(self) -> dict[str, str]:
+        """Adapter per-run files (e.g. Cursor's rule); returns env additions."""
+        hook = getattr(self.executor.adapter, "prepare_run", None)
+        if hook is None:
+            return {}
+        self._prepared = True
+        self.preparation = hook(
+            self.executor.workspace.path,
+            self.request.execution_id,
+            self.request.handoff_markdown,
+            self.evidence,
+        )
+        _write_json(self.evidence / "delivery.json", dict(self.preparation.artifacts))
+        return dict(self.preparation.env)
+
+    def cleanup_delivery(self) -> None:
+        """Remove per-run delivery files; only called once no worker can be running."""
+        if not self._prepared:
+            return
+        hook = getattr(self.executor.adapter, "cleanup_run", None)
+        if hook is None:
+            return
+        try:
+            if hook(self.executor.workspace.path, self.request.execution_id, self.preparation):
+                self._prepared = False
+        except OSError:
+            LOGGER.exception("delivery cleanup failed for %s", self.request.execution_id)
 
     def _before_spawn(self) -> None:
         """Test seam: runs in the launch thread before the spawn gate."""
@@ -409,6 +466,7 @@ class ExecutionRuntime:
         await asyncio.to_thread(self._block_spawn)
         if self.owned is not None and is_owned_alive(self.owned):
             return
+        self.cleanup_delivery()
         self.executor.workspace.lock.release()
         self.lock_acquired = False
 
@@ -448,6 +506,7 @@ class ExecutionRuntime:
                 self._finalized = True
                 self._final_kind = "recovery"
                 return "recovery"
+            self.cleanup_delivery()
             await self._capture_partial(reason=reason, canceled=(kind == "canceled"))
             lifecycle = {
                 "worker_started": self.worker_launched,
@@ -566,6 +625,18 @@ class CodingAgentExecutor(AgentExecutor):
         self.config.evidence_dir.mkdir(parents=True, exist_ok=True)
         self._runtimes: dict[str, ExecutionRuntime] = {}
 
+    def identity(self, outcome: Any | None = None) -> dict[str, Any]:
+        """Requested identity of this server plus what the provider reported, kept separate."""
+        reported = None
+        if outcome is not None and isinstance(outcome.parsed, dict):
+            reported = outcome.parsed.get("reported_model")
+        return {
+            "executor_provider": self.adapter.provider,
+            "executor_model": self.adapter.model,
+            "executor_reported_model": reported,
+            "config_generation": self.config.config_generation,
+        }
+
     def reconcile_startup(self) -> None:
         for claim in self.state.list_nonterminal():
             try:
@@ -626,16 +697,26 @@ class CodingAgentExecutor(AgentExecutor):
                     )
                     return
             self._persist_failed(claim, "interrupted by server restart")
+            self._cleanup_stale_delivery(claim.execution_id)
             release_lock_if_owner(self.workspace.path, claim.execution_id)
             return
         if claim.status == "claimed" and claim.pid is None:
             self._persist_failed(claim, "interrupted before worker start (server restart)")
+            self._cleanup_stale_delivery(claim.execution_id)
             release_lock_if_owner(self.workspace.path, claim.execution_id)
             return
         self._persist_recovery(
             claim,
             "uncertain process identity after restart; do not remove execute.lock until the worker is confirmed stopped",
         )
+
+    def _cleanup_stale_delivery(self, execution_id: str) -> None:
+        hook = getattr(self.adapter, "cleanup_run", None)
+        if hook is not None:
+            try:
+                hook(self.workspace.path, execution_id, None)
+            except OSError:
+                LOGGER.exception("stale delivery cleanup failed for %s", execution_id)
 
     def _persist_failed(self, claim: ExecutionClaim, reason: str) -> None:
         persist_task_outcome(
@@ -703,6 +784,7 @@ class CodingAgentExecutor(AgentExecutor):
                 await updater.cancel(
                     updater.new_agent_message([new_data_part({"reason": "canceled; worker already stopped"})])
                 )
+                self._cleanup_stale_delivery(claim.execution_id)
                 release_lock_if_owner(self.workspace.path, claim.execution_id)
                 return
             stopped = await asyncio.to_thread(
@@ -720,6 +802,7 @@ class CodingAgentExecutor(AgentExecutor):
             await updater.cancel(
                 updater.new_agent_message([new_data_part({"reason": "canceled by caller"})])
             )
+            self._cleanup_stale_delivery(claim.execution_id)
             release_lock_if_owner(self.workspace.path, claim.execution_id)
             return
         await runtime.finalize(
@@ -803,6 +886,11 @@ class CodingAgentExecutor(AgentExecutor):
                 expected_code_fingerprint=request.expected_code_fingerprint,
             )
             runtime.before_git = self.workspace.snapshot()
+            try:
+                delivery_env = runtime.prepare_delivery()
+            except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+                runtime.cleanup_delivery()
+                raise WorkspaceError(f"executor delivery could not be prepared: {exc}") from exc
         except WorkspaceBusy as exc:
             self.state.update_execution(request.execution_id, status="rejected")
             await updater.reject(
@@ -828,6 +916,7 @@ class CodingAgentExecutor(AgentExecutor):
         stderr_path = runtime.evidence / "stderr.txt"
         argv = self.adapter.argv(self.workspace.path, request.handoff_markdown)
         env = self.adapter.child_environment()
+        env.update(delivery_env)
         try:
             owned = await asyncio.to_thread(
                 runtime.spawn_worker,
@@ -864,6 +953,7 @@ class CodingAgentExecutor(AgentExecutor):
                 return
             if runtime._finalized or runtime._closing:
                 return
+            runtime.cleanup_delivery()  # the owned group is gone
             duration_s = time.monotonic() - runtime.started_at
             outcome = self.adapter.interpret(
                 stdout_path,
@@ -933,6 +1023,7 @@ class CodingAgentExecutor(AgentExecutor):
                 evidence_dir=str(runtime.evidence),
                 plan_intact=after_doc.planner_fingerprint == runtime.before_doc.planner_fingerprint,
                 worker_launched=runtime.worker_launched,
+                extra=self.identity(outcome),
             )
             payload = result.to_dict()
             payload["worker_stopped"] = True
@@ -947,8 +1038,7 @@ class CodingAgentExecutor(AgentExecutor):
                     "task_id": runtime.task_id,
                     "context_id": runtime.context_id,
                     "iteration": request.iteration,
-                    "executor_provider": self.adapter.provider,
-                    "executor_model": self.adapter.model,
+                    **self.identity(outcome),
                 },
             )
             self.state.update_execution(

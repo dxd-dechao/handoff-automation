@@ -72,9 +72,18 @@ async def test_roundtrip_success_and_correction(
             if provider == "claude":
                 assert result["cost_usd"] == 0.0
                 assert result["usage"]["cache_creation_input_tokens"] == 0
-            else:
+            elif provider == "codex":
                 assert result["cost_usd"] is None  # Codex reports no price
                 assert result["usage"]["cache_creation_input_tokens"] is None
+            else:
+                assert result["cost_usd"] is None  # Cursor reports no price
+                assert result["usage"]["cache_creation_input_tokens"] == 0
+                assert result["executor_reported_model"] == "Fake fake-model"
+                delivery = json.loads((repo / "DELIVERY_PROBE").read_text())
+                assert delivery["rule_has_handoff"] is True
+                assert not list((repo / ".cursor" / "rules").glob("*.mdc"))  # removed after the run
+            assert result["executor_provider"] == provider
+            assert result["executor_model"] == "fake-model"
             assert result["usage"]["input_tokens"] == 1
             assert result["usage"]["output_tokens"] == 2
             assert (repo / "app.py").read_text() == "value = 1\n"
@@ -83,7 +92,11 @@ async def test_roundtrip_success_and_correction(
             assert (evidence / first["execution_id"] / "handoff.md").is_file()
             assert not (repo / ".handoff-logs" / "execute.lock").exists()
             leaked = (repo / "AUTH_PROBE").read_text().split()
-            own = ("ANTHROPIC_", "CLAUDE") if provider == "claude" else ("OPENAI_", "CODEX_", "ANTHROPIC_")
+            own = {
+                "claude": ("ANTHROPIC_", "CLAUDE"),
+                "codex": ("OPENAI_", "CODEX_", "ANTHROPIC_"),
+                "cursor": ("CURSOR_", "OPENAI_", "CODEX_", "ANTHROPIC_"),
+            }[provider]
             assert not [name for name in leaked if name.startswith(own)]
 
             write_handoff(
@@ -260,7 +273,7 @@ async def test_zero_cost_survives_roundtrip(tmp_path: Path, provider: str) -> No
     else:
         assert result["cost_usd"] is None and result["cost_provenance"] is None
         assert result["usage"]["cache_read_input_tokens"] == 0  # a real zero is kept
-        assert result["usage_provenance"].startswith("codex.")
+        assert result["usage_provenance"].startswith(f"{provider}.")
 
 
 

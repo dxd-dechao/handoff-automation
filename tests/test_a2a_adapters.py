@@ -14,7 +14,7 @@ import pytest
 from google.protobuf.json_format import MessageToDict
 
 from a2a_harness import PROVIDERS, make_fake_claude, make_repo, make_server_config, write_server_json
-from handoff_a2a.adapters import ClaudeAdapter, CodexAdapter, build_adapter
+from handoff_a2a.adapters import ClaudeAdapter, CodexAdapter, CursorAdapter, build_adapter
 from handoff_a2a.adapters.base import RITUAL_PROMPT
 from handoff_a2a.adapters.codex import (
     CodexAdapterConfig,
@@ -126,7 +126,7 @@ def test_agent_card_reports_actual_executor_identity(tmp_path: Path, provider: s
     config, _token, _evidence = make_server_config(tmp_path, repo, fake, provider=provider)
     loaded = load_server_config(write_server_json(tmp_path / "server.json", config))
     card = build_agent_card(loaded)
-    assert card.name == f"handoff-a2a {'Claude' if provider == 'claude' else 'Codex'} Executor"
+    assert card.name == f"handoff-a2a {provider.capitalize()} Executor"
     ext = next(e for e in card.capabilities.extensions if e.uri == CODING_TASK_PROFILE)
     params = MessageToDict(ext.params)
     assert params["durable_execution_id_deduplication"] is True
@@ -134,7 +134,7 @@ def test_agent_card_reports_actual_executor_identity(tmp_path: Path, provider: s
     assert params["executor_provider"] == provider
     assert params["executor_model"] == "fake-model"
     adapter = build_adapter(loaded.executor())
-    assert isinstance(adapter, ClaudeAdapter if provider == "claude" else CodexAdapter)
+    assert isinstance(adapter, {"claude": ClaudeAdapter, "codex": CodexAdapter, "cursor": CursorAdapter}[provider])
 
 
 def test_server_config_requires_exactly_one_adapter(tmp_path: Path) -> None:
