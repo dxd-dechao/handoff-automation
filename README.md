@@ -64,10 +64,14 @@ are in [docs/cli-setup-and-models.md](docs/cli-setup-and-models.md).
 `handoff init "/path/to/project" --transport legacy` keeps the original
 Python-free path described below.
 
-1. **Executor account.** The `claude` CLI (`~/.local/bin/claude`) must be
-  logged into the executor account (run `claude /login` once in a terminal).
-   The planner runs in Cursor / the desktop app on its own account; this tool
-   never touches it.
+1. **Executor account (legacy mode only).** This subsection applies only to
+   `--transport legacy`, whose Executor is Claude Code. Log the `claude` CLI
+   into the Executor account once (`claude /login`). The Planner remains
+   separate; this legacy path does not launch or authenticate it.
+
+   Managed A2A supports Claude, Codex, and Cursor as Executors. Log in with
+   the selected provider's own CLI (`claude /login`, `codex login`, or
+   `cursor-agent login`) and follow the [A2A setup guide](docs/cli-setup-and-models.md).
 2. **PATH.** Add this repo's `bin` to your PATH, e.g. in `~/.zshrc`:
   ```sh
    export PATH="$HOME/Documents/handoff-automation/bin:$PATH"
