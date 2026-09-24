@@ -756,3 +756,57 @@ def test_plain_legacy_watch_dispatches_without_python(tmp_path: Path) -> None:
         out, _ = watch.communicate(timeout=10)
     assert _legacy_launches(marker) == 1, out
     assert "no-a2a" not in out
+
+
+# ── --json contract (A7): one object, schema + kind, errors on stdout ────────
+
+
+def test_json_outputs_for_models_model_and_server(tmp_path: Path) -> None:
+    from a2a_harness import handoff, managed_env, managed_repo, stop_managed
+
+    def as_json(result: subprocess.CompletedProcess[str], kind: str) -> dict:
+        data = json.loads(result.stdout)
+        assert data["schema"] == "urn:handoff-automation:cli-output:v1" and data["kind"] == kind, data
+        return data
+
+    repo, env = managed_repo(tmp_path)
+    token = (repo / ".handoff-logs" / "credentials" / "service-token").read_text().strip()
+    listed = as_json(handoff(env, "models", str(repo), "--provider", "cursor", "--json"), "models")
+    assert [m["id"] for m in listed["models"]] == ["fake-model", "other-model", "grok-4.7-high"]
+    assert listed["reasoning_effort_supported"] is False and listed["login_command"] == "cursor-agent login"
+    claude = as_json(handoff(env, "models", "--provider", "claude", "--json"), "models")
+    assert claude["available"] is False and claude["models"] == [] and "explicit" in claude["note"]
+    codex = as_json(handoff(env, "models", "--provider", "codex", "--json"), "models")
+    assert codex["reasoning_effort_supported"] is True
+    denied = handoff({**env, "FAKE_PROVIDER_AUTH": "missing"}, "models", "--provider", "cursor", "--json")
+    assert denied.returncode == 1 and "cursor-agent login" in as_json(denied, "models")["error"]
+
+    stopped = handoff(env, "server", "status", str(repo), "--json")
+    assert stopped.returncode == 0
+    state = as_json(stopped, "server-status")
+    assert state["service"] == "stopped" and state["verified"] is False and state["active"] is None
+    try:
+        started = as_json(handoff(env, "server", "start", str(repo), "--json"), "server-status")
+        assert started["verified"] is True and started["active"]["model"] == "fake-model" and started["pid"]
+        running = handoff(env, "server", "status", str(repo), "--json")
+        assert running.returncode == 0 and as_json(running, "server-status")["verified"] is True
+        switched = handoff(env, "model", str(repo), "--provider", "cursor", "--model", "other-model", "--json")
+        assert switched.returncode == 0, switched.stdout + switched.stderr
+        change = as_json(switched, "model-change")
+        assert change["selected"]["model"] == "other-model" and change["selected"]["generation"] == 2
+        assert change["active"]["state"] == "verified" and any("active:" in m for m in change["messages"])
+        refused = handoff(env, "model", str(repo), "--provider", "cursor", "--model", "grok-9", "--json")
+        assert refused.returncode == 1 and "not in cursor-agent models" in as_json(refused, "model-change")["error"]
+        stop = as_json(handoff(env, "server", "stop", str(repo), "--json"), "server-stop")
+        assert stop["outcome"] == "stopped"
+    finally:
+        stop_managed(repo)
+    for args in (("server", "status", str(repo), "--json"), ("model", str(repo), "--json"), ("status", str(repo), "--json")):
+        assert token not in handoff(env, *args).stdout
+
+    (tmp_path / "plain").mkdir()
+    plain = make_repo(tmp_path / "plain")
+    unmanaged = handoff(managed_env(tmp_path / "plain"), "server", "status", str(plain), "--json")
+    assert unmanaged.returncode == 2 and "no CLI-managed A2A service" in as_json(unmanaged, "server-status")["error"]
+    model_err = handoff(managed_env(tmp_path / "plain"), "model", str(plain), "--json")
+    assert model_err.returncode == 2 and as_json(model_err, "model")["error"]

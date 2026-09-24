@@ -267,3 +267,75 @@ def test_codex_model_input_carries_full_handoff_and_repo_guidance(tmp_path: Path
     if guidance:
         assert f"REPO-GUIDANCE-SENTINEL from {guidance}" in text
     assert text.count("HANDOFF-SENTINEL-7Q") == 1  # delivered once, not duplicated
+
+
+# ── Executor isolation from the Planner skill (A7) ──────────────────────────
+
+
+def test_claude_executor_launch_denies_the_handoff_cli_and_skill() -> None:
+    from handoff_a2a.adapters.claude import EXECUTOR_DISALLOWED_TOOLS, ClaudeAdapterConfig
+
+    argv = ClaudeAdapter(ClaudeAdapterConfig(binary="claude", model="m")).argv()
+    denied = argv[argv.index("--disallowedTools") + 1].split(",")
+    assert denied == list(EXECUTOR_DISALLOWED_TOOLS)
+    for rule in ("Bash(handoff:*)", "Bash(*/handoff:*)", "Bash(handoff-a2a:*)", "Skill(handoff-cli)"):
+        assert rule in denied
+    assert argv[argv.index("-p") + 1] == RITUAL_PROMPT
+    # The legacy (Python-free) executor passes the same list.
+    bash = (SRC.parents[1] / "bin" / "handoff").read_text()
+    match = re.search(r'^readonly EXECUTOR_DISALLOWED_TOOLS="([^"]+)"$', bash, re.MULTILINE)
+    assert match and match.group(1).split(",") == list(EXECUTOR_DISALLOWED_TOOLS)
+    # Deliberately not a settings.local.json rule: a Claude Code Planner in the
+    # same repository reads that file and must keep running `handoff`.
+    assert "handoff" not in (SRC.parents[1] / "templates" / "executor-settings.json").read_text()
+
+
+def test_codex_disables_the_project_planner_skill(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    workspace = tmp_path / "repo"
+    skill = workspace / ".agents" / "skills" / "handoff-cli"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: handoff-cli\n---\n", encoding="utf-8")
+    (workspace / ".agents" / "skills" / "team").mkdir()
+    (workspace / ".agents" / "skills" / "team" / "SKILL.md").write_text("x", encoding="utf-8")
+    argv = CodexAdapter(CodexAdapterConfig(binary="codex", model="m")).argv(workspace, "# HANDOFF\n")
+    override = next(a for a in argv if a.startswith("skills.config="))
+    assert str((skill / "SKILL.md").resolve()) in override and override.count("enabled=false") == 1
+    assert "team" not in override
+
+
+@pytest.mark.parametrize("provider", PROVIDERS)
+def test_executor_runs_cannot_use_the_planner_skill_in_any_location(tmp_path: Path, provider: str) -> None:
+    """Skill installed in every project folder and the user folders; one fake Executor run."""
+    from a2a_harness import handoff, managed_repo, stop_managed, write_handoff
+
+    home = tmp_path / "home"
+    home.mkdir()
+    repo, env = managed_repo(tmp_path, provider=provider, extra_env={"HOME": str(home)})
+    env.pop("CLAUDE_CONFIG_DIR", None)
+    for host in PROVIDERS:
+        assert handoff(env, "skill", "install", str(repo), "--host", host).returncode == 0
+        assert handoff(env, "skill", "install", "--host", host, "--user").returncode == 0
+    write_handoff(repo, status="DRAFT")
+    try:
+        assert handoff(env, "server", "start", str(repo)).returncode == 0
+        assert handoff(env, "approve", str(repo)).returncode == 0
+        run = handoff(env, "execute", str(repo))
+        assert run.returncode == 0, run.stdout + run.stderr
+    finally:
+        stop_managed(repo)
+    argv = json.loads((repo / "ARGV_PROBE").read_text())
+    if provider == "claude":
+        denied = argv[argv.index("--disallowedTools") + 1]
+        assert "Bash(handoff:*)" in denied and "Skill(handoff-cli)" in denied
+    elif provider == "codex":
+        override = next(a for a in argv if a.startswith("skills.config="))
+        assert str((repo / ".agents" / "skills" / "handoff-cli" / "SKILL.md").resolve()) in override
+        assert str((home / ".agents" / "skills" / "handoff-cli" / "SKILL.md").resolve()) in override
+    else:
+        deny = json.loads((repo / "DELIVERY_PROBE").read_text())["config"]["permissions"]["deny"]
+        for rule in ("Shell(handoff)", "Shell(*/handoff)", "Shell(handoff-a2a)", "Shell(*/handoff-a2a)"):
+            assert rule in deny
+    # The skill copies are workflow files: the run's code fingerprint ignored them.
+    assert (repo / "app.py").read_text() == "value = 1\n"
