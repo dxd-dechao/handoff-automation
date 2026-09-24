@@ -492,17 +492,24 @@ def run_setup(opts: SetupOptions) -> SetupReport:
     managed = existing is not None and existing.managed is not None
     if paths.logs.exists() and not paths.logs.is_dir():
         raise SetupError(f"{LOG_DIRNAME} exists and is not a directory")
+    fresh_dirs = [d for d in (paths.logs, paths.service_dir) if not d.exists()]
     paths.logs.mkdir(exist_ok=True)
-    with holding(service_lock(paths), "service configuration"):
-        journal = Journal()
-        try:
-            if managed:
-                _reinit(paths, opts, planner, report, journal)
-            else:
-                _fresh(paths, opts, planner, existing, report, journal)
-        except BaseException:
-            journal.rollback()
-            raise
+    try:
+        with holding(service_lock(paths), "service configuration"):
+            journal = Journal()
+            try:
+                if managed:
+                    _reinit(paths, opts, planner, report, journal)
+                else:
+                    _fresh(paths, opts, planner, existing, report, journal)
+            except BaseException:
+                journal.rollback()
+                raise
+    except BaseException:
+        for directory in reversed(fresh_dirs):
+            with contextlib.suppress(OSError):
+                directory.rmdir()  # only if the failed attempt left it empty
+        raise
     return report
 
 

@@ -469,3 +469,117 @@ def coding_payload(repo: Path, workspace_id: str, **overrides: object) -> dict:
     }
     payload.update(overrides)
     return payload
+
+
+# ── Managed CLI fixtures (handoff init / server / model through bin/handoff) ──
+
+HANDOFF_BIN = Path(__file__).resolve().parents[1] / "bin" / "handoff"
+PROBE_FILES = (
+    ".fake-mode",
+    ".fake-sleep",
+    "WORKER_STARTED",
+    "WORKER_LAUNCHES",
+    "AUTH_PROBE",
+    "ARGV_PROBE",
+    "DELIVERY_PROBE",
+    "CHILD_WRITES",
+    "CHILD_PID",
+    ".child_writer.py",
+)
+
+
+def ignore_probes(repo: Path) -> None:
+    (repo / ".gitignore").write_text("\n".join(PROBE_FILES) + "\n", encoding="utf-8")
+    git(repo, "add", ".gitignore")
+    git(repo, "commit", "-qm", "ignore fake worker probes")
+
+
+def a2a_wrapper(root: Path) -> Path:
+    import stat
+    import sys
+
+    path = root / "handoff-a2a"
+    path.write_text(
+        "#!/usr/bin/env bash\n" f"exec {json.dumps(sys.executable)} -m handoff_a2a \"$@\"\n",
+        encoding="utf-8",
+    )
+    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+    return path
+
+
+def managed_env(root: Path, extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment whose provider CLIs are all the fake worker binary."""
+    import os
+
+    env = os.environ.copy()
+    for key in list(env):
+        if key.startswith(("ANTHROPIC_", "CURSOR_", "OPENAI_")):
+            del env[key]
+    env["HANDOFF_A2A_BIN"] = str(a2a_wrapper(root))
+    for provider in PROVIDERS:
+        env[f"HANDOFF_{provider.upper()}_BIN"] = str(make_fake_claude(root, provider))
+    env["PYTHONUNBUFFERED"] = "1"
+    if extra:
+        env.update(extra)
+    return env
+
+
+def handoff(env: dict[str, str], *args: str, timeout: float = 120.0, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(HANDOFF_BIN), *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=timeout,
+        input=stdin,
+        stdin=None if stdin is not None else subprocess.DEVNULL,
+    )
+
+
+def field(output: str, name: str) -> str:
+    for line in output.splitlines():
+        if line.startswith(f"{name}:"):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+def stop_managed(repo: Path) -> None:
+    """Test cleanup: stop an owned managed server regardless of workflow state."""
+    from handoff_a2a.processes import owned_from_record, stop_owned
+
+    record_path = repo / ".handoff-logs" / "service" / "process.json"
+    if not record_path.is_file():
+        return
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    owned = owned_from_record(
+        pid=int(record["pid"]), pgid=int(record["pgid"]), start_identity=str(record["start_identity"]), cwd=repo
+    )
+    stop_owned(owned, grace_s=5.0)
+    record_path.unlink(missing_ok=True)
+
+
+def managed_repo(
+    root: Path,
+    *,
+    provider: str = "cursor",
+    model: str = "fake-model",
+    planner: str | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> tuple[Path, dict[str, str]]:
+    repo = make_repo(root)
+    ignore_probes(repo)
+    (repo / "HANDOFF.md").unlink()  # init installs the template; tests write their own plan
+    env = managed_env(root, extra_env)
+    args = ["init", str(repo), "--transport", "a2a", "--executor", provider, "--model", model]
+    if planner:
+        args += ["--planner", planner]
+    result = handoff(env, *args)
+    assert result.returncode == 0, result.stdout + result.stderr
+    config = json.loads((repo / ".handoff-config.json").read_text(encoding="utf-8"))
+    config["a2a"].update({"request_timeout_s": 5, "wait_timeout_s": 30, "poll_interval_s": 0.1})
+    (repo / ".handoff-config.json").write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    server = json.loads((repo / ".handoff-logs" / "server.json").read_text(encoding="utf-8"))
+    server["cancel_grace_s"] = 1
+    (repo / ".handoff-logs" / "server.json").write_text(json.dumps(server, indent=2) + "\n", encoding="utf-8")
+    return repo, env

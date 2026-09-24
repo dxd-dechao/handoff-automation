@@ -155,7 +155,7 @@ def test_server_config_requires_exactly_one_adapter(tmp_path: Path) -> None:
 
 
 def test_neutral_client_and_orchestration_have_no_provider_branches() -> None:
-    pattern = re.compile(r"\b(claude|codex|anthropic|openai)\b", re.IGNORECASE)
+    pattern = re.compile(r"\b(claude|codex|cursor|anthropic|openai)\b", re.IGNORECASE)
     for name in ("client.py", "integration.py", "workflow.py", "config.py", "contracts.py", "reporting.py"):
         hits = [line for line in (SRC / name).read_text().splitlines() if pattern.search(line)]
         assert hits == [], f"{name}: {hits}"

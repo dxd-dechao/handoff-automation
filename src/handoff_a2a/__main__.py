@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -127,6 +128,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(raw)
     if args.command == "serve":
         config = load_server_config(args.config)
+        # Test seam: refuse one config generation to exercise failed-switch recovery.
+        refused = os.environ.get("HANDOFF_A2A_REFUSE_GENERATION")
+        if refused and str(config.config_generation) == refused:
+            print(f"handoff-a2a: refusing config generation {refused} (test seam)", file=sys.stderr)
+            return 3
         serve(config)
         return 0
     if args.command == "cli":
