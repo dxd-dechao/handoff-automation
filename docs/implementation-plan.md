@@ -1,8 +1,14 @@
 # A2A Executor implementation plan
 
-Status: A1 and A2 QA approved; A3 implemented and awaiting QA on 2026-09-15. A4 not started. Human retains manual Executor launch and merge/push decisions.
-Date: 2026-09-14. Source baseline: `6201590bb98d7cc9514c04e7df14482695f8afed`.
-Open PR check: `gh pr list --state open` returned no open PRs on 2026-09-14.
+Continuation (2026-09-24, Executor): the A3-A4-COMPLETE handoff was executed. The A3 correction, Codex adapter, live replacement evidence, and skill host checks in Codex CLI are done; Cursor host discovery is untested. See product-status.md "Continuation results". All A3/A4 approvals remain with the original Planner.
+
+Status as of 2026-09-24 (Planner review, before the continuation): A1 and A2 QA approved; A3 implemented at `7c45000`, but not QA approved. Current regression suites pass (47 Python tests and 17 legacy checks); an independent probe reproduced a configuration-switch recovery/status defect. A4 is not started. Human retains manual Executor launch and merge/push decisions.
+Created: 2026-09-14. Original source baseline: `6201590bb98d7cc9514c04e7df14482695f8afed`. Current inspected HEAD: `7c45000174ac583a2003f2b10ea2dbb5e0b6f7d7` on `codex/a2a-executor-mvp`.
+Historical PR check: no open PRs on 2026-09-14; not rechecked for this status review.
+
+See [current product status and remaining work](product-status.md) for the evidence, reproduced blocker, ordered delivery plan, and completion checklist. The sections below retain the original architecture and acceptance requirements.
+
+Execution update (2026-09-24): the human requested one implementation agent to complete the remaining plan, with independent Planner QA afterward. Root `HANDOFF.md` now contains **A3-A4-COMPLETE**, READY FOR EXECUTION, awaiting manual launch. It authorizes A3 corrections, A4 adapter/live checks, and skill verification in one continuation; the old A3 task and findings were preserved in the local archive without claiming approval or resetting history. Proceed between implementation phases on self-checks; the per-phase Planner approvals described below are deferred until the human returns for QA. No agent has been launched by the Planner. Open PR check on this date returned none.
 
 ## Outcome
 
@@ -17,7 +23,7 @@ The temporary experiment established that the same official-SDK A2A client could
 ## How implementation and QA will run
 
 1. Planner drafts one self-contained task in root `HANDOFF.md`; keep `DRAFT` until human approval. The current CLI reports its turn as UNKNOWN and refuses execution, which is intentional.
-2. After approval, Planner sets `READY FOR EXECUTION` and invokes the existing handoff CLI. Use the current direct-Claude implementation to build all four tasks; do not switch the implementation workflow onto the new A2A path until A4 is verified and the human chooses it.
+2. After approval, Planner activates the reviewed task as `READY FOR EXECUTION`; the human manually asks the Executor to run, as agreed in this project. Do not launch automatically. Use the current direct-Claude path for implementation; do not switch this checkout onto A2A until A4 is verified and the human chooses it.
 3. Executor implements and commits the named task. Planner reviews the actual branch/working-tree diff and executes its acceptance checks.
 4. Request another execution only for a material functional acceptance failure. After three unsuccessful executions, stop dispatching and have Planner review the scope, preserve passing work, and draft the smallest meaningful remaining task. Archive the exhausted task as superseded and link a constrained successor for human approval/manual launch. If only documentation remains, Planner fixes it directly and closes QA without another execution.
 5. On QA approval, archive that handoff using `handoff archive`, update this tracker, and draft the next task. Each subsequent handoff is reviewed before execution. QA approval does not authorize merging, pushing, or publishing.
@@ -55,8 +61,8 @@ Planner is authorized to make documentation-only QA corrections directly at any 
 |---|---|---|---|---|
 | A1 | Standalone local A2A server, Claude adapter, provider-neutral client, request/result contract, and Planner-facing CLI skill | Existing baseline | APPROVED | d615f09 + b9bd0aa; reviewed through 123eccc; 23 A2A + 17 legacy checks and five independent CLI probes passed |
 | A2 | Durable execution identity, reconnect/restart handling, and cancellation | A1 | APPROVED | b8468ce + 756ad06; 35 A2A + 17 legacy checks and both independent cancellation/restart probes passed on 2026-09-15 |
-| A3 | Wire A2A into handoff CLI, workflow status, gates, and reporting | A2 | implemented / awaiting QA | Baseline 756ad06; 47 pytest + 17 legacy checks passed on 2026-09-15; see Execution Notes |
-| A4 | Codex adapter and real replacement validation through handoff CLI | A3 | Not started | — |
+| A3 | Wire A2A into handoff CLI, workflow status, gates, and reporting | A2 | Implemented; config-switch correction and failed-delivery routing fix self-tested; independent QA pending | 756ad06 → 7c45000, corrected in 5197e2f; see product-status.md |
+| A4 | Codex adapter and real replacement validation through handoff CLI | A3 | Implemented, self-tested, live-verified (Executor-run fixture QA); independent QA pending | b57729a, ceac9ef, bef2a6b, 278c869, fc23aa6; [live results](a2a-replacement-results.md) |
 
 ### A1 — Make a real A2A execution path work
 

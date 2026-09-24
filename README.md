@@ -9,6 +9,9 @@ CLI on a separate account) while keeping:
 - **HANDOFF.md as the only channel between the agents**,
 - human gates for plan approval and merging.
 
+For the optional A2A work, see [current product status and remaining work](docs/product-status.md)
+and the [implementation plan](docs/implementation-plan.md).
+
 ## Setup
 
 1. **Executor account.** The `claude` CLI (`~/.local/bin/claude`) must be
@@ -254,12 +257,42 @@ handoff cancel /path/to/workspace
 ```
 
 Server config (loopback host only) supplies `host`, `port`, `workspace_id`,
-`workspace_path`, `credential_file`, `evidence_dir`, and `claude.binary` /
-`claude.model`. Optional keys: `state_db` (default `evidence_dir/state.sqlite`),
+`workspace_path`, `credential_file`, `evidence_dir`, and exactly one Executor
+adapter:
+
+- `"claude": {"binary": "claude", "model": "..."}` runs `claude -p "execute the
+  handoff" --permission-mode acceptEdits --output-format json`. Allowed
+  commands come from the target repo's `.claude/settings.local.json`
+  (`handoff permissions`).
+- `"codex": {"binary": "codex", "model": "...", "reasoning_effort": "medium"}`
+  (`reasoning_effort` is optional) runs `codex exec --json
+  --ignore-user-config` with `approval_policy="never"` and a `handoff`
+  permission profile. That profile extends Codex's `:workspace` sandbox with
+  write access to `.git`, so the Executor can commit. Network stays off, so
+  push/PR cannot reach a remote. The user's `~/.codex/config.toml` (hooks,
+  plugins, default model) is ignored; the stored Codex login is used.
+  Inherited `OPENAI_*` / `CODEX_API_KEY` values are stripped. Codex reports no
+  price, so `cost_usd` stays `null`. These sandboxes are not equivalent to
+  Claude's permission file (for example, Codex may also write temp
+  directories).
+
+Replacing the Executor means running another server (for example, a Codex one
+for the same `workspace_path`) and pointing `a2a.agent_card_url` at it after
+the previous run is reconciled. Planner steps and the client do not change.
+Existing Claude-only server configs keep working. Optional keys: `state_db` (default `evidence_dir/state.sqlite`),
 `caller_id` (default `local-planner`), `execution_timeout_s` (default 3600),
 `cancel_grace_s` (default 5). The integrated CLI also requires Agent Card
 `workspace_code_fingerprint` and `durable_execution_id_deduplication`. Client
-wait timeout does not cancel the worker. Development helper:
+wait timeout does not cancel the worker.
+
+An outstanding run stays authoritative after the config changes. If
+`.handoff-config.json` is switched to legacy, pointed at another endpoint, or
+removed while a run is outstanding, `status` still shows WAIT/RECOVERY.
+`resume`/`cancel` use the run's saved endpoint and credential reference
+(default wait limits apply when no A2A config is present). No new execution
+starts until the run is reconciled. A failed or canceled delivery does not
+keep an Executor-written `READY FOR QA`/`APPROVED`: reconciliation restores the
+submitted Status, and `status` routes to Planner review. Development helper:
 
 ```sh
 uv run --extra test python -m pytest -q
@@ -269,7 +302,10 @@ uv run handoff-a2a execute --repo /path/to/workspace \
   --credential-file /path/to/token --workspace-id that-workspace
 ```
 
-Tests must point `claude.binary` at a fake executable, never a paid CLI. If
+Tests must point `claude.binary` / `codex.binary` at a fake executable, never a
+paid CLI. The explicit live check `scripts/a2a_live_check.py --confirm-live`
+makes real, paid model calls against disposable fixtures
+([results](docs/a2a-replacement-results.md)). If
 restart recovery reports `recovery_required`, inspect
 `.handoff-logs/execute.lock/owner.json` and `state.sqlite` and remove the lock
 only after confirming the worker is stopped.
@@ -285,4 +321,3 @@ execute / QA / drive / status intents, including `approve`, `resume`, and
 `cancel`. It does not add `handoff plan` and does not talk to A2A itself.
 
 See [skill loading guidance](https://learn.chatgpt.com/docs/build-skills).
-

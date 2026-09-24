@@ -1,0 +1,1090 @@
+{
+  "date": "2026-09-24",
+  "versions": {
+    "claude": "2.1.281 (Claude Code)",
+    "codex": "codex-cli 0.156.0",
+    "python": "3.13.14",
+    "handoff_commit": "ceac9efff5252b9d23d94069bab4def827f103b3"
+  },
+  "fixture_base": "5566e2a2bd9e8c35dd7f742b6073213b99b2af30",
+  "note": "Temporary paths refer to disposable fixtures; this file is the durable record. Service token redacted; no provider credentials were read or recorded.",
+  "workflows": {
+    "claude": {
+      "title": "Claude endpoint: implementation + correction",
+      "handoff_code": "ceac9ef",
+      "error": null,
+      "stopped": null,
+      "executions": [
+        {
+          "label": "implementation",
+          "endpoint": "claude-claude",
+          "endpoint_name": "handoff-a2a Claude Executor",
+          "rc": 0,
+          "wall_s": 46.5,
+          "run_id": "20260924-150715-98447",
+          "workflow_id": "db3d3381-57a8-4ad5-84dc-76e97786d800",
+          "execution_id": "0b43f449-9302-43c7-b4ab-e58c9117dc50",
+          "task_id": "942317f0-90b5-45c7-b907-90b0a3a55acf",
+          "context_id": "75a867d3-e42e-4942-bbb7-fb785ae390b5",
+          "outcome": "completed",
+          "reason": null,
+          "status_after": "READY FOR QA",
+          "usage": {
+            "output_tokens": 2428,
+            "cache_read_input_tokens": 191400,
+            "cache_creation_input_tokens": 35902,
+            "input_tokens": 6245
+          },
+          "usage_provenance": "claude.usage",
+          "cost_usd": 0.4120125,
+          "cost_provenance": "claude.total_cost_usd",
+          "commits": [
+            "99be1f7bb29f1e3347f3140c5eeeccec6142cfca"
+          ],
+          "head_after": "99be1f7bb29f1e3347f3140c5eeeccec6142cfca",
+          "models": {
+            "configured": "bedrock.claude-opus-4-8",
+            "reported": [
+              "bedrock.claude-opus-4-8"
+            ]
+          },
+          "fixture_qa": {
+            "passed": true,
+            "checks": {
+              "unit_tests_pass": true,
+              "sum_correct": true,
+              "empty_is_zero": true,
+              "status_ready_for_qa": true,
+              "committed_on_branch": true,
+              "only_allowed_files_changed": true,
+              "no_untracked_code": true
+            },
+            "changed_files": [
+              "pricing.py"
+            ]
+          }
+        },
+        {
+          "label": "correction",
+          "endpoint": "claude-claude",
+          "endpoint_name": "handoff-a2a Claude Executor",
+          "rc": 0,
+          "wall_s": 66.6,
+          "run_id": "20260924-150802-2528",
+          "workflow_id": "db3d3381-57a8-4ad5-84dc-76e97786d800",
+          "execution_id": "72660394-e4ae-487f-9da6-b8ff2e32aede",
+          "task_id": "2e7566a7-177e-4b47-be42-36db2ad55031",
+          "context_id": "e31640e2-a4de-4f5c-b4bb-5adab6d5845f",
+          "outcome": "completed",
+          "reason": null,
+          "status_after": "READY FOR QA",
+          "usage": {
+            "input_tokens": 6742,
+            "output_tokens": 3585,
+            "cache_read_input_tokens": 329043,
+            "cache_creation_input_tokens": 15251
+          },
+          "usage_provenance": "claude.usage",
+          "cost_usd": 0.38317524999999997,
+          "cost_provenance": "claude.total_cost_usd",
+          "commits": [
+            "1d9db60f7d411576273d50ad0e229e031c2b1e35"
+          ],
+          "head_after": "1d9db60f7d411576273d50ad0e229e031c2b1e35",
+          "models": {
+            "configured": "bedrock.claude-opus-4-8",
+            "reported": [
+              "bedrock.claude-opus-4-8"
+            ]
+          },
+          "fixture_qa": {
+            "passed": true,
+            "checks": {
+              "unit_tests_pass": true,
+              "sum_correct": true,
+              "empty_is_zero": true,
+              "status_ready_for_qa": true,
+              "committed_on_branch": true,
+              "only_allowed_files_changed": true,
+              "no_untracked_code": true,
+              "negative_qty_raises": true,
+              "zero_qty_still_valid": true,
+              "test_added_for_negative": true
+            },
+            "changed_files": [
+              "pricing.py",
+              "test_pricing.py"
+            ]
+          }
+        }
+      ],
+      "branch_log": [
+        "1d9db60 pricing: reject negative quantities in total()",
+        "99be1f7 Implement total() for order pricing"
+      ],
+      "diff": "diff --git a/pricing.py b/pricing.py\nindex 0b81198..37698bd 100644\n--- a/pricing.py\n+++ b/pricing.py\n@@ -3,4 +3,7 @@\n \n def total(items):\n     \"\"\"Return the order total for (unit_price, quantity) pairs.\"\"\"\n-    raise NotImplementedError\n+    for unit_price, quantity in items:\n+        if quantity < 0:\n+            raise ValueError(\"quantity must not be negative\")\n+    return sum(unit_price * quantity for unit_price, quantity in items)\ndiff --git a/test_pricing.py b/test_pricing.py\nindex 622f03d..19da804 100644\n--- a/test_pricing.py\n+++ b/test_pricing.py\n@@ -10,6 +10,10 @@ class TotalTest(unittest.TestCase):\n     def test_empty_order_is_zero(self):\n         self.assertEqual(total([]), 0)\n \n+    def test_negative_quantity_raises(self):\n+        with self.assertRaises(ValueError):\n+            total([(1.0, -1)])\n+\n \n if __name__ == \"__main__\":\n     unittest.main()",
+      "working_tree": "",
+      "workflow_open": null,
+      "closed_workflows": [
+        {
+          "schema": "urn:handoff-automation:coding-task:v1#workflow",
+          "workflow_id": "db3d3381-57a8-4ad5-84dc-76e97786d800",
+          "parent_workflow_id": null,
+          "branch": "live/pricing",
+          "workspace_id": "live-claude",
+          "approved_plan_hash": "645447f9793dddfa11eb673c60162ddaa28480e44e71d35390f2243a103e4a70",
+          "submitted_snapshot_hash": "b440a4481db832e7c55e9edace51ba2d6fa5f83c0c2a631efd0cee9ae5d7a355",
+          "approved_at": "2026-09-24T07:07:15Z",
+          "max_rounds": 3,
+          "rounds_used": 2,
+          "reserved_execution_id": null,
+          "consumed_execution_ids": [
+            "0b43f449-9302-43c7-b4ab-e58c9117dc50",
+            "72660394-e4ae-487f-9da6-b8ff2e32aede"
+          ],
+          "dispatch_hold": false,
+          "inherited_baseline": null,
+          "inherited_branch": null,
+          "post_run_fingerprint": "d229c8940fdbb524841dd7586b5578bd630b65cf9dd4750061c4df557d2fcb5d",
+          "post_run_branch": "live/pricing",
+          "last_notified_execution_id": null,
+          "disposition": "archived",
+          "updated_at": "2026-09-24T07:09:08Z",
+          "last_outcome": {
+            "execution_id": "72660394-e4ae-487f-9da6-b8ff2e32aede",
+            "run_id": "20260924-150802-2528",
+            "outcome": "completed",
+            "reason": null
+          }
+        }
+      ],
+      "agent_cards": {
+        "claude-claude": {
+          "name": "handoff-a2a Claude Executor",
+          "version": "0.2.0",
+          "interfaces": [
+            {
+              "url": "http://127.0.0.1:60100/a2a",
+              "protocolBinding": "JSONRPC",
+              "protocolVersion": "1.0"
+            }
+          ],
+          "profile_required": true,
+          "profile_params": {
+            "executor_model": "bedrock.claude-opus-4-8",
+            "durable_execution_id_deduplication": true,
+            "workspace_code_fingerprint": true,
+            "executor_provider": "claude"
+          },
+          "durable_dedup": true,
+          "security_schemes": [
+            "localBearer"
+          ],
+          "get_task_states": {
+            "942317f0-90b5-45c7-b907-90b0a3a55acf": "TASK_STATE_COMPLETED",
+            "2e7566a7-177e-4b47-be42-36db2ad55031": "TASK_STATE_COMPLETED"
+          }
+        }
+      },
+      "commands": [
+        {
+          "cmd": [
+            "handoff",
+            "init",
+            "<repo>"
+          ],
+          "rc": 0,
+          "seconds": 0.1,
+          "stdout_tail": "initialized: /private/tmp/handoff-live-20260924/claude/repo/HANDOFF.md (excluded locally via .git/info/exclude)\ncreated /private/tmp/handoff-live-20260924/claude/repo/.claude/settings.local.json with executor permissions\ntoolchain: none detected \u2014 git/edit rules only; add your build tool's commands by hand\nreview:    cat /private/tmp/handoff-live-20260924/claude/repo/.claude/settings.local.json   (local-only; not part of the repo's git history)\n",
+          "stderr_tail": ""
+        },
+        {
+          "cmd": [
+            "handoff",
+            "approve",
+            "<repo>"
+          ],
+          "rc": 0,
+          "seconds": 0.4,
+          "stdout_tail": "approved workflow db3d3381-57a8-4ad5-84dc-76e97786d800\nplan_hash 645447f9793dddfa11eb673c60162ddaa28480e44e71d35390f2243a103e4a70\n",
+          "stderr_tail": ""
+        },
+        {
+          "cmd": [
+            "handoff",
+            "execute",
+            "<repo>"
+          ],
+          "rc": 0,
+          "seconds": 46.3,
+          "stdout_tail": "{\n  \"run_id\": \"20260924-150715-98447\",\n  \"outcome\": \"completed\",\n  \"task_id\": \"942317f0-90b5-45c7-b907-90b0a3a55acf\"\n}\n",
+          "stderr_tail": ""
+        },
+        {
+          "note": "correction endpoint: claude-claude"
+        },
+        {
+          "cmd": [
+            "handoff",
+            "status",
+            "<repo>"
+          ],
+          "rc": 0,
+          "seconds": 0.5,
+          "stdout_tail": "repo:   /private/tmp/handoff-live-20260924/claude/repo\nstatus: CHANGES REQUESTED\nturn:   EXECUTOR\ngoal:   Implement `total(items)` in `pricing.py` so the existing unit tests pass.\nexecution: IDLE\nworkflow: db3d3381-57a8-4ad5-84dc-76e97786d800\nrounds: 1/3\nlast:   completed run 20260924-150715-98447\nnext:   handoff execute\n",
+          "stderr_tail": ""
+        },
+        {
+          "cmd": [
+            "handoff",
+            "execute",
+            "<repo>"
+          ],
+          "rc": 0,
+          "seconds": 66.4,
+          "stdout_tail": "{\n  \"run_id\": \"20260924-150802-2528\",\n  \"outcome\": \"completed\",\n  \"task_id\": \"2e7566a7-177e-4b47-be42-36db2ad55031\"\n}\n",
+          "stderr_tail": ""
+        },
+        {
+          "cmd": [
+            "handoff",
+            "archive",
+            "<repo>"
+          ],
+          "rc": 0,
+          "seconds": 0.5,
+          "stdout_tail": "archived 'Implement `total(items)` in `pricing.py` so the existing unit tests pass.' (approved)\n",
+          "stderr_tail": ""
+        },
+        {
+          "cmd": [
+            "handoff",
+            "status",
+            "<repo>"
+          ],
+          "rc": 0,
+          "seconds": 0.4,
+          "stdout_tail": "repo:   /private/tmp/handoff-live-20260924/claude/repo\nstatus: APPROVED\nturn:   HUMAN\ngoal:   Implement `total(items)` in `pricing.py` so the existing unit tests pass.\nexecution: IDLE\nnext:   human merge; handoff archive\n",
+          "stderr_tail": ""
+        }
+      ]
+    },
+    "codex-prefix": {
+      "title": "Codex endpoint, first attempt (adapter before skill/HANDOFF-discovery fixes)",
+      "handoff_code": "ceac9ef",
+      "error": null,
+      "stopped": null,
+      "executions": [
+        {
+          "label": "implementation",
+          "endpoint": "codex-codex",
+          "endpoint_name": "handoff-a2a Codex Executor",
+          "rc": 1,
+          "wall_s": 21.5,
+          "run_id": "20260924-150912-8440",
+          "workflow_id": "84ad6725-cf44-4e53-a80b-7fecf21b4ad4",
+          "execution_id": "5f4b53d9-0295-4b75-b987-a06b31e6a0ed",
+          "task_id": "836ce90a-182e-420b-92e4-55a518d8779e",
+          "context_id": "52056c8d-4b39-45f3-91d0-f5aae1030f43",
+          "outcome": "failed",
+          "reason": "expected Status READY FOR QA, found 'READY FOR EXECUTION'",
+          "status_after": "READY FOR EXECUTION",
+          "usage": {
+            "input_tokens": 57932,
+            "output_tokens": 497,
+            "cache_read_input_tokens": 43008,
+            "cache_creation_input_tokens": null
+          },
+          "usage_provenance": "codex.turn.completed.usage (input_tokens includes cache_read_input_tokens)",
+          "cost_usd": null,
+          "cost_provenance": null,
+          "commits": [],
+          "head_after": "5566e2a2bd9e8c35dd7f742b6073213b99b2af30",
+          "models": {
+            "configured": "gpt-5.6-luna"
+          },
+          "fixture_qa": {
+            "passed": false,
+            "checks": {
+              "unit_tests_pass": false,
+              "sum_correct": false,
+              "empty_is_zero": false,
+              "status_ready_for_qa": false,
+              "committed_on_branch": false,
+              "only_allowed_files_changed": true,
+              "no_untracked_code": true
+            },
+            "changed_files": []
+          }
+        },
+        {
+          "label": "implementation-retry",
+          "endpoint": "codex-codex",
+          "endpoint_name": "handoff-a2a Codex Executor",
+          "rc": 1,
+          "wall_s": 16.7,
+          "run_id": "20260924-150934-11174",
+          "workflow_id": "84ad6725-cf44-4e53-a80b-7fecf21b4ad4",
+          "execution_id": "f46d792d-32b5-4bf6-ab73-009a606c08a7",
+          "task_id": "43b1fad3-60c8-42f3-8d06-95fb225e9b85",
+          "context_id": "d3abea01-7f49-41be-b963-2d4c7ef75b3c",
+          "outcome": "failed",
+          "reason": "expected Status READY FOR QA, found 'CHANGES REQUESTED'",
+          "status_after": "CHANGES REQUESTED",
+          "usage": {
+            "input_tokens": 43121,
+            "cache_creation_input_tokens": null,
+            "output_tokens": 406,
+            "cache_read_input_tokens": 33024
+          },
+          "usage_provenance": "codex.turn.completed.usage (input_tokens includes cache_read_input_tokens)",
+          "cost_usd": null,
+          "cost_provenance": null,
+          "commits": [],
+          "head_after": "5566e2a2bd9e8c35dd7f742b6073213b99b2af30",
+          "models": {
+            "configured": "gpt-5.6-luna"
+          },
+          "fixture_qa": {
+            "passed": false,
+            "checks": {
+              "unit_tests_pass": false,
+              "sum_correct": false,
+              "empty_is_zero": false,
+              "status_ready_for_qa": false,
+              "committed_on_branch": false,
+              "only_allowed_files_changed": true,
+              "no_untracked_code": true
+            },
+            "changed_files": []
+          }
+        },
+        {
+          "label": "correction",
+          "endpoint": "codex-codex",
+          "endpoint_name": "handoff-a2a Codex Executor",
+          "rc": 1,
+          "wall_s": 21.5,
+          "run_id": "20260924-150951-13141",
+          "workflow_id": "84ad6725-cf44-4e53-a80b-7fecf21b4ad4",
+          "execution_id": "739216b1-22e2-43b3-997e-e52e7d7f2824",
+          "task_id": "6ec24b32-772c-4bff-8e2e-2e885c096edb",
+          "context_id": "707ff1a4-c866-4417-a63f-72c81eb7efdc",
+          "outcome": "failed",
+          "reason": "expected Status READY FOR QA, found 'CHANGES REQUESTED'",
+          "status_after": "CHANGES REQUESTED",
+          "usage": {
+            "cache_creation_input_tokens": null,
+            "cache_read_input_tokens": 40192,
+            "output_tokens": 454,
+            "input_tokens": 43116
+          },
+          "usage_provenance": "codex.turn.completed.usage (input_tokens includes cache_read_input_tokens)",
+          "cost_usd": null,
+          "cost_provenance": null,
+          "commits": [],
+          "head_after": "5566e2a2bd9e8c35dd7f742b6073213b99b2af30",
+          "models": {
+            "configured": "gpt-5.6-luna"
+          },
+          "fixture_qa": {
+            "passed": false,
+            "checks": {
+              "unit_tests_pass": false,
+              "sum_correct": false,
+              "empty_is_zero": false,
+              "status_ready_for_qa": false,
+              "committed_on_branch": false,
+              "only_allowed_files_changed": true,
+              "no_untracked_code": true,
+              "negative_qty_raises": false,
+              "zero_qty_still_valid": false,
+              "test_added_for_negative": false
+            },
+            "changed_files": []
+          }
+        }
+      ],
+      "branch_log": [],
+      "diff": "",
+      "working_tree": "",
+      "workflow_open": {
+        "schema": "urn:handoff-automation:coding-task:v1#workflow",
+        "workflow_id": "84ad6725-cf44-4e53-a80b-7fecf21b4ad4",
+        "parent_workflow_id": null,
+        "branch": "live/pricing",
+        "workspace_id": "live-codex",
+        "approved_plan_hash": "645447f9793dddfa11eb673c60162ddaa28480e44e71d35390f2243a103e4a70",
+        "submitted_snapshot_hash": "b440a4481db832e7c55e9edace51ba2d6fa5f83c0c2a631efd0cee9ae5d7a355",
+        "approved_at": "2026-09-24T07:09:11Z",
+        "max_rounds": 3,
+        "rounds_used": 3,
+        "reserved_execution_id": null,
+        "consumed_execution_ids": [
+          "5f4b53d9-0295-4b75-b987-a06b31e6a0ed",
+          "f46d792d-32b5-4bf6-ab73-009a606c08a7",
+          "739216b1-22e2-43b3-997e-e52e7d7f2824"
+        ],
+        "dispatch_hold": true,
+        "inherited_baseline": null,
+        "inherited_branch": null,
+        "post_run_fingerprint": "f24e9c6f1d4e1c28c84fa6e053c3c567d7d30b1e9f5f3dc90ecbd75b7b7a0a84",
+        "post_run_branch": "live/pricing",
+        "last_notified_execution_id": null,
+        "disposition": null,
+        "updated_at": "2026-09-24T07:10:11Z",
+        "last_outcome": {
+          "execution_id": "739216b1-22e2-43b3-997e-e52e7d7f2824",
+          "run_id": "20260924-150951-13141",
+          "outcome": "failed",
+          "reason": "expected Status READY FOR QA, found 'CHANGES REQUESTED'",
+          "executor_status_discarded": null
+        }
+      },
+      "closed_workflows": [],
+      "agent_cards": {
+        "codex-codex": {
+          "name": "handoff-a2a Codex Executor",
+          "version": "0.2.0",
+          "interfaces": [
+            {
+              "url": "http://127.0.0.1:60406/a2a",
+              "protocolBinding": "JSONRPC",
+              "protocolVersion": "1.0"
+            }
+          ],
+          "profile_required": true,
+          "profile_params": {
+            "executor_provider": "codex",
+            "durable_execution_id_deduplication": true,
+            "workspace_code_fingerprint": true,
+            "executor_model": "gpt-5.6-luna"
+          },
+          "durable_dedup": true,
+          "security_schemes": [
+            "localBearer"
+          ],
+          "get_task_states": {
+            "836ce90a-182e-420b-92e4-55a518d8779e": "TASK_STATE_FAILED",
+            "43b1fad3-60c8-42f3-8d06-95fb225e9b85": "TASK_STATE_FAILED",
+            "6ec24b32-772c-4bff-8e2e-2e885c096edb": "TASK_STATE_FAILED"
+          }
+        }
+      },
+      "commands": [
+        {
+          "cmd": [
+            "handoff",
+            "init",
+            "<repo>"
+          ],
+          "rc": 0,
+          "seconds": 0.1,
+          "stdout_tail": "initialized: /private/tmp/handoff-live-20260924/codex/repo/HANDOFF.md (excluded locally via .git/info/exclude)\ncreated /private/tmp/handoff-live-20260924/codex/repo/.claude/settings.local.json with executor permissions\ntoolchain: none detected \u2014 git/edit rules only; add your build tool's commands by hand\nreview:    cat /private/tmp/handoff-live-20260924/codex/repo/.claude/settings.local.json   (local-only; not part of the repo's git history)\n",
+          "stderr_tail": ""
+        },
+        {
+          "cmd": [
+            "handoff",
+            "approve",
+            "<repo>"
+          ],
+          "rc": 0,
+          "seconds": 0.4,
+          "stdout_tail": "approved workflow 84ad6725-cf44-4e53-a80b-7fecf21b4ad4\nplan_hash 645447f9793dddfa11eb673c60162ddaa28480e44e71d35390f2243a103e4a70\n",
+          "stderr_tail": ""
+        },
+        {
+          "cmd": [
+            "handoff",
+            "execute",
+            "<repo>"
+          ],
+          "rc": 1,
+          "seconds": 21.3,
+          "stdout_tail": "{\n  \"run_id\": \"20260924-150912-8440\",\n  \"outcome\": \"failed\",\n  \"task_id\": \"836ce90a-182e-420b-92e4-55a518d8779e\"\n}\n",
+          "stderr_tail": ""
+        },
+        {
+          "cmd": [
+            "handoff",
+            "execute",
+            "<repo>"
+          ],
+          "rc": 1,
+          "seconds": 16.4,
+          "stdout_tail": "{\n  \"run_id\": \"20260924-150934-11174\",\n  \"outcome\": \"failed\",\n  \"task_id\": \"43b1fad3-60c8-42f3-8d06-95fb225e9b85\"\n}\n",
+          "stderr_tail": ""
+        },
+        {
+          "note": "correction endpoint: codex-codex"
+        },
+        {
+          "cmd": [
+            "handoff",
+            "status",
+            "<repo>"
+          ],
+          "rc": 0,
+          "seconds": 0.5,
+          "stdout_tail": "repo:   /private/tmp/handoff-live-20260924/codex/repo\nstatus: CHANGES REQUESTED\nturn:   PLANNER\ngoal:   Implement `total(items)` in `pricing.py` so the existing unit tests pass.\nexecution: IDLE\nworkflow: 84ad6725-cf44-4e53-a80b-7fecf21b4ad4\nrounds: 2/3\nhold:   automatic dispatch blocked\nlast:   failed run 20260924-150934-11174 (expected Status READY FOR QA, found 'CHANGES REQUESTED')\nnext:   Planner review of failed delivery (not QA); explicit handoff execute only after review (watch will not retry)\n",
+          "stderr_tail": ""
+        },
+        {
+          "cmd": [
+            "handoff",
+            "execute",
+            "<repo>"
+          ],
+          "rc": 1,
+          "seconds": 21.2,
+          "stdout_tail": "{\n  \"run_id\": \"20260924-150951-13141\",\n  \"outcome\": \"failed\",\n  \"task_id\": \"6ec24b32-772c-4bff-8e2e-2e885c096edb\"\n}\n",
+          "stderr_tail": ""
+        },
+        {
+          "cmd": [
+            "handoff",
+            "status",
+            "<repo>"
+          ],
+          "rc": 0,
+          "seconds": 0.5,
+          "stdout_tail": "repo:   /private/tmp/handoff-live-20260924/codex/repo\nstatus: CHANGES REQUESTED\nturn:   PLANNER\ngoal:   Implement `total(items)` in `pricing.py` so the existing unit tests pass.\nexecution: IDLE\nworkflow: 84ad6725-cf44-4e53-a80b-7fecf21b4ad4\nrounds: 3/3\nhold:   automatic dispatch blocked\nlast:   failed run 20260924-150951-13141 (expected Status READY FOR QA, found 'CHANGES REQUESTED')\nnext:   Planner scope review; archive --superseded if a smaller successor is needed\n",
+          "stderr_tail": ""
+        }
+      ]
+    },
+    "mixed": {
+      "title": "Claude implementation, Codex correction after endpoint switch",
+      "handoff_code": "ceac9ef (impl) / bef2a6b (correction)",
+      "error": null,
+      "stopped": null,
+      "executions": [
+        {
+          "label": "implementation",
+          "endpoint": "mixed-claude",
+          "endpoint_name": "handoff-a2a Claude Executor",
+          "rc": null,
+          "wall_s": null,
+          "run_id": "20260924-151015-14955",
+          "workflow_id": "c5a252f5-97c3-4848-9cb0-e07da288f49a",
+          "execution_id": "1e4db4dd-f682-42dc-a075-4cfefa9ec818",
+          "task_id": "a23e4be4-bdc1-4e62-8f5e-39350bd1aee9",
+          "context_id": "b92aeb76-de82-4303-8ed6-5a158533b788",
+          "outcome": "completed",
+          "reason": null,
+          "status_after": "READY FOR QA",
+          "usage": {
+            "cache_read_input_tokens": 245092,
+            "input_tokens": 6281,
+            "cache_creation_input_tokens": 15234,
+            "output_tokens": 2180
+          },
+          "usage_provenance": "claude.usage",
+          "cost_usd": 0.3036635000000001,
+          "cost_provenance": "claude.total_cost_usd",
+          "commits": [
+            "9618aadf073b66ffeab363556d02256179ab77ce"
+          ],
+          "head_after": null,
+          "models": {
+            "configured": "bedrock.claude-opus-4-8",
+            "reported": [
+              "bedrock.claude-opus-4-8"
+            ]
+          },
+          "fixture_qa": {
+            "passed": true,
+            "checks": {
+              "unit_tests_pass": true,
+              "sum_correct": true,
+              "empty_is_zero": true,
+              "status_ready_for_qa": true,
+              "committed_on_branch": true,
+              "only_allowed_files_changed": true,
+              "no_untracked_code": true
+            },
+            "changed_files": [
+              "pricing.py"
+            ]
+          },
+          "note": "client driver stopped mid-run; reconciled via `handoff resume` from the saved record"
+        },
+        {
+          "label": "correction",
+          "endpoint": "mixed-codex",
+          "endpoint_name": "handoff-a2a Codex Executor",
+          "rc": 0,
+          "wall_s": 66.5,
+          "run_id": "20260924-151834-39303",
+          "workflow_id": "c5a252f5-97c3-4848-9cb0-e07da288f49a",
+          "execution_id": "1ae8de64-7e7e-4902-b0dd-794dc80a41cd",
+          "task_id": "46657a1d-a70c-46ba-a39c-a5c7e50dd8b8",
+          "context_id": "c53bc23d-8594-4a79-8584-c754a1a18a7f",
+          "outcome": "completed",
+          "reason": null,
+          "status_after": "READY FOR QA",
+          "usage": {
+            "output_tokens": 1817,
+            "cache_read_input_tokens": 125440,
+            "input_tokens": 154369,
+            "cache_creation_input_tokens": null
+          },
+          "usage_provenance": "codex.turn.completed.usage (input_tokens includes cache_read_input_tokens)",
+          "cost_usd": null,
+          "cost_provenance": null,
+          "commits": [
+            "b4e16037d1a9001458720dd34b22bb5344c05cd6"
+          ],
+          "head_after": "b4e16037d1a9001458720dd34b22bb5344c05cd6",
+          "models": {
+            "configured": "gpt-5.6-luna"
+          },
+          "fixture_qa": {
+            "passed": true,
+            "checks": {
+              "unit_tests_pass": true,
+              "sum_correct": true,
+              "empty_is_zero": true,
+              "status_ready_for_qa": true,
+              "committed_on_branch": true,
+              "only_allowed_files_changed": true,
+              "no_untracked_code": true,
+              "negative_qty_raises": true,
+              "zero_qty_still_valid": true,
+              "test_added_for_negative": true
+            },
+            "changed_files": [
+              "pricing.py",
+              "test_pricing.py"
+            ]
+          }
+        }
+      ],
+      "branch_log": [
+        "b4e1603 Validate negative quantities in total",
+        "9618aad Implement total() in pricing.py"
+      ],
+      "diff": "diff --git a/pricing.py b/pricing.py\nindex 0b81198..8d25137 100644\n--- a/pricing.py\n+++ b/pricing.py\n@@ -3,4 +3,9 @@\n \n def total(items):\n     \"\"\"Return the order total for (unit_price, quantity) pairs.\"\"\"\n-    raise NotImplementedError\n+    total_price = 0\n+    for unit_price, quantity in items:\n+        if quantity < 0:\n+            raise ValueError(\"quantity cannot be negative\")\n+        total_price += unit_price * quantity\n+    return total_price\ndiff --git a/test_pricing.py b/test_pricing.py\nindex 622f03d..02fc2ac 100644\n--- a/test_pricing.py\n+++ b/test_pricing.py\n@@ -10,6 +10,10 @@ class TotalTest(unittest.TestCase):\n     def test_empty_order_is_zero(self):\n         self.assertEqual(total([]), 0)\n \n+    def test_negative_quantity_is_invalid(self):\n+        with self.assertRaises(ValueError):\n+            total([(1.0, -1)])\n+\n \n if __name__ == \"__main__\":\n     unittest.main()",
+      "working_tree": "",
+      "workflow_open": null,
+      "closed_workflows": [
+        {
+          "schema": "urn:handoff-automation:coding-task:v1#workflow",
+          "workflow_id": "c5a252f5-97c3-4848-9cb0-e07da288f49a",
+          "parent_workflow_id": null,
+          "branch": "live/pricing",
+          "workspace_id": "live-mixed",
+          "approved_plan_hash": "645447f9793dddfa11eb673c60162ddaa28480e44e71d35390f2243a103e4a70",
+          "submitted_snapshot_hash": "b440a4481db832e7c55e9edace51ba2d6fa5f83c0c2a631efd0cee9ae5d7a355",
+          "approved_at": "2026-09-24T07:10:14Z",
+          "max_rounds": 3,
+          "rounds_used": 2,
+          "reserved_execution_id": null,
+          "consumed_execution_ids": [
+            "1e4db4dd-f682-42dc-a075-4cfefa9ec818",
+            "1ae8de64-7e7e-4902-b0dd-794dc80a41cd"
+          ],
+          "dispatch_hold": false,
+          "inherited_baseline": null,
+          "inherited_branch": null,
+          "post_run_fingerprint": "d3de991cd54676bd953687abb561ed9f77bea7460cca8dfe8508247a6193e0f0",
+          "post_run_branch": "live/pricing",
+          "last_notified_execution_id": null,
+          "disposition": "archived",
+          "updated_at": "2026-09-24T07:19:40Z",
+          "last_outcome": {
+            "execution_id": "1ae8de64-7e7e-4902-b0dd-794dc80a41cd",
+            "run_id": "20260924-151834-39303",
+            "outcome": "completed",
+            "reason": null
+          }
+        }
+      ],
+      "agent_cards": {
+        "mixed-codex": {
+          "name": "handoff-a2a Codex Executor",
+          "version": "0.2.0",
+          "interfaces": [
+            {
+              "url": "http://127.0.0.1:61217/a2a",
+              "protocolBinding": "JSONRPC",
+              "protocolVersion": "1.0"
+            }
+          ],
+          "profile_required": true,
+          "profile_params": {
+            "durable_execution_id_deduplication": true,
+            "executor_provider": "codex",
+            "workspace_code_fingerprint": true,
+            "executor_model": "gpt-5.6-luna"
+          },
+          "durable_dedup": true,
+          "security_schemes": [
+            "localBearer"
+          ],
+          "get_task_states": {
+            "46657a1d-a70c-46ba-a39c-a5c7e50dd8b8": "TASK_STATE_COMPLETED"
+          }
+        }
+      },
+      "commands": [
+        {
+          "note": "correction endpoint: mixed-codex"
+        },
+        {
+          "cmd": [
+            "handoff",
+            "status",
+            "<repo>"
+          ],
+          "rc": 0,
+          "seconds": 0.4,
+          "stdout_tail": "repo:   /private/tmp/handoff-live-20260924/mixed/repo\nstatus: CHANGES REQUESTED\nturn:   EXECUTOR\ngoal:   Implement `total(items)` in `pricing.py` so the existing unit tests pass.\nexecution: IDLE\nworkflow: c5a252f5-97c3-4848-9cb0-e07da288f49a\nrounds: 1/3\nlast:   completed run 20260924-151015-14955\nnext:   handoff execute\n",
+          "stderr_tail": ""
+        },
+        {
+          "cmd": [
+            "handoff",
+            "execute",
+            "<repo>"
+          ],
+          "rc": 0,
+          "seconds": 66.3,
+          "stdout_tail": "{\n  \"run_id\": \"20260924-151834-39303\",\n  \"outcome\": \"completed\",\n  \"task_id\": \"46657a1d-a70c-46ba-a39c-a5c7e50dd8b8\"\n}\n",
+          "stderr_tail": ""
+        },
+        {
+          "cmd": [
+            "handoff",
+            "archive",
+            "<repo>"
+          ],
+          "rc": 0,
+          "seconds": 0.5,
+          "stdout_tail": "archived 'Implement `total(items)` in `pricing.py` so the existing unit tests pass.' (approved)\n",
+          "stderr_tail": ""
+        },
+        {
+          "cmd": [
+            "handoff",
+            "status",
+            "<repo>"
+          ],
+          "rc": 0,
+          "seconds": 0.4,
+          "stdout_tail": "repo:   /private/tmp/handoff-live-20260924/mixed/repo\nstatus: APPROVED\nturn:   HUMAN\ngoal:   Implement `total(items)` in `pricing.py` so the existing unit tests pass.\nexecution: IDLE\nnext:   human merge; handoff archive\n",
+          "stderr_tail": ""
+        }
+      ]
+    },
+    "codex": {
+      "title": "Codex endpoint, fresh identical fixture (exec 1 at bef2a6b; exec 2-3 at 278c869)",
+      "handoff_code": "bef2a6b / 278c869",
+      "error": null,
+      "stopped": null,
+      "executions": [
+        {
+          "label": "implementation",
+          "endpoint": "codex-codex",
+          "endpoint_name": "handoff-a2a Codex Executor",
+          "rc": 1,
+          "wall_s": 31.6,
+          "run_id": "20260924-151953-51592",
+          "workflow_id": "e482331c-1920-47de-b4f0-1ade39bb1f7e",
+          "execution_id": "f6c4c6c2-c9e3-4b1e-ba1c-44ac766b7803",
+          "task_id": "94850faa-1685-4fdf-a5ff-53d6b1e54362",
+          "context_id": "c1dc9b27-dd6b-4d7a-9708-d8ff3bc34458",
+          "outcome": "failed",
+          "reason": "expected Status READY FOR QA, found 'READY FOR EXECUTION'",
+          "status_after": "READY FOR EXECUTION",
+          "usage": {
+            "cache_creation_input_tokens": null,
+            "output_tokens": 589,
+            "cache_read_input_tokens": 52992,
+            "input_tokens": 62176
+          },
+          "usage_provenance": "codex.turn.completed.usage (input_tokens includes cache_read_input_tokens)",
+          "cost_usd": null,
+          "cost_provenance": null,
+          "commits": [],
+          "head_after": "5566e2a2bd9e8c35dd7f742b6073213b99b2af30",
+          "models": {
+            "configured": "gpt-5.6-luna"
+          },
+          "fixture_qa": {
+            "passed": false,
+            "checks": {
+              "unit_tests_pass": true,
+              "sum_correct": true,
+              "empty_is_zero": true,
+              "status_ready_for_qa": false,
+              "committed_on_branch": false,
+              "only_allowed_files_changed": true,
+              "no_untracked_code": true
+            },
+            "changed_files": [
+              "pricing.py"
+            ]
+          }
+        },
+        {
+          "label": "implementation-diagnosed-rerun",
+          "endpoint": "codex-codex",
+          "endpoint_name": "handoff-a2a Codex Executor",
+          "rc": 0,
+          "wall_s": 36.6,
+          "run_id": "20260924-152152-55969",
+          "workflow_id": "e482331c-1920-47de-b4f0-1ade39bb1f7e",
+          "execution_id": "b6884d9f-4bd7-49bc-aef6-3c636ee6c79e",
+          "task_id": "278cb7a6-2f0e-465a-92b4-4cf81a426f72",
+          "context_id": "23c10dfb-8b41-4b9f-ba5f-bdea2b618511",
+          "outcome": "completed",
+          "reason": null,
+          "status_after": "READY FOR QA",
+          "usage": {
+            "cache_read_input_tokens": 79360,
+            "input_tokens": 100616,
+            "cache_creation_input_tokens": null,
+            "output_tokens": 1066
+          },
+          "usage_provenance": "codex.turn.completed.usage (input_tokens includes cache_read_input_tokens)",
+          "cost_usd": null,
+          "cost_provenance": null,
+          "commits": [
+            "d2a6ef87f7ff19d66724371f8134c1dca614bceb"
+          ],
+          "head_after": "d2a6ef87f7ff19d66724371f8134c1dca614bceb",
+          "models": {
+            "configured": "gpt-5.6-luna"
+          },
+          "fixture_qa": {
+            "passed": true,
+            "checks": {
+              "unit_tests_pass": true,
+              "sum_correct": true,
+              "empty_is_zero": true,
+              "status_ready_for_qa": true,
+              "committed_on_branch": true,
+              "only_allowed_files_changed": true,
+              "no_untracked_code": true
+            },
+            "changed_files": [
+              "pricing.py"
+            ]
+          }
+        },
+        {
+          "label": "correction",
+          "endpoint": "codex-codex",
+          "endpoint_name": "handoff-a2a Codex Executor",
+          "rc": 0,
+          "wall_s": 41.7,
+          "run_id": "20260924-152229-58332",
+          "workflow_id": "e482331c-1920-47de-b4f0-1ade39bb1f7e",
+          "execution_id": "5df1b2de-9f3f-4714-a61f-04033610963a",
+          "task_id": "e27bf869-cac2-4399-a1a1-7a61c5a9350b",
+          "context_id": "eab2a52b-2ed6-4d1a-8304-485af95fea88",
+          "outcome": "completed",
+          "reason": null,
+          "status_after": "READY FOR QA",
+          "usage": {
+            "output_tokens": 1470,
+            "cache_read_input_tokens": 86528,
+            "input_tokens": 96475,
+            "cache_creation_input_tokens": null
+          },
+          "usage_provenance": "codex.turn.completed.usage (input_tokens includes cache_read_input_tokens)",
+          "cost_usd": null,
+          "cost_provenance": null,
+          "commits": [
+            "4f9fa84a466f3b6f748c6eccc5c096ff76182f82"
+          ],
+          "head_after": "4f9fa84a466f3b6f748c6eccc5c096ff76182f82",
+          "models": {
+            "configured": "gpt-5.6-luna"
+          },
+          "fixture_qa": {
+            "passed": true,
+            "checks": {
+              "unit_tests_pass": true,
+              "sum_correct": true,
+              "empty_is_zero": true,
+              "status_ready_for_qa": true,
+              "committed_on_branch": true,
+              "only_allowed_files_changed": true,
+              "no_untracked_code": true,
+              "negative_qty_raises": true,
+              "zero_qty_still_valid": true,
+              "test_added_for_negative": true
+            },
+            "changed_files": [
+              "pricing.py",
+              "test_pricing.py"
+            ]
+          }
+        }
+      ],
+      "branch_log": [
+        "4f9fa84 Reject negative order quantities",
+        "d2a6ef8 Implement order total calculation"
+      ],
+      "diff": "diff --git a/pricing.py b/pricing.py\nindex 0b81198..9daa071 100644\n--- a/pricing.py\n+++ b/pricing.py\n@@ -3,4 +3,9 @@\n \n def total(items):\n     \"\"\"Return the order total for (unit_price, quantity) pairs.\"\"\"\n-    raise NotImplementedError\n+    order_total = 0\n+    for unit_price, quantity in items:\n+        if quantity < 0:\n+            raise ValueError(\"quantity cannot be negative\")\n+        order_total += unit_price * quantity\n+    return order_total\ndiff --git a/test_pricing.py b/test_pricing.py\nindex 622f03d..e40a81f 100644\n--- a/test_pricing.py\n+++ b/test_pricing.py\n@@ -10,6 +10,10 @@ class TotalTest(unittest.TestCase):\n     def test_empty_order_is_zero(self):\n         self.assertEqual(total([]), 0)\n \n+    def test_negative_quantity_raises_value_error(self):\n+        with self.assertRaises(ValueError):\n+            total([(1.0, -1)])\n+\n \n if __name__ == \"__main__\":\n     unittest.main()",
+      "working_tree": "",
+      "workflow_open": null,
+      "closed_workflows": [
+        {
+          "schema": "urn:handoff-automation:coding-task:v1#workflow",
+          "workflow_id": "e482331c-1920-47de-b4f0-1ade39bb1f7e",
+          "parent_workflow_id": null,
+          "branch": "live/pricing",
+          "workspace_id": "live-codex",
+          "approved_plan_hash": "645447f9793dddfa11eb673c60162ddaa28480e44e71d35390f2243a103e4a70",
+          "submitted_snapshot_hash": "b440a4481db832e7c55e9edace51ba2d6fa5f83c0c2a631efd0cee9ae5d7a355",
+          "approved_at": "2026-09-24T07:19:52Z",
+          "max_rounds": 3,
+          "rounds_used": 3,
+          "reserved_execution_id": null,
+          "consumed_execution_ids": [
+            "f6c4c6c2-c9e3-4b1e-ba1c-44ac766b7803",
+            "b6884d9f-4bd7-49bc-aef6-3c636ee6c79e",
+            "5df1b2de-9f3f-4714-a61f-04033610963a"
+          ],
+          "dispatch_hold": false,
+          "inherited_baseline": null,
+          "inherited_branch": null,
+          "post_run_fingerprint": "28bc6955a8837a8976425cffb4dba477449cb12081d1551711475dbd3205013b",
+          "post_run_branch": "live/pricing",
+          "last_notified_execution_id": null,
+          "disposition": "archived",
+          "updated_at": "2026-09-24T07:23:10Z",
+          "last_outcome": {
+            "execution_id": "5df1b2de-9f3f-4714-a61f-04033610963a",
+            "run_id": "20260924-152229-58332",
+            "outcome": "completed",
+            "reason": null
+          }
+        }
+      ],
+      "agent_cards": {
+        "codex-codex": {
+          "name": "handoff-a2a Codex Executor",
+          "version": "0.2.0",
+          "interfaces": [
+            {
+              "url": "http://127.0.0.1:61448/a2a",
+              "protocolBinding": "JSONRPC",
+              "protocolVersion": "1.0"
+            }
+          ],
+          "profile_required": true,
+          "profile_params": {
+            "executor_provider": "codex",
+            "durable_execution_id_deduplication": true,
+            "workspace_code_fingerprint": true,
+            "executor_model": "gpt-5.6-luna"
+          },
+          "durable_dedup": true,
+          "security_schemes": [
+            "localBearer"
+          ],
+          "get_task_states": {
+            "94850faa-1685-4fdf-a5ff-53d6b1e54362": "TASK_STATE_FAILED",
+            "278cb7a6-2f0e-465a-92b4-4cf81a426f72": "TASK_STATE_COMPLETED",
+            "e27bf869-cac2-4399-a1a1-7a61c5a9350b": "TASK_STATE_COMPLETED"
+          }
+        }
+      },
+      "commands": [
+        {
+          "cmd": [
+            "handoff",
+            "init",
+            "<repo>"
+          ],
+          "rc": 0,
+          "seconds": 0.1,
+          "stdout_tail": "initialized: /private/tmp/handoff-live-20260924-codex2/codex/repo/HANDOFF.md (excluded locally via .git/info/exclude)\ncreated /private/tmp/handoff-live-20260924-codex2/codex/repo/.claude/settings.local.json with executor permissions\ntoolchain: none detected \u2014 git/edit rules only; add your build tool's commands by hand\nreview:    cat /private/tmp/handoff-live-20260924-codex2/codex/repo/.claude/settings.local.json   (local-only; not part of the repo's git history)\n",
+          "stderr_tail": ""
+        },
+        {
+          "cmd": [
+            "handoff",
+            "approve",
+            "<repo>"
+          ],
+          "rc": 0,
+          "seconds": 0.4,
+          "stdout_tail": "approved workflow e482331c-1920-47de-b4f0-1ade39bb1f7e\nplan_hash 645447f9793dddfa11eb673c60162ddaa28480e44e71d35390f2243a103e4a70\n",
+          "stderr_tail": ""
+        },
+        {
+          "cmd": [
+            "handoff",
+            "execute",
+            "<repo>"
+          ],
+          "rc": 1,
+          "seconds": 31.4,
+          "stdout_tail": "{\n  \"run_id\": \"20260924-151953-51592\",\n  \"outcome\": \"failed\",\n  \"task_id\": \"94850faa-1685-4fdf-a5ff-53d6b1e54362\"\n}\n",
+          "stderr_tail": ""
+        },
+        {
+          "cmd": [
+            "handoff",
+            "status",
+            "<repo>"
+          ],
+          "rc": 0,
+          "seconds": 0.4,
+          "stdout_tail": "repo:   /private/tmp/handoff-live-20260924-codex2/codex/repo\nstatus: CHANGES REQUESTED\nturn:   PLANNER\ngoal:   Implement `total(items)` in `pricing.py` so the existing unit tests pass.\nexecution: IDLE\nworkflow: e482331c-1920-47de-b4f0-1ade39bb1f7e\nrounds: 1/3\nhold:   automatic dispatch blocked\nlast:   failed run 20260924-151953-51592 (expected Status READY FOR QA, found 'READY FOR EXECUTION')\nnext:   Planner review of failed delivery (not QA); explicit handoff execute only after review (watch will not retry)\n",
+          "stderr_tail": ""
+        },
+        {
+          "cmd": [
+            "handoff",
+            "execute",
+            "<repo>"
+          ],
+          "rc": 0,
+          "seconds": 36.4,
+          "stdout_tail": "{\n  \"run_id\": \"20260924-152152-55969\",\n  \"outcome\": \"completed\",\n  \"task_id\": \"278cb7a6-2f0e-465a-92b4-4cf81a426f72\"\n}\n",
+          "stderr_tail": ""
+        },
+        {
+          "cmd": [
+            "handoff",
+            "execute",
+            "<repo>"
+          ],
+          "rc": 0,
+          "seconds": 41.4,
+          "stdout_tail": "{\n  \"run_id\": \"20260924-152229-58332\",\n  \"outcome\": \"completed\",\n  \"task_id\": \"e27bf869-cac2-4399-a1a1-7a61c5a9350b\"\n}\n",
+          "stderr_tail": ""
+        },
+        {
+          "cmd": [
+            "handoff",
+            "archive",
+            "<repo>"
+          ],
+          "rc": 0,
+          "seconds": 0.5,
+          "stdout_tail": "archived 'Implement `total(items)` in `pricing.py` so the existing unit tests pass.' (approved)\n",
+          "stderr_tail": ""
+        },
+        {
+          "cmd": [
+            "handoff",
+            "status",
+            "<repo>"
+          ],
+          "rc": 0,
+          "seconds": 0.4,
+          "stdout_tail": "repo:   /private/tmp/handoff-live-20260924-codex2/codex/repo\nstatus: APPROVED\nturn:   HUMAN\ngoal:   Implement `total(items)` in `pricing.py` so the existing unit tests pass.\nexecution: IDLE\nnext:   human merge; handoff archive\n",
+          "stderr_tail": ""
+        }
+      ]
+    }
+  }
+}

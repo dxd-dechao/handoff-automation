@@ -61,6 +61,9 @@ plan. Do not ask for the same approval again.
   `handoff resume "<repo>"`. Do not start another execution.
 - `handoff cancel "<repo>"` requests cancellation of the outstanding run. A
   canceled run is a failed delivery, not QA success.
+- An outstanding run stays tied to its saved endpoint and credential even if
+  `.handoff-config.json` is later switched or removed; `status`, `resume`, and
+  `cancel` still reach it. Never edit the config to "clear" a run.
 - Do not add extra prompt text. The CLI uses the fixed phrase
   `execute the handoff`.
 
@@ -109,10 +112,18 @@ Use `handoff status "<repo>"` and, when relevant, `handoff runs "<repo>"`.
 Treat Markdown status and execution state separately. Do not launch a worker.
 Do not announce QA readiness from Markdown alone.
 
+After a failed or canceled A2A delivery, status shows a `last:` line and
+routes to Planner review, not QA. The Executor-written Status is discarded
+and the submitted one restored. Review the reason and the actual diff, then
+write a correction (and run `handoff execute` explicitly) or a scope review.
+Watch will not retry it.
+
 ## Boundaries
 
 - Provider selection stays in CLI/backend configuration. This skill never
-  calls Claude, Codex, or A2A itself.
+  calls Claude, Codex, or A2A itself. Replacing the Executor (for example,
+  Claude to Codex) is a human-made change of the configured endpoint after the
+  previous run is reconciled. The steps above do not change.
 - A headless Executor that received `execute the handoff` must implement its
   assigned HANDOFF directly. It must **not** run this skill, Planner dispatch,
   or recursively invoke `handoff execute`.

@@ -54,13 +54,15 @@ Unknown costs stay `null`. Valid false/zero values are preserved. Missing costs 
 | Outcome | A2A state | When |
 |---|---|---|
 | Delivery succeeded | `COMPLETED` | Process exit 0, valid provider JSON without `is_error`, HANDOFF transitioned to `READY FOR QA`, Planner-owned plan/QA sections intact |
-| Worker ran but delivery failed | `FAILED` | Nonzero exit, provider `is_error` even with exit 0, malformed output, or invalid HANDOFF transition (including an executor writing `APPROVED`) |
+| Worker ran but delivery failed | `FAILED` | Nonzero exit, a provider-reported error even with exit 0 (Claude `is_error`, Codex `turn.failed`), malformed output, or invalid HANDOFF transition (including an executor writing `APPROVED`) |
 | Refused before worker | `REJECTED` | Bad request/schema, wrong workspace, snapshot/hash mismatch, ineligible status, branch mismatch, stale HEAD, or busy execute lock |
 | Cancel after confirmed stop | `CANCELED` | CancelTask stopped the owned process group and captured partial evidence |
 | Server deadline | `FAILED` | `execution_timeout_s` elapsed; worker stopped; deadline reason recorded |
 | Uncertain ownership / failed stop | `INPUT_REQUIRED` | `recovery_required` metadata; workspace reservation retained |
 
 `COMPLETED` means the execution was delivered for independent Planner QA. It is not a claim that the code is correct.
+
+The integrated CLI moves Markdown to `READY FOR QA` only after a valid `COMPLETED` result. For a stopped `FAILED` or `CANCELED` execution, it restores the Status line from the submitted snapshot. Any Executor-written `READY FOR QA`/`APPROVED` is recorded as `executor_status_discarded`; Execution Notes and code are kept. `handoff status` then routes to Planner review.
 
 ## Durable identity (A2)
 
@@ -84,13 +86,18 @@ Unknown costs stay `null`. Valid false/zero values are preserved. Missing costs 
 - The worker is launched in a POSIX process group. Cancel, deadline, and shutdown share one stop/reap path before lock release
 - After restart, identifiable owned workers are stopped and marked `FAILED`. Uncertain identity stays reserved with `recovery_required`
 - The server never writes a different remote plan over a mismatched local `HANDOFF.md`
-- The adapter launches the configured binary with `-p "execute the handoff"`, `--permission-mode acceptEdits`, configured `--model`, and `--output-format json`. Inherited `ANTHROPIC_*` / `CLAUDE*` variables are stripped. The service bearer is not passed to the child
+- Exactly one adapter per server (`claude` or `codex` block). The server owns spawn, process group, deadlines, cancel, locks, and evidence for both. Each adapter supplies only argv, the child environment, and output interpretation (`adapters/base.py`)
+- Claude: the configured binary with `-p "execute the handoff"`, `--permission-mode acceptEdits`, configured `--model`, and `--output-format json`. Inherited `ANTHROPIC_*` / `CLAUDE*` variables are stripped
+- Codex (verified with codex-cli 0.156.0): `exec --json --ignore-user-config --model M -c <handoff permission profile> -c default_permissions="handoff" -c approval_policy="never" --cd <workspace> "execute the handoff"`, plus optional `model_reasoning_effort`. The profile extends `:workspace` with `.git` write (the built-in profile blocks `git commit`); network stays off. Inherited `OPENAI_*`, `AZURE_OPENAI_*`, `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`, `ANTHROPIC_*`, and `CLAUDE*` are stripped. JSONL `turn.completed.usage` maps to neutral usage: `cached_input_tokens` → `cache_read_input_tokens` (Codex `input_tokens` includes cached tokens), and `cache_write_input_tokens` → `cache_creation_input_tokens` (`null` when not reported). There is no cost (`null`). `turn.failed`, or `error` without a completed turn, is a provider error
+- Agent Card `name` identifies the adapter (`handoff-a2a Claude Executor` / `handoff-a2a Codex Executor`). Profile params add informational `executor_provider` / `executor_model`; clients must not branch on them
+- The service bearer is not passed to the child
 - No automatic resubmission or fallback to `handoff execute`
 - Historical A1 in-memory tasks do not survive into this store
 
 ## Client limitations
 
-- Provider-neutral: no Claude/Codex flags in the request
+- Provider-neutral: no Claude/Codex flags in the request; the same client and orchestration drive either adapter
+- An outstanding run's saved endpoint, request, and credential reference stay authoritative for `status`/`resume`/`cancel` after `.handoff-config.json` changes or is removed
 - No arbitrary instruction/prompt CLI argument
 - `handoff-a2a status|resume|cancel --run-record ... --credential-file ...` are development helpers. Client `--timeout` is wait time only and does not cancel the worker
 - Exit codes for execute/resume: `0` successful `COMPLETED`, `1` unsuccessful terminal, `2` unresolved / `INPUT_REQUIRED`
