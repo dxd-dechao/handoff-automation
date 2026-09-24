@@ -1,5 +1,7 @@
 # A2A Executor replacement: live results (2026-09-24)
 
+Planner review update: retained fixture tests, behavior probes, commits/diffs, and manifest identities were independently verified on 2026-09-24. R1/R2 were accepted at `8d99b93`; A5 closes R3 at `1e09ec5`. The scoped local MVP now passes Planner QA ([final report](qa-a5-2026-09-24.md)). No paid comparison was repeated for A5. The report below preserves the original experiment and its limitations.
+
 **Outcome:** the real `handoff` CLI ran the same plan and correction on identical disposable fixtures through a Claude endpoint and a Codex endpoint. It also switched from Claude to Codex in the middle of one workflow. Only endpoint configuration changed; the Planner/client code did not. All three workflows passed independent fixture QA for both the implementation and the correction. Codex did so only after two adapter defects, found by the first live attempt, were fixed and verified. The Executor produced these results; independent Planner QA of this product is still pending.
 
 Durable data: [`docs/evidence/a2a-replacement-2026-09-24.json`](evidence/a2a-replacement-2026-09-24.json). It holds per-execution IDs, usage/cost with provenance, fixture-QA checks, final diffs, Agent Card checks, and command transcripts. Fixtures lived under `/private/tmp/handoff-live-20260924*`; those paths are not the record.
@@ -84,6 +86,6 @@ The plan budgeted six small coding executions across three workflows. **Ten were
 - This shows replacement between two adapters behind **this** server. It does not show interoperability with an independently authored third-party A2A server.
 - The fixture is tiny, with one run per scenario. It supports no claim about quality, speed, or cost differences between providers or against direct Claude.
 - The permission boundaries differ. Claude uses the target repo's `.claude/settings.local.json` allow/deny rules; for the fixture I added a local `python3 -m unittest` rule, as the README describes. Codex uses its sandbox: workspace plus `.git` write and no network. It can also write temp directories, and it cannot `git push` or reach a remote. Neither is filesystem/account isolation from the operator's user.
-- Codex loads HANDOFF.md natively only when the target repo has no `AGENTS.md`. With an `AGENTS.md`, Codex relies on its own file search, which honours git excludes. This case is untested live.
+- At the live-test revision, native HANDOFF.md loading relied on absence of AGENTS.md. This limitation was corrected in `246981c`: validated handoff delivery alongside AGENTS.md/AGENTS.override.md passed native model-free prompt inspection and independent QA. No new paid live check was run for that correction.
 - Codex usage semantics differ from Claude's (cached tokens are included in `input_tokens`), and Codex cost is unknown.
 - Destructive interruption (server restart, cancel, deadlines) was verified with the fake-worker tests for both adapters, not with live calls.

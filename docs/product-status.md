@@ -1,10 +1,12 @@
 # Product status and path to the A2A goal
 
-Reviewed: **2026-09-24**. Checkout: `codex/a2a-executor-mvp`, commit `7c45000174ac583a2003f2b10ea2dbb5e0b6f7d7`.
+Reviewed: **2026-09-24**. Checkout: `codex/a2a-executor-mvp`, commit `1e09ec58f4f059c9d7f3e01fe875eb01b99ce588`.
 
-**The optional A2A path is implemented through the public CLI, but the MVP is not finished.** A1/A2 have recorded Planner QA approval. A3 is implemented and awaiting acceptance, with one reproduced recovery/status defect from this review. The production server still only supports Claude. Codex replacement through the integrated CLI remains unbuilt and unproven.
+**The scoped local A2A MVP passes Planner QA.** R1/R2 were accepted previously; A5 now resolves R3 startup cancellation. **99 Python tests and 17 legacy checks pass.** The original independent cancellation probe passes 4/4 runs across both fake providers, with no surviving worker or delayed write after cancellation. Deterministic regressions cover cancellation before/during launch, child cleanup, and safe workspace reuse. See the [final QA report](qa-a5-2026-09-24.md).
 
-This assessment is not full A3 acceptance. No runtime changes or real model calls were made during the status review.
+Root `HANDOFF.md` is **A5-CANCEL-STARTUP, APPROVED**, after its first execution. The three-execution predecessor remains archived as **superseded, not approved**, preserving its history. No further implementation correction or paid comparison is required for this scope. Human merge/push and target-repository adoption remain pending; legacy remains the default.
+
+The demonstrated benefit is Executor replacement by endpoint configuration while retaining the Planner workflow and git-based QA. This adds local server/credential/Python setup; it does not establish faster, cheaper, or better coding. Full host-driven skill planning/approval/QA, Cursor discovery, and third-party-server interoperability remain untested, disclosed limitations. The historical sections below preserve earlier assessments; use this decision for current status. Planner changed documentation only.
 
 **Executor update (2026-09-24, A3-A4-COMPLETE continuation; independent Planner QA pending).** Implemented and self-tested:
 - the A3 configuration-switch correction;
@@ -13,7 +15,7 @@ This assessment is not full A3 acceptance. No runtime changes or real model call
 
 Live-verified: Claude, Codex, and a mid-workflow Claude→Codex switch through the real CLI, with the defects found live fixed ([results](a2a-replacement-results.md)). Skill discovery and invocation were checked in the Codex CLI host; the Cursor host is untested. Details are in [Continuation results](#continuation-results-a3-a4-complete-executor-self-report) below. Nothing here is QA approval.
 
-Subsequent execution decision (2026-09-24): the human requested one agent to finish the remaining plan and return to the original Planner for independent QA. Root `HANDOFF.md` now holds **A3-A4-COMPLETE**, READY FOR EXECUTION, awaiting manual launch. It includes A3 corrections, Codex support, bounded live replacement checks, and skill verification. The original A3 task/findings are preserved in the local archive. Implementation may proceed between phases after self-checks; all independent A3/A4 approval and the final adoption/merge decision remain pending. This update supersedes the separate phase-approval sequencing below, not its technical acceptance criteria.
+Execution decision (2026-09-24, before the continuation): the human requested one agent to finish the remaining plan and return to the original Planner for independent QA. Root `HANDOFF.md` was set to **A3-A4-COMPLETE**, READY FOR EXECUTION, for manual launch. That continuation and its R1/R2 correction are complete; the cancellation follow-up is now accepted in A5. The original A3 task/findings remain in the local archive. A3/A4 and the A5 lifecycle follow-up now pass Planner QA; the adoption/merge decision remains pending.
 
 ## Goal and scope
 
@@ -29,18 +31,18 @@ The MVP is local: a manually started loopback server operates on a registered ch
 |---|---|---|
 | Planner and QA | External chat agent follows `HANDOFF.md`; `drive` is an instruction, not a CLI subcommand or autonomous service | Planner judgment and human approval remain external responsibilities |
 | Legacy execution | Bash `bin/handoff` directly launches headless Claude; default when config is absent | 17 legacy smoke checks pass; Python-free execution also has a Python-suite fixture |
-| A2A boundary (A1) | Official SDK, Agent Card, JSON-RPC, complete handoff snapshot, neutral client, Claude adapter | Previously QA approved; only one production adapter exists |
-| Durable lifecycle (A2) | SQLite task/claim store, execution-ID deduplication, saved client records, polling, restart reconciliation, process-group cancellation/deadlines | Previously QA approved; current lifecycle regression tests pass |
-| CLI integration (A3) | Optional `.handoff-config.json`; approve/execute/status/resume/cancel/watch/archive routing; outstanding runs stay authoritative across config changes; failed/canceled deliveries restore the submitted Status | Implemented and self-tested (continuation); independent QA pending |
+| A2A boundary (A1) | Official SDK, Agent Card, JSON-RPC, complete handoff snapshot, neutral client, Claude adapter | Previously QA approved; Claude and Codex adapters now exist |
+| Durable lifecycle (A2) | SQLite task/claim store, execution-ID deduplication, saved client records, polling, restart reconciliation, process-group cancellation/deadlines | Historical approval retained; R3 closed by A5 with deterministic and independent cancellation checks |
+| CLI integration (A3) | Optional `.handoff-config.json`; approve/execute/status/resume/cancel/watch/archive routing; outstanding runs stay authoritative across config changes; failed/canceled deliveries restore the submitted Status | Saved-endpoint recovery and R1 dispatch-hold correction accepted; scoped MVP QA approved |
 | Approval and scope | Local plan-hash receipt, default three-execution budget, reservations, superseded history and successor links | Receipts are audit records, not proof of a human's identity; legacy limits remain instruction-based |
-| Workspace protection | Submission mutex, outstanding-run record, worker lock, branch/HEAD checks, code fingerprints and continuation baselines | Transport-switch gap below fixed in `5197e2f` with CLI regression tests (independent QA pending) |
+| Workspace protection | Submission mutex, outstanding-run record, worker lock, branch/HEAD checks, code fingerprints and continuation baselines | Transport-switch recovery accepted; A5 prevents premature lock release during worker startup |
 | Auth and accounting | Service bearer; Claude auth-variable stripping; neutral usage/cost fields and provenance; manifests and events | Same OS user is not filesystem/account isolation; missing cost remains unknown |
 | Skill entry point | Repository-owned `skills/handoff-cli/SKILL.md` routes Planner intents through the CLI | Codex CLI host: discovery from a temporary repo location and `$handoff-cli status` invocation verified. Cursor host untested |
-| Executor replacement (A4) | `adapters/{base,claude,codex}.py`; server config selects exactly one adapter; Agent Card names the Executor | Fake Claude/Codex share the profile tests; live Claude, Codex, and mixed workflows pass fixture QA ([results](a2a-replacement-results.md)); independent QA pending |
+| Executor replacement (A4) | `adapters/{base,claude,codex}.py`; server config selects exactly one adapter; Agent Card names the Executor | Fake Claude/Codex share the profile tests; live Claude, Codex, and mixed workflows pass fixture QA ([results](a2a-replacement-results.md)); fixture evidence and R2 accepted; scoped MVP QA approved |
 
 Implementation map: `bin/handoff`; `src/handoff_a2a/{client,contracts,server,store,processes,workspace}.py`; A3 adds `{integration,workflow,config,reporting}.py`. The continuation moved all provider-specific construction, environment, and parsing into `adapters/{claude,codex}.py` behind `adapters/base.py`. `server.py` only selects the configured adapter. The explicit live check is `scripts/a2a_live_check.py`.
 
-## Verification on 2026-09-24
+## Historical verification before the continuation (2026-09-24)
 
 | Check | Observed result |
 |---|---|
@@ -92,7 +94,7 @@ Setup burden observed: Python/uv, a manually started server per provider, a serv
 
 No claim is made about coding quality, speed, cost, remote/third-party compatibility, or production readiness.
 
-## Remaining delivery plan
+## Original delivery plan (historical; implementation QA is complete)
 
 ### 1. Correct the A3 recovery gap, then finish A3 QA
 
@@ -142,13 +144,14 @@ The human retains final merge/push and target-repository opt-in decisions. Legac
 ## Completion checklist
 
 - [x] A1: local A2A execution slice, previously QA approved.
-- [x] A2: durable lifecycle and process ownership, previously QA approved.
-- [ ] A3: recovery/status correction and full Planner QA approval. *(Correction implemented and self-tested; Planner QA pending.)*
-- [ ] Production Codex adapter, with provider logic entirely behind the Executor boundary. *(Implemented and self-tested; QA pending.)*
-- [ ] Same real CLI/plan/QA flow passes with Claude and Codex endpoints. *(Live-verified with Executor-run fixture QA; Planner QA pending.)*
-- [ ] Mid-workflow provider switch passes without Planner/client code changes. *(Live-verified; QA pending.)*
-- [ ] Skill discovery and safe invocation demonstrated in the selected host. *(Codex CLI host verified; Cursor untested.)*
-- [ ] Durable evidence report distinguishes observed benefit from untested claims. *([Report](a2a-replacement-results.md) written; QA pending.)*
+- [x] A2 lifecycle acceptance restored by A5; historical A2 approval is retained.
+- [x] A3 saved-endpoint recovery and R1 dispatch hold accepted.
+- [x] Production Codex adapter and R2 full handoff delivery accepted; provider logic remains behind the Executor boundary.
+- [x] Claude/Codex and mid-workflow replacement fixtures independently checked against git and manifests.
+- [x] Durable replacement evidence distinguishes observed benefit from untested claims.
+- [x] A5 focused cancellation correction independently QA approved at 1e09ec5.
+- [x] Overall scoped local MVP passes Planner QA; R1/R2/R3 closed.
+- [ ] Full Planner skill workflow in the selected host. Codex discovery/status is Executor-reported verified; full conversation and Cursor remain untested, a disclosed nonblocking limitation.
 - [ ] Human decides merge/push and whether to enable A2A in a target repo.
 
 Execution policy throughout: human approval followed by manual Executor launch; Planner owns QA. After three executions, preserve passing work and narrow the remaining material scope into an explicitly linked successor. Planner handles documentation-only corrections directly. Do not reset predecessor counters, relax the original goal silently, or launch another broad round merely to polish prose.

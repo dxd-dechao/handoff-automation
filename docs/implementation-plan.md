@@ -1,6 +1,8 @@
 # A2A Executor implementation plan
 
-Continuation (2026-09-24, Executor): the A3-A4-COMPLETE handoff was executed. The A3 correction, Codex adapter, live replacement evidence, and skill host checks in Codex CLI are done; Cursor host discovery is untested. See product-status.md "Continuation results". All A3/A4 approvals remain with the original Planner.
+**Planner QA, 2026-09-24, reviewed `1e09ec5`: APPROVED for the scoped local MVP.** A5 resolves the last material blocker (R3 startup cancellation). 99 Python tests and 17 legacy checks pass; the original independent cancel probe passes 4/4 runs across both fake adapters. R1/R2 and the retained live replacement evidence remain accepted. See the [final QA report](qa-a5-2026-09-24.md). Root HANDOFF.md is **A5-CANCEL-STARTUP, APPROVED**, after one execution; the predecessor retains its three executions and superseded history. No further implementation round or paid comparison is requested. Human merge/push/adoption remain separate. Full skill-host workflow and third-party interoperability remain disclosed limitations.
+
+Continuation (2026-09-24, Executor): the A3-A4-COMPLETE handoff was executed. The A3 correction, Codex adapter, live replacement evidence, and skill host checks in Codex CLI are done; Cursor host discovery is untested. See product-status.md "Continuation results". The original Planner subsequently approved the scoped MVP after A5, as recorded above.
 
 Status as of 2026-09-24 (Planner review, before the continuation): A1 and A2 QA approved; A3 implemented at `7c45000`, but not QA approved. Current regression suites pass (47 Python tests and 17 legacy checks); an independent probe reproduced a configuration-switch recovery/status defect. A4 is not started. Human retains manual Executor launch and merge/push decisions.
 Created: 2026-09-14. Original source baseline: `6201590bb98d7cc9514c04e7df14482695f8afed`. Current inspected HEAD: `7c45000174ac583a2003f2b10ea2dbb5e0b6f7d7` on `codex/a2a-executor-mvp`.
@@ -8,7 +10,7 @@ Historical PR check: no open PRs on 2026-09-14; not rechecked for this status re
 
 See [current product status and remaining work](product-status.md) for the evidence, reproduced blocker, ordered delivery plan, and completion checklist. The sections below retain the original architecture and acceptance requirements.
 
-Execution update (2026-09-24): the human requested one implementation agent to complete the remaining plan, with independent Planner QA afterward. Root `HANDOFF.md` now contains **A3-A4-COMPLETE**, READY FOR EXECUTION, awaiting manual launch. It authorizes A3 corrections, A4 adapter/live checks, and skill verification in one continuation; the old A3 task and findings were preserved in the local archive without claiming approval or resetting history. Proceed between implementation phases on self-checks; the per-phase Planner approvals described below are deferred until the human returns for QA. No agent has been launched by the Planner. Open PR check on this date returned none.
+Execution authorization (2026-09-24, before the continuation): the human requested one implementation agent to complete the remaining plan, with independent Planner QA afterward. Root `HANDOFF.md` was set to **A3-A4-COMPLETE**, READY FOR EXECUTION, for manual launch. That continuation has now finished and received the QA decision above. The old A3 task and findings remain in the local archive without claiming approval or resetting history. No agent has been launched by the Planner. Open PR check on this date returned none.
 
 ## Outcome
 
@@ -55,14 +57,15 @@ Planner is authorized to make documentation-only QA corrections directly at any 
 | Authentication | Local service bearer credential, separate from provider credentials. Adapter strips inherited provider auth variables before using the configured Executor login. Same OS user is not account/filesystem isolation. |
 | Accounting | Neutral usage/cost fields with source/provenance; unknown values stay null. Preserve raw provider output and old Claude manifests. No inferred Codex prices or budget-enforcement claims. |
 
-## Four implementation handoffs
+## Implementation handoffs and constrained follow-up
 
 | ID | Deliverable | Depends on | Status | QA evidence / commit |
 |---|---|---|---|---|
 | A1 | Standalone local A2A server, Claude adapter, provider-neutral client, request/result contract, and Planner-facing CLI skill | Existing baseline | APPROVED | d615f09 + b9bd0aa; reviewed through 123eccc; 23 A2A + 17 legacy checks and five independent CLI probes passed |
-| A2 | Durable execution identity, reconnect/restart handling, and cancellation | A1 | APPROVED | b8468ce + 756ad06; 35 A2A + 17 legacy checks and both independent cancellation/restart probes passed on 2026-09-15 |
-| A3 | Wire A2A into handoff CLI, workflow status, gates, and reporting | A2 | Implemented; config-switch correction and failed-delivery routing fix self-tested; independent QA pending | 756ad06 → 7c45000, corrected in 5197e2f; see product-status.md |
-| A4 | Codex adapter and real replacement validation through handoff CLI | A3 | Implemented, self-tested, live-verified (Executor-run fixture QA); independent QA pending | b57729a, e582fcb, 93c5d13, e595bb6, 6c488e4; [live results](a2a-replacement-results.md) |
+| A2 | Durable execution identity, reconnect/restart handling, and cancellation | A1 | APPROVED; R3 closed by A5 | b8468ce + 756ad06; 35 A2A + 17 legacy checks and both independent cancellation/restart probes passed on 2026-09-15 |
+| A3 | Wire A2A into handoff CLI, workflow status, gates, and reporting | A2 | APPROVED; recovery and R1 accepted | Reviewed through 8d99b93; 93 Python + 17 legacy checks; [current QA](qa-a3-a4-correction-2026-09-24.md) |
+| A4 | Codex adapter and real replacement validation through handoff CLI | A3 | APPROVED for scoped local replacement experiment | [Live results](a2a-replacement-results.md); [current QA](qa-a3-a4-correction-2026-09-24.md) |
+| A5 | Safe cancellation during worker startup | Preserved A1–A4 work | APPROVED at 1e09ec5, execution 1 | 99 Python + 17 legacy checks; independent cancel probe 4/4; [final QA](qa-a5-2026-09-24.md) |
 
 ### A1 — Make a real A2A execution path work
 
