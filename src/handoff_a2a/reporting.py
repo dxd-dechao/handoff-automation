@@ -49,8 +49,15 @@ def usage_fields(result: dict[str, Any] | None) -> dict[str, Any]:
             "usage_provenance": None,
             "cost_provenance": None,
         }
+    usage = result.get("usage")
+    if isinstance(usage, dict):
+        # A2A artifacts travel as protobuf Struct, which turns counts into floats.
+        usage = {
+            key: int(value) if isinstance(value, float) and value.is_integer() else value
+            for key, value in usage.items()
+        }
     return {
-        "usage": result.get("usage"),
+        "usage": usage,
         "cost_usd": result.get("cost_usd"),
         "usage_provenance": result.get("usage_provenance"),
         "cost_provenance": result.get("cost_provenance"),

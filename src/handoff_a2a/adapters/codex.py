@@ -12,11 +12,18 @@ Verified against codex-cli 0.156.0 (`codex exec --help`, `codex sandbox`):
   reach a remote. This is Codex's sandbox, not Claude's permission file; the
   two are not equivalent (e.g. Codex may also write to temp directories).
 - `approval_policy = "never"`: a headless run can never answer a prompt.
+- User-scope skills (`~/.agents/skills`, `$CODEX_HOME/skills`) are disabled
+  per run via `skills.config` (by SKILL.md path; verified with
+  `codex debug prompt-input`). `--ignore-user-config` does not cover them, and
+  in the first live check an operator skill whose description matched
+  "handoff" hijacked the ritual prompt. Target-repo skills (`.agents/skills`
+  in the workspace) and Codex's bundled system skills stay available.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -41,6 +48,33 @@ PERMISSION_PROFILE_TOML = (
     'filesystem={":workspace_roots"={"."="write", ".git"="write"}}}'
 )
 USAGE_PROVENANCE = "codex.turn.completed.usage (input_tokens includes cache_read_input_tokens)"
+
+
+def user_skill_files(env: Mapping[str, str] | None = None) -> list[Path]:
+    """SKILL.md files in the operator's user-scope skill folders (not the workspace's)."""
+    env = os.environ if env is None else env
+    home = Path(env.get("HOME") or Path.home())
+    codex_home = Path(env.get("CODEX_HOME") or home / ".codex")
+    found: list[Path] = []
+    for root in (home / ".agents" / "skills", codex_home / "skills"):
+        if not root.is_dir():
+            continue
+        for folder in sorted(root.iterdir()):
+            # Dot-folders (e.g. `.system`) hold Codex's bundled skills.
+            if folder.name.startswith("."):
+                continue
+            skill = folder / "SKILL.md"
+            if skill.is_file():
+                found.append(skill.resolve())
+    return found
+
+
+def disable_skills_override(skill_files: list[Path]) -> str | None:
+    if not skill_files:
+        return None
+    # JSON string escaping is valid TOML basic-string escaping for paths.
+    entries = ", ".join(f"{{path={json.dumps(str(path))}, enabled=false}}" for path in skill_files)
+    return f"skills.config=[{entries}]"
 
 
 @dataclass(frozen=True)
@@ -177,6 +211,9 @@ class CodexAdapter:
         ]
         if self.config.reasoning_effort:
             argv += ["-c", f'model_reasoning_effort="{self.config.reasoning_effort}"']
+        disable = disable_skills_override(user_skill_files())
+        if disable:
+            argv += ["-c", disable]
         return argv + [RITUAL_PROMPT]
 
     def child_environment(self, base: Mapping[str, str] | None = None) -> dict[str, str]:

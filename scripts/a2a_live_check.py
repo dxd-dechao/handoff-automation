@@ -279,6 +279,8 @@ class Server:
         return f"http://127.0.0.1:{self.port}/.well-known/agent-card.json"
 
     def start(self) -> None:
+        if self.proc is not None and self.proc.poll() is None:
+            return
         self.config_path.write_text(json.dumps(self.config, indent=2) + "\n", encoding="utf-8")
         log = self.log_path.open("ab")
         self.proc = subprocess.Popen(
@@ -353,6 +355,7 @@ class Workflow:
         self.executions: list[dict[str, Any]] = []
         self.commands: list[dict[str, Any]] = []
         self.base = ""
+        self.stopped: str | None = None
 
     def handoff(self, *args: str, timeout: float = 2400) -> subprocess.CompletedProcess[str]:
         started = time.time()
@@ -467,7 +470,12 @@ def provider_models(evidence_dir: Path, config: dict[str, Any]) -> dict[str, Any
 
 
 def drive(workflow: Workflow, first: Server, second: Server) -> None:
-    """Implementation on `first`, correction on `second` (the same server unless mixed)."""
+    """Implementation on `first`, correction on `second` (the same server unless mixed).
+
+    No speculative retries: a failed/canceled delivery stops the workflow for
+    diagnosis. The optional third execution is only for a completed delivery
+    whose independent QA checks failed (a diagnosed correction).
+    """
     workflow.setup()
     first.start()
     try:
@@ -477,42 +485,46 @@ def drive(workflow: Workflow, first: Server, second: Server) -> None:
             raise RuntimeError(f"approve failed: {approved.stderr}")
         record = workflow.execute("implementation", first, correction=False)
         if record["outcome"] != "completed":
-            workflow.qa_round(record, next_feedback=(
-                f"Round 1 QA: delivery {record['outcome']} ({record['reason']}). Complete the plan's steps.\n"
-            ))
-            record = workflow.execute("implementation-retry", first, correction=False)
-        if not record["qa"]["passed"] and record["outcome"] == "completed":
+            workflow.stopped = f"implementation delivery {record['outcome']}: {record['reason']}"
+            return
+        if not record["qa"]["passed"]:
             failed = [k for k, v in record["qa"]["checks"].items() if not v]
             workflow.qa_round(record, next_feedback=f"Round 1 QA: failing checks {failed}. Fix them.\n\n" + CORRECTION_FEEDBACK)
         else:
             workflow.qa_round(record, next_feedback=CORRECTION_FEEDBACK)
     finally:
-        if second is not first:
+        if second is not first or workflow.stopped:
             first.stop()
-    if second is not first:
-        second.start()
-        workflow.configure(second)  # endpoint-only replacement
+    correct(workflow, second)
+
+
+def correct(workflow: Workflow, server: Server) -> None:
+    """Correction round(s) on `server`; the endpoint change is configuration only."""
+    server.start()
+    workflow.configure(server)
     try:
-        workflow.commands.append({"note": f"correction endpoint: {second.name}"})
+        workflow.commands.append({"note": f"correction endpoint: {server.name}"})
         workflow.handoff("status")
-        if len(workflow.executions) >= MAX_EXECUTIONS:
-            return
-        record = workflow.execute("correction", second, correction=True)
-        if not record["qa"]["passed"] and len(workflow.executions) < MAX_EXECUTIONS:
+        record = workflow.execute("correction", server, correction=True)
+        if (
+            record["outcome"] == "completed"
+            and not record["qa"]["passed"]
+            and len(workflow.executions) < MAX_EXECUTIONS
+        ):
             failed = [k for k, v in record["qa"]["checks"].items() if not v]
             workflow.qa_round(record, next_feedback=(
-                f"Round {len(workflow.executions)} QA: diagnosed failing checks {failed}; "
-                f"delivery outcome {record['outcome']} ({record['reason']}). Fix only these.\n\n" + CORRECTION_FEEDBACK
+                f"Round {len(workflow.executions)} QA: diagnosed failing checks {failed}. "
+                "Fix only these.\n\n" + CORRECTION_FEEDBACK
             ))
-            record = workflow.execute("correction-retry", second, correction=True)
-        if record["qa"]["passed"]:
+            record = workflow.execute("correction-retry", server, correction=True)
+        if record["outcome"] != "completed":
+            workflow.stopped = f"correction delivery {record['outcome']}: {record['reason']}"
+        elif record["qa"]["passed"]:
             workflow.qa_round(record, next_feedback=None)
             workflow.handoff("archive")
         workflow.handoff("status")
     finally:
-        second.stop()
-        if second is not first:
-            first.stop()
+        server.stop()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -597,6 +609,7 @@ def main(argv: list[str] | None = None) -> int:
                 srv.stop()
         results["scenarios"][name] = {
             "error": error,
+            "stopped": workflow.stopped,
             "wall_s": round(time.time() - started, 1),
             "executions": workflow.executions,
             "commands": workflow.commands,

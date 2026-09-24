@@ -220,3 +220,14 @@ def test_non_loopback_config_is_rejected(tmp_path: Path) -> None:
 
 def json_dumps(payload: dict) -> str:
     return json.dumps(payload)
+
+
+def test_manifest_usage_counts_are_integers_after_struct_transport() -> None:
+    from handoff_a2a.reporting import usage_fields
+
+    fields = usage_fields(
+        {"usage": {"input_tokens": 2428.0, "output_tokens": 0.0, "cache_creation_input_tokens": None}, "cost_usd": 0.0}
+    )
+    assert fields["usage"] == {"input_tokens": 2428, "output_tokens": 0, "cache_creation_input_tokens": None}
+    assert isinstance(fields["usage"]["input_tokens"], int)
+    assert fields["cost_usd"] == 0.0

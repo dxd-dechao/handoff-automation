@@ -16,6 +16,7 @@ from handoff_a2a.adapters.codex import (
     CodexAdapterConfig,
     child_environment as codex_environment,
     interpret_codex_files,
+    user_skill_files,
 )
 from handoff_a2a.contracts import CODING_TASK_PROFILE
 from handoff_a2a.server import build_agent_card, load_server_config
@@ -144,3 +145,37 @@ def test_neutral_client_and_orchestration_have_no_provider_branches() -> None:
     for name in ("client.py", "integration.py", "workflow.py", "config.py", "contracts.py", "reporting.py"):
         hits = [line for line in (SRC / name).read_text().splitlines() if pattern.search(line)]
         assert hits == [], f"{name}: {hits}"
+
+
+def test_codex_disables_user_scope_skills_but_not_workspace_skills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    for folder in (
+        home / ".agents" / "skills" / "orca-cli",
+        home / ".codex" / "skills" / "personal",
+        home / ".codex" / "skills" / ".system" / "bundled",
+    ):
+        folder.mkdir(parents=True)
+        (folder / "SKILL.md").write_text("---\nname: x\ndescription: handoff\n---\n", encoding="utf-8")
+    (home / ".agents" / "skills" / "not-a-skill").mkdir()
+    workspace = tmp_path / "repo"
+    (workspace / ".agents" / "skills" / "project").mkdir(parents=True)
+    (workspace / ".agents" / "skills" / "project" / "SKILL.md").write_text("x", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    files = user_skill_files()
+    assert [f.parent.name for f in files] == ["orca-cli", "personal"]
+    argv = CodexAdapter(CodexAdapterConfig(binary="codex", model="m")).argv(workspace)
+    override = next(a for a in argv if a.startswith("skills.config="))
+    assert str(home / ".agents" / "skills" / "orca-cli" / "SKILL.md") in override
+    assert override.count("enabled=false") == 2
+    assert "project" not in override and ".system" not in override
+    assert argv[-1] == RITUAL_PROMPT
+
+
+def test_codex_without_user_skills_adds_no_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    argv = CodexAdapter(CodexAdapterConfig(binary="codex", model="m")).argv(tmp_path)
+    assert not any(a.startswith("skills.config=") for a in argv)
