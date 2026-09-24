@@ -2,6 +2,8 @@
 
 Reviewed: **2026-09-24**. Checkout: `codex/a2a-executor-mvp`, commit `1e09ec58f4f059c9d7f3e01fe875eb01b99ce588`.
 
+**A7 update (2026-09-25, Executor self-report; independent Planner QA pending).** Branch `codex/a7-skill-first-setup` from `2a5bf25`. The `handoff-cli` Planner skill is now the default entry point. After `handoff skill install` (Cursor, Codex, or Claude Code; project or explicit `--user`), the human asks the Planner to "set up handoff". The skill checks existing state with `--json`, proposes managed A2A for explicit agreement, asks provider, model, Codex effort, and run mode, then runs `init` and `server start`. The run mode (drive or watch) is saved by the CLI (`handoff mode`), shown in status, and enforced by watch. A Cursor CLI Planner passed the bounded live check after one failed turn led to a skill fix. Cursor Editor discovery remains a manual pending step. See [the A7 report](qa-a7-skill-first-setup.md).
+
 **A6 update (2026-09-24, Executor self-report; independent Planner QA pending).** Branch `codex/a6-cli-setup-cursor-model-switch` from `7ee6d78`. The three user requirements are implemented through public commands:
 
 1. `handoff init` generates every JSON, token, exclude, and optional Cursor skill file (guided on a TTY or scripted by flags), and preserves them on re-init. `handoff server start|status|stop` runs a verified local service.

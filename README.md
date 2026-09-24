@@ -240,14 +240,18 @@ and manually configured A2A endpoints, see [Advanced setup](docs/advanced-setup.
 
 ## Validation and limitations
 
-The [A6 verification report](docs/qa-a6-cli-usability.md) records
-**157 Python tests and 17 legacy smoke checks passing** on 2026-09-24.
-Live checks exercised generated setup, a Cursor CLI Planner, Cursor Grok
+The [A7 verification report](docs/qa-a7-skill-first-setup.md) records
+**192 Python tests and 21 legacy smoke checks passing** on 2026-09-25, and a
+live Cursor CLI Planner that ran the setup interview, set up A2A with the
+answered provider, model, and watch mode, and stopped at a DRAFT. The
+[A6 report](docs/qa-a6-cli-usability.md) covers generated setup, Cursor Grok
 and Composer Executors, and immediate model switches.
 
 Known limits of that evidence:
 
-- Cursor Editor skill discovery and invocation remain unverified.
+- Cursor Editor skill discovery and invocation remain unverified. Codex and
+  Claude Code Planner hosts have installer and fake-worker coverage, not
+  live Planner turns.
 - The interactive Planner launcher is tested separately; live scripted
   Planner turns used Cursor's print mode.
 - In the A6 fixture, a Codex continuation edited Planner-owned QA content.
@@ -294,6 +298,7 @@ and make paid provider calls against disposable fixtures.
 - [CLI setup, Planner hosts, model selection, and recovery](docs/cli-setup-and-models.md)
 - [Advanced setup: legacy Claude and manual A2A endpoints](docs/advanced-setup.md)
 - [A2A coding-task protocol](docs/a2a-coding-task-v1.md)
+- [A7 skill-first setup verification](docs/qa-a7-skill-first-setup.md)
 - [A6 CLI and Cursor verification](docs/qa-a6-cli-usability.md)
 - [Product history and remaining work](docs/product-status.md)
 - [Implementation history](docs/implementation-plan.md)
