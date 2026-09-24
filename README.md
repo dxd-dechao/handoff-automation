@@ -270,7 +270,10 @@ adapter:
   permission profile. That profile extends Codex's `:workspace` sandbox with
   write access to `.git`, so the Executor can commit. Network stays off, so
   push/PR cannot reach a remote. The user's `~/.codex/config.toml` (hooks,
-  plugins, default model) is ignored; the stored Codex login is used.
+  plugins, default model) and user-scope skills are ignored; the stored Codex
+  login is used. HANDOFF.md is git-excluded, so the validated snapshot is
+  passed to Codex as `developer_instructions`, alongside the repo's own
+  AGENTS.md guidance.
   Inherited `OPENAI_*` / `CODEX_API_KEY` values are stripped. Codex reports no
   price, so `cost_usd` stays `null`. These sandboxes are not equivalent to
   Claude's permission file (for example, Codex may also write temp
@@ -292,7 +295,9 @@ removed while a run is outstanding, `status` still shows WAIT/RECOVERY.
 (default wait limits apply when no A2A config is present). No new execution
 starts until the run is reconciled. A failed or canceled delivery does not
 keep an Executor-written `READY FOR QA`/`APPROVED`: reconciliation restores the
-submitted Status, and `status` routes to Planner review. Development helper:
+submitted Status, and `status` routes to Planner review. Its dispatch hold
+also survives config changes: `handoff watch` (A2A or legacy) will not
+redispatch, and only an explicit `handoff execute` clears the hold. Development helper:
 
 ```sh
 uv run --extra test python -m pytest -q
