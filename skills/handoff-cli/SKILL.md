@@ -36,8 +36,9 @@ environment already set. Quote paths.
    Ask only for what is missing. A managed repo with `mode: null` gets only
    the run-mode question.
 2. **Discover options:** `handoff models "<repo>" --provider <p> --json` for
-   claude, codex, and cursor. An `error` means that CLI is missing or not
-   logged in; say which ones are ready.
+   claude, codex, and cursor. Only an `error` means that CLI is missing or
+   not logged in (`models_listed: false` just means it cannot list models,
+   as for Claude); say which ones are ready.
 3. **Ask every open question in one round.** Use the host's structured
    question tool (Cursor `AskQuestion`) when available, otherwise a short
    numbered list:
@@ -56,6 +57,11 @@ environment already set. Quote paths.
      copy `absent` or `outdated` (project, or `--user` if they ask).
    Never choose a transport, provider, model, or mode yourself. Silence or
    an unrelated answer is not agreement; re-ask only the unanswered item.
+   **The questions end your turn.** If the question tool returns no answers
+   or is unavailable (for example a non-interactive session), write the
+   questions in your reply and stop. Run `init`, `mode`, or `server start`
+   only after a later human message answers them; never fill a gap with a
+   default or a "recommended" choice.
 4. **Echo one line** ("A2A, cursor / <model>, watch mode") and run:
    - Fresh A2A: `handoff init "<repo>" --transport a2a --executor <p>
      --model "<id>" --mode <drive|watch> [--reasoning-effort <e>]

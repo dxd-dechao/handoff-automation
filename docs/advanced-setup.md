@@ -16,7 +16,11 @@ claude /login
 handoff init "/path/to/project" --transport legacy
 ```
 
-The Planner runs separately in its own host. To use Codex or Cursor as the
+The `handoff-cli` skill runs the same `init` when you decline managed A2A in
+its setup interview. The Planner runs separately in its own host. Legacy has
+no saved run mode (`handoff mode` explains how to migrate); the Planner
+follows drive or watch for the conversation, and watch means running
+`handoff watch "/path/to/project"` yourself. To use Codex or Cursor as the
 Executor, use managed A2A setup instead.
 
 Initialization copies the handoff template only if it is absent and adds
@@ -47,6 +51,11 @@ a deliberate permission change. See the
 The Executor runs headless with `--permission-mode acceptEdits`. File edits
 are accepted, while shell commands still require permission. It cannot answer
 an interactive permission prompt; review the run log if a command is refused.
+Each launch also passes `--disallowedTools` for the `handoff` and
+`handoff-a2a` CLIs and the `handoff-cli` skill, so the Executor cannot
+dispatch recursively. That rule is not written to `.claude/settings.local.json`,
+because a Claude Code Planner in the same repository reads that file and must
+keep running `handoff`.
 
 ### Logs and recovery
 
@@ -129,16 +138,17 @@ in managed repos) supplies `host`, `port`, `workspace_id`, `workspace_path`,
 `credential_file`, `evidence_dir`, and exactly one Executor adapter:
 
 - `"claude": {"binary": "claude", "model": "..."}` runs `claude -p "execute the
-  handoff" --permission-mode acceptEdits --output-format json`. Allowed
-  commands come from the target repo's `.claude/settings.local.json`
-  (`handoff permissions`).
+  handoff" --permission-mode acceptEdits --disallowedTools <handoff CLI and
+  skill> --output-format json`. Allowed commands come from the target repo's
+  `.claude/settings.local.json` (`handoff permissions`).
 - `"codex": {"binary": "codex", "model": "...", "reasoning_effort": "medium"}`
   (`reasoning_effort` is optional) runs `codex exec --json
   --ignore-user-config` with `approval_policy="never"` and a `handoff`
   permission profile. That profile extends Codex's `:workspace` sandbox with
   write access to `.git`, so the Executor can commit. Network stays off, so
   push/PR cannot reach a remote. The user's `~/.codex/config.toml` (hooks,
-  plugins, default model) and user-scope skills are ignored; the stored Codex
+  plugins, default model), user-scope skills, and a project-local
+  `.agents/skills/handoff-cli` Planner skill are ignored; the stored Codex
   login is used. HANDOFF.md is git-excluded, so the validated snapshot is
   passed to Codex as `developer_instructions`, alongside the repo's own
   AGENTS.md guidance.

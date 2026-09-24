@@ -300,7 +300,7 @@ def main(argv: list[str] | None = None) -> int:
                 "provider": listing.provider,
                 "binary": listing.binary,
                 "version": listing.version,
-                "available": listing.available,
+                "models_listed": listing.available,  # false: no enumeration (Claude), not a login problem
                 "source": listing.source,
                 "models": [{"id": item.id, "name": item.name} for item in listing.models],
                 "note": listing.note or None,

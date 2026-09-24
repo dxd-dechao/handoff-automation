@@ -248,6 +248,9 @@ def test_skill_setup_interview_never_silently_chooses() -> None:
     assert "drive =" in setup and "watch =" in setup and "the human chooses" in setup
     assert "Planner skill location" in setup
     assert "Never choose a transport, provider, model, or mode yourself" in setup
+    # Live A7 finding: an empty structured-question result is not an answer.
+    assert "The questions end your turn." in setup and "returns no answers" in setup
+    assert "never fill a gap with a\n   default" in setup
     # The commands it runs carry exactly the human's choices.
     assert "--transport a2a --executor <p>" in setup and "--mode <drive|watch>" in setup
     assert 'handoff server start "<repo>"' in setup and 'handoff mode "<repo>" <drive|watch>' in setup
@@ -316,3 +319,26 @@ def test_manifest_usage_counts_are_integers_after_struct_transport() -> None:
     assert fields["usage"] == {"input_tokens": 2428, "output_tokens": 0, "cache_creation_input_tokens": None}
     assert isinstance(fields["usage"]["input_tokens"], int)
     assert fields["cost_usd"] == 0.0
+
+
+def test_documented_commands_use_real_verbs_and_flags() -> None:
+    """Every `handoff ...` line in the README / CLI guide code blocks names a real verb and real flags."""
+    import re
+
+    known_flags = set(re.findall(r"(--[a-z][a-z-]+)", Path("bin/handoff").read_text(encoding="utf-8")))
+    for source in Path("src/handoff_a2a").glob("*.py"):
+        known_flags |= set(re.findall(r'add_argument\(\s*"(--[a-z-]+)"', source.read_text(encoding="utf-8")))
+    checked = 0
+    for doc in (Path("README.md"), Path("docs/cli-setup-and-models.md")):
+        text = doc.read_text(encoding="utf-8")
+        for block in re.findall(r"```sh\n(.*?)```", text, re.DOTALL):
+            for line in block.replace("\\\n", " ").splitlines():
+                line = line.split("#", 1)[0].strip()
+                if not line.startswith("handoff "):
+                    continue
+                verb = line.split()[1]
+                assert verb in CLI_VERBS or verb == "--help", (doc, line)
+                for flag in re.findall(r"(?<![\w-])(--[a-z][a-z-]+)", line):
+                    assert flag in known_flags, (doc, line, flag)
+                checked += 1
+    assert checked >= 20

@@ -52,8 +52,11 @@ explicit ID, which is recorded as unverified.
   `max_rounds`, `dispatch_hold`, `last_outcome`,
   `plan_changed_since_approval`), `executor` (as `model`), `run`, `reason`,
   `next`.
-- `models`: `provider`, `available`, `models` (`id`, `name`), `note`,
-  `reasoning_effort_supported`, `login_command`.
+- `models`: `provider`, `models_listed`, `models` (`id`, `name`), `note`,
+  `reasoning_effort_supported`, `login_command`. `models_listed: false`
+  only means the CLI cannot list models (always for Claude: ask for an
+  explicit ID); it says nothing about login. Only an `error` object means
+  the CLI is missing or not logged in.
 - `model`: `selected` (`provider`, `model`, `reasoning_effort`,
   `generation`, `validation`), `active` (`state`:
   `verified`|`unverified`|`stopped`), `current_run`, `pending`.

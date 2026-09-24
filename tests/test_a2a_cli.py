@@ -775,7 +775,8 @@ def test_json_outputs_for_models_model_and_server(tmp_path: Path) -> None:
     assert [m["id"] for m in listed["models"]] == ["fake-model", "other-model", "grok-4.7-high"]
     assert listed["reasoning_effort_supported"] is False and listed["login_command"] == "cursor-agent login"
     claude = as_json(handoff(env, "models", "--provider", "claude", "--json"), "models")
-    assert claude["available"] is False and claude["models"] == [] and "explicit" in claude["note"]
+    assert claude["models_listed"] is False and claude["models"] == [] and "explicit" in claude["note"]
+    assert "available" not in claude  # ambiguous name (a live Planner read it as "not logged in")
     codex = as_json(handoff(env, "models", "--provider", "codex", "--json"), "models")
     assert codex["reasoning_effort_supported"] is True
     denied = handoff({**env, "FAKE_PROVIDER_AUTH": "missing"}, "models", "--provider", "cursor", "--json")
