@@ -7,6 +7,7 @@ import contextlib
 import hmac
 import json
 import logging
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -339,12 +340,61 @@ class ExecutionRuntime:
         self.before_git = None
         self.before_doc = None
         self._cleanup = asyncio.Lock()
+        # Serializes worker launch against cancel/deadline/shutdown. The launch
+        # runs in a worker thread that a canceled coroutine cannot stop, so the
+        # thread itself records ownership under this lock, and finalization
+        # blocks further launches under it before deciding the worker stopped.
+        self._spawn_lock = threading.Lock()
+        self._spawn_blocked = False
         self._finalized = False
         self._closing = False
         self._final_kind: str | None = None
         self.started_at = time.monotonic()
 
+    def _before_spawn(self) -> None:
+        """Test seam: runs in the launch thread before the spawn gate."""
+
+    def spawn_worker(self, argv: list[str], *, env: dict[str, str], stdout_path: Path, stderr_path: Path) -> OwnedProcess | None:
+        """Launch in a thread; returns None if finalization already blocked launch."""
+        self._before_spawn()
+        with self._spawn_lock:
+            if self._spawn_blocked:
+                return None
+            owned = start_owned(
+                argv,
+                cwd=self.executor.workspace.path,
+                env=env,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+            )
+            self.owned = owned
+            self.worker_launched = True
+            self.executor.workspace.lock.write_owner(
+                {
+                    "execution_id": self.request.execution_id,
+                    "task_id": self.task_id,
+                    "pid": owned.pid,
+                    "pgid": owned.pgid,
+                    "start_identity": owned.start_identity,
+                }
+            )
+            self.executor.state.update_execution(
+                self.request.execution_id,
+                status="running",
+                pid=owned.pid,
+                pgid=owned.pgid,
+                start_identity=owned.start_identity,
+                evidence_dir=str(self.evidence),
+            )
+            return owned
+
+    def _block_spawn(self) -> None:
+        # Waits out an in-flight launch; afterwards `owned` is final.
+        with self._spawn_lock:
+            self._spawn_blocked = True
+
     async def stop_worker(self) -> bool:
+        await asyncio.to_thread(self._block_spawn)
         if self.owned is None:
             return True
         return await asyncio.to_thread(
@@ -354,6 +404,9 @@ class ExecutionRuntime:
     async def release_lock_if_safe(self) -> None:
         if not self.lock_acquired:
             return
+        # Never decide on a stale `owned`: close the gate (waiting out any
+        # in-flight launch) so a worker cannot appear after the release.
+        await asyncio.to_thread(self._block_spawn)
         if self.owned is not None and is_owned_alive(self.owned):
             return
         self.executor.workspace.lock.release()
@@ -776,15 +829,15 @@ class CodingAgentExecutor(AgentExecutor):
         argv = self.adapter.argv(self.workspace.path, request.handoff_markdown)
         env = self.adapter.child_environment()
         try:
-            runtime.owned = await asyncio.to_thread(
-                start_owned,
+            owned = await asyncio.to_thread(
+                runtime.spawn_worker,
                 argv,
-                cwd=self.workspace.path,
                 env=env,
                 stdout_path=stdout_path,
                 stderr_path=stderr_path,
             )
-            runtime.worker_launched = True
+            if owned is None or runtime._closing:
+                return  # finalization blocked or owns the launched worker
             await updater.add_artifact(
                 [
                     new_data_part(
@@ -799,25 +852,8 @@ class CodingAgentExecutor(AgentExecutor):
                 name=WORKER_LIFECYCLE_ARTIFACT,
                 last_chunk=False,
             )
-            self.workspace.lock.write_owner(
-                {
-                    "execution_id": request.execution_id,
-                    "task_id": runtime.task_id,
-                    "pid": runtime.owned.pid,
-                    "pgid": runtime.owned.pgid,
-                    "start_identity": runtime.owned.start_identity,
-                }
-            )
-            self.state.update_execution(
-                request.execution_id,
-                status="running",
-                pid=runtime.owned.pid,
-                pgid=runtime.owned.pgid,
-                start_identity=runtime.owned.start_identity,
-                evidence_dir=str(runtime.evidence),
-            )
             exit_code = await asyncio.to_thread(
-                wait_owned, runtime.owned, timeout_s=self.config.execution_timeout_s
+                wait_owned, owned, timeout_s=self.config.execution_timeout_s
             )
             if exit_code is None:
                 await runtime.finalize(

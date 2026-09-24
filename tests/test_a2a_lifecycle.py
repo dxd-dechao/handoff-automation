@@ -616,3 +616,181 @@ async def test_real_server_process_restart_during_active_run(tmp_path: Path) -> 
         if first is not None and first.poll() is None:
             first.kill()
             first.wait(timeout=5)
+
+
+# ── Cancellation during worker startup (A5) ─────────────────────────────────
+
+
+def _lifecycle(task: dict) -> dict:
+    for artifact in reversed(task.get("artifacts") or []):
+        if artifact.get("name") == "worker-lifecycle":
+            for part in artifact.get("parts") or []:
+                if isinstance(part.get("data"), dict):
+                    return part["data"]
+    return {}
+
+
+def _dead(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
+async def _startup_client(tmp_path: Path, provider: str, *, mode: str = "success", sleep_s: str = "1"):
+    from handoff_a2a.client import CodingClient
+
+    repo = make_repo(tmp_path)
+    fake = make_fake_claude(tmp_path, provider)
+    (repo / ".fake-mode").write_text(f"{mode}\n", encoding="utf-8")
+    (repo / ".fake-sleep").write_text(f"{sleep_s}\n", encoding="utf-8")
+    config, token_path, _evidence = make_server_config(
+        tmp_path, repo, fake, cancel_grace_s=1.0, provider=provider
+    )
+    return repo, config, token_path.read_text().strip(), CodingClient
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", PROVIDERS)
+async def test_immediate_cancel_leaves_no_delayed_write_or_live_worker(tmp_path: Path, provider: str) -> None:
+    repo, config, token, CodingClient = await _startup_client(tmp_path, provider, sleep_s="2")
+    lock = repo / ".handoff-logs" / "execute.lock"
+    with RunningServer(config) as server:
+        client = CodingClient(server.card_url, token)
+        await client.connect()
+        try:
+            execution_id = str(uuid4())
+            submitted = await client.submit(
+                parse_coding_request(coding_payload(repo, config.workspace_id, execution_id=execution_id))
+            )
+            canceled = await client.cancel(submitted["id"])  # no wait for WORKER_STARTED
+            assert _state(canceled) == "TASK_STATE_CANCELED"
+            assert not lock.exists()
+            claim = SqliteState(config.resolved_state_db(), config.caller_id).get_execution(execution_id)
+            if claim is not None and claim.pid:
+                assert _dead(int(claim.pid))
+            await asyncio.sleep(3.5)  # beyond the worker's scheduled write
+            assert (repo / "app.py").read_text() == "value = 0\n"
+            assert git(repo, "log", "--oneline").stdout.count("\n") == 1
+            terminal = await client.get(submitted["id"])
+            assert _state(terminal) == "TASK_STATE_CANCELED"
+            life = _lifecycle(terminal)
+            if _launches(repo) or (repo / "WORKER_STARTED").exists():
+                assert life.get("worker_started") is True
+            assert life.get("worker_stopped") is True and life.get("lock_held") is False
+        finally:
+            await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", PROVIDERS)
+async def test_cancel_while_spawn_in_flight_stops_owned_worker_before_release(
+    tmp_path: Path, provider: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    import handoff_a2a.server as server_module
+
+    repo, config, token, CodingClient = await _startup_client(tmp_path, provider, mode="writer", sleep_s="20")
+    lock = repo / ".handoff-logs" / "execute.lock"
+    spawned, release = threading.Event(), threading.Event()
+    pids: list[int] = []
+    real_start = server_module.start_owned
+
+    def gated_start(*args, **kwargs):
+        owned = real_start(*args, **kwargs)
+        pids.append(owned.pid)
+        spawned.set()
+        release.wait(10)  # the launch thread still holds the spawn gate
+        return owned
+
+    monkeypatch.setattr(server_module, "start_owned", gated_start)
+    with RunningServer(config) as server:
+        client = CodingClient(server.card_url, token)
+        await client.connect()
+        try:
+            submitted = await client.submit(
+                parse_coding_request(coding_payload(repo, config.workspace_id, execution_id=str(uuid4())))
+            )
+            assert await asyncio.to_thread(spawned.wait, 10)
+            await asyncio.to_thread(_wait_file, repo / "CHILD_WRITES")  # worker and its child are live
+            child_pid = int((repo / "CHILD_PID").read_text().strip())
+            cancel = asyncio.create_task(client.cancel(submitted["id"]))
+            await asyncio.sleep(0.5)
+            assert not cancel.done()  # finalization waits for the in-flight launch
+            assert lock.is_dir()  # protection retained while ownership is unknown
+            release.set()
+            canceled = await cancel
+            assert _state(canceled) == "TASK_STATE_CANCELED"
+            # The returned process was owned and stopped before the lock went away.
+            assert _dead(pids[0]) and _dead(child_pid)
+            assert not lock.exists()
+            frozen = (repo / "CHILD_WRITES").read_text()
+            life = _lifecycle(await client.get(submitted["id"]))
+            assert life == {**life, "worker_started": True, "worker_stopped": True, "lock_held": False}
+
+            # A same-workspace follow-up cannot overlap the canceled worker.
+            monkeypatch.setattr(server_module, "start_owned", real_start)
+            (repo / ".fake-mode").write_text("success\n", encoding="utf-8")
+            (repo / ".fake-sleep").write_text("0\n", encoding="utf-8")
+            follow = await client.submit(
+                parse_coding_request(
+                    coding_payload(repo, config.workspace_id, execution_id=str(uuid4()), run_id="after-cancel")
+                )
+            )
+            assert _state(await client.wait(follow["id"], timeout=20)) == "TASK_STATE_COMPLETED"
+            assert (repo / "CHILD_WRITES").read_text() == frozen
+            assert (repo / "app.py").read_text() == "value = 1\n"
+            assert _launches(repo) == 2
+        finally:
+            release.set()
+            await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", PROVIDERS)
+async def test_cancel_before_spawn_gate_prevents_launch(
+    tmp_path: Path, provider: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    import handoff_a2a.server as server_module
+
+    repo, config, token, CodingClient = await _startup_client(tmp_path, provider)
+    lock = repo / ".handoff-logs" / "execute.lock"
+    at_gate, release = threading.Event(), threading.Event()
+    starts: list[int] = []
+    real_start = server_module.start_owned
+
+    def hold_at_gate(_runtime) -> None:
+        at_gate.set()
+        release.wait(10)
+
+    def counting_start(*args, **kwargs):
+        starts.append(1)
+        return real_start(*args, **kwargs)
+
+    monkeypatch.setattr(server_module.ExecutionRuntime, "_before_spawn", hold_at_gate)
+    monkeypatch.setattr(server_module, "start_owned", counting_start)
+    with RunningServer(config) as server:
+        client = CodingClient(server.card_url, token)
+        await client.connect()
+        try:
+            submitted = await client.submit(
+                parse_coding_request(coding_payload(repo, config.workspace_id, execution_id=str(uuid4())))
+            )
+            assert await asyncio.to_thread(at_gate.wait, 10)
+            canceled = await client.cancel(submitted["id"])
+            assert _state(canceled) == "TASK_STATE_CANCELED"
+            assert not lock.exists()
+            release.set()  # the launch thread now finds the gate closed
+            await asyncio.sleep(2.0)
+            assert starts == []
+            assert _launches(repo) == 0 and not (repo / "WORKER_STARTED").exists()
+            assert (repo / "app.py").read_text() == "value = 0\n"
+            life = _lifecycle(await client.get(submitted["id"]))
+            assert life.get("worker_started") is False and life.get("worker_stopped") is True
+        finally:
+            release.set()
+            await client.close()

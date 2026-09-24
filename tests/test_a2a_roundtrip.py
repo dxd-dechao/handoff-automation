@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 from contextlib import redirect_stdout
@@ -272,7 +273,7 @@ async def test_cancel_stops_worker_and_marks_canceled(tmp_path: Path, provider: 
         tmp_path, repo, fake, cancel_grace_s=1.0, provider=provider
     )
     token = token_path.read_text().strip()
-    (repo / ".fake-sleep").write_text("8\n", encoding="utf-8")
+    (repo / ".fake-sleep").write_text("2\n", encoding="utf-8")
     with RunningServer(config) as server:
         client = await _client(server.card_url, token)
         try:
@@ -285,6 +286,10 @@ async def test_cancel_stops_worker_and_marks_canceled(tmp_path: Path, provider: 
             assert _state(terminal) == "TASK_STATE_CANCELED"
             assert not (repo / ".handoff-logs" / "execute.lock").exists()
             assert (repo / "app.py").read_text() == "value = 0\n"
+            # Observe past the worker's scheduled write, not only at the response.
+            await asyncio.sleep(3.0)
+            assert (repo / "app.py").read_text() == "value = 0\n"
+            assert _state(await client.get(submitted["id"])) == "TASK_STATE_CANCELED"
         finally:
             await client.close()
 
