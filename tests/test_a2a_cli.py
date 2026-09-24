@@ -652,3 +652,106 @@ def test_constrained_successor_executes_on_inherited_uncommitted_work(tmp_path: 
         # The predecessor's counters were not reset.
         closed_again = json.loads((repo / ".handoff-logs" / "closed-workflows" / f"{parent}.json").read_text())
         assert closed_again["rounds_used"] == 3
+
+
+def _launch_marker(tmp_path: Path) -> tuple[Path, Path]:
+    """Harmless legacy 'claude' that only records that it was launched."""
+    marker = tmp_path / "legacy-launches"
+    stub = tmp_path / "legacy-marker-claude"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f"echo launched >> {json.dumps(str(marker))}\n"
+        "echo '{\"type\":\"result\",\"is_error\":false,\"usage\":{}}'\n",
+        encoding="utf-8",
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+    return stub, marker
+
+
+def _legacy_launches(marker: Path) -> int:
+    return len(marker.read_text().splitlines()) if marker.is_file() else 0
+
+
+@pytest.mark.parametrize(
+    ("switch", "ending"),
+    [("legacy", "cancel"), ("removed", "cancel"), ("legacy", "fail"), ("removed", "fail"), ("legacy", "complete")],
+)
+def test_watch_after_transport_switch_keeps_dispatch_hold(tmp_path: Path, switch: str, ending: str) -> None:
+    import signal
+
+    mode, sleep_s = {"cancel": ("early_ready", 25), "fail": ("early_fail", 4), "complete": ("early_ready", 4)}[ending]
+    repo, config, env = _setup_mode(tmp_path, mode, sleep_s=sleep_s, wait=1.0)
+    stub, marker = _launch_marker(tmp_path)
+    env = {**env, "HANDOFF_CLAUDE_BIN": str(stub)}
+    outstanding = repo / ".handoff-logs" / "outstanding.json"
+    with RunningServer(config):
+        _run(repo, env, "approve", check=True)
+        assert _run(repo, env, "execute").returncode == 2
+        _wait_for_worker(repo)
+        if switch == "legacy":
+            (repo / ".handoff-config.json").write_text('{"transport": "legacy"}\n', encoding="utf-8")
+        else:
+            (repo / ".handoff-config.json").unlink()
+        watch = subprocess.Popen(
+            [str(HANDOFF_BIN), "watch", str(repo)],
+            env={**env, "HANDOFF_POLL_INTERVAL": "1", "PYTHONUNBUFFERED": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            time.sleep(1.5)
+            if ending == "cancel":
+                canceled = _run(repo, env, "cancel")
+                assert '"outcome": "canceled"' in canceled.stdout, canceled.stdout + canceled.stderr
+            deadline = time.time() + 30
+            while time.time() < deadline and outstanding.exists():
+                time.sleep(0.2)
+            assert not outstanding.exists()
+            time.sleep(3.5)  # several more legacy polls
+        finally:
+            os.killpg(watch.pid, signal.SIGTERM)
+            out, _ = watch.communicate(timeout=10)
+        assert _launches(repo) == 1
+        assert _legacy_launches(marker) == 0, out
+        status = parse_handoff((repo / "HANDOFF.md").read_text()).status
+        if ending == "complete":
+            assert status == "READY FOR QA"
+            assert out.count("NOTIFY: Handoff: READY FOR QA") == 1, out
+            assert _workflow(repo)["dispatch_hold"] is False
+            return
+        assert status == "READY FOR EXECUTION"
+        assert "watch will not retry" in out, out
+        assert _workflow(repo)["dispatch_hold"] is True
+        assert _workflow(repo)["rounds_used"] == 1
+
+        # Only an explicit, reviewed execute proceeds, and it clears the hold.
+        explicit = _run(repo, env, "execute")
+        assert explicit.returncode == 0, explicit.stderr + explicit.stdout
+        assert "cleared the A2A dispatch hold" in explicit.stdout
+        assert _legacy_launches(marker) == 1
+        assert _workflow(repo)["dispatch_hold"] is False
+
+
+def test_plain_legacy_watch_dispatches_without_python(tmp_path: Path) -> None:
+    import signal
+
+    repo = make_repo(tmp_path)
+    write_handoff(repo, status="READY FOR EXECUTION")
+    stub, marker = _launch_marker(tmp_path)
+    env = os.environ.copy()
+    env.update({"HANDOFF_CLAUDE_BIN": str(stub), "HANDOFF_A2A_BIN": str(tmp_path / "no-a2a"), "HANDOFF_POLL_INTERVAL": "1"})
+    watch = subprocess.Popen(
+        [str(HANDOFF_BIN), "watch", str(repo)], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, start_new_session=True,
+    )
+    try:
+        deadline = time.time() + 15
+        while time.time() < deadline and not marker.exists():
+            time.sleep(0.2)
+    finally:
+        os.killpg(watch.pid, signal.SIGTERM)
+        out, _ = watch.communicate(timeout=10)
+    assert _legacy_launches(marker) == 1, out
+    assert "no-a2a" not in out

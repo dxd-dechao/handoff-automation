@@ -112,6 +112,22 @@ has_outstanding() {
   [[ -f "$1/.handoff-logs/outstanding.json" ]]
 }
 
+# A failed or canceled A2A delivery sets dispatch_hold in workflow.json. The
+# hold outlives transport switches: watch never dispatches past it, and only an
+# explicit `handoff execute` (after Planner review) clears it.
+a2a_dispatch_held() {
+  local wf="$1/.handoff-logs/workflow.json"
+  [[ -f "$wf" ]] || return 1
+  command -v jq >/dev/null || die "jq is required to read $wf (brew install jq)"
+  [[ "$(jq -r 'if .dispatch_hold == true and .disposition == null then "held" else "" end' "$wf" 2>/dev/null)" == "held" ]]
+}
+
+clear_a2a_dispatch_hold() {
+  local wf="$1/.handoff-logs/workflow.json"
+  jq '.dispatch_hold = false' "$wf" > "$wf.tmp" && mv "$wf.tmp" "$wf"
+  echo "explicit execute: cleared the A2A dispatch hold"
+}
+
 refuse_if_outstanding() {
   if has_outstanding "$1"; then
     die "outstanding A2A run exists; run 'handoff status', 'handoff resume', or 'handoff cancel' first"
@@ -206,7 +222,14 @@ cmd_execute_legacy() {
   rmdir "$submit" 2>/dev/null || true
 
   HANDOFF_EXECUTE_LOCK="$lock"
-  trap '_handoff_release_execute' EXIT INT TERM
+  # Release on any exit; on INT/TERM also stop (a signalled run must not keep
+  # going without its lock, and watch must stay killable).
+  trap '_handoff_release_execute' EXIT
+  trap '_handoff_release_execute; exit 130' INT
+  trap '_handoff_release_execute; exit 143' TERM
+  if a2a_dispatch_held "$repo"; then
+    clear_a2a_dispatch_hold "$repo"
+  fi
 
   local run_id
   run_id="$(date +%Y%m%d-%H%M%S)-$$"
@@ -507,7 +530,9 @@ cmd_watch() {
       echo "[$(date +%H:%M:%S)] status: $status ($(turn_for "$status")'s turn)"
       case "$status" in
         "READY FOR EXECUTION" | "CHANGES REQUESTED")
-          if ! cmd_execute "$repo"; then
+          if a2a_dispatch_held "$repo"; then
+            echo "execute held after a failed/canceled A2A delivery; watch will not retry (Planner review, then explicit 'handoff execute')"
+          elif ! cmd_execute "$repo"; then
             # Don't hot-loop a failing executor: wait for the status (or a
             # human) to change something before trying again.
             echo "execute failed; watching for the next status change"
