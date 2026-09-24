@@ -20,30 +20,49 @@ readonly RITUAL_PROMPT="execute the handoff"
 CLAUDE_BIN="${HANDOFF_CLAUDE_BIN:-claude}"
 CLAUDE_MODEL="${HANDOFF_MODEL:-bedrock.claude-opus-4-8}"
 POLL_INTERVAL="${HANDOFF_POLL_INTERVAL:-30}"
+readonly CLI_OUTPUT_SCHEMA="urn:handoff-automation:cli-output:v1"
+# The Executor must never run the Planner skill or this CLI (recursive
+# dispatch). Denied per launch, not in .claude/settings.local.json, which a
+# Claude Code Planner in the same repo also reads. Same list as the A2A
+# Claude adapter (EXECUTOR_DISALLOWED_TOOLS).
+readonly EXECUTOR_DISALLOWED_TOOLS="Bash(handoff:*),Bash(handoff-a2a:*),Bash(*/handoff:*),Bash(*/handoff-a2a:*),Skill(handoff-cli)"
 
 usage() {
   cat <<'EOF'
 usage: handoff <subcommand> [repo-path] [options]     (repo-path defaults to $PWD)
 
+Start here (one-time bootstrap, then talk to your Planner agent):
+  handoff skill install <repo> --host <cursor|codex|claude> [--user]
+            makes the handoff-cli skill available to your Planner chat. Then say
+            "/handoff-cli set up handoff in this repo": the skill asks for the
+            Executor provider/model and the run mode (drive or watch), proposes
+            managed A2A, and runs the commands below for you.
+  handoff watch <repo>   the one command you keep running yourself in watch mode
+
+Manual / scripted reference (the skill uses these; see docs/cli-setup-and-models.md):
+
 setup
-  init      set up a repo. On a terminal it asks; scripted:
+  init      set up a repo. On a terminal it asks (Enter = managed A2A); scripted:
               handoff init <repo> --transport a2a --executor <claude|codex|cursor> \
-                  --model "<model-id>" [--planner cursor] [--reasoning-effort <e>] [--port <n>]
+                  --model "<model-id>" [--mode <drive|watch>] [--planner <cursor|codex|claude>] \
+                  [--reasoning-effort <e>] [--port <n>]
               handoff init <repo> --transport legacy     (Python-free direct Claude)
             Generates every JSON/token/skill file; re-running preserves them.
-  models    handoff models <repo> --provider <name>: model IDs the installed CLI reports
-  server    handoff server start|status|stop <repo> [--port <n>]: the managed local service
-  model     handoff model <repo>: selected / active / pending Executor
+  skill     handoff skill install <repo> --host <h> [--user]; handoff skill status <repo> [--json]
+  models    handoff models <repo> --provider <name> [--json]: model IDs the installed CLI reports
+  server    handoff server start|status|stop <repo> [--port <n>] [--json]: the managed local service
+  model     handoff model <repo> [--json]: selected / active / pending Executor
             handoff model <repo> --provider <name> --model "<id>" [--after-current]
             handoff model <repo> --cancel-pending
+  mode      handoff mode <repo> [drive|watch] [--json]: show or set the run mode (managed A2A)
   planner   handoff planner <repo> --provider cursor --model "<id>": interactive Cursor Planner
   permissions  merge the Claude executor allowlist into .claude/settings.local.json
 
 workflow
-  status    print Markdown status, execution state, whose turn, and the current Goal
+  status    Markdown status, execution state, whose turn, run mode, and the Goal [--json]
   approve   record plan approval (A2A receipt) or activate a legacy DRAFT
   execute   run the executor (only when it's the executor's turn)
-  watch     poll Status; auto-execute on executor turns, notify on human/planner turns
+  watch     poll Status; auto-execute on executor turns (refuses in drive mode)
   resume    reconnect to an outstanding A2A run
   cancel    request cancellation of an outstanding A2A run
   runs      list past executor runs from their manifests
@@ -172,6 +191,18 @@ resolve_a2a_bin() {
 or point HANDOFF_A2A_BIN at an existing handoff-a2a executable"
 }
 
+# True when the A2A runtime can be found, without dying (legacy stays Python-free).
+a2a_available() {
+  (resolve_a2a_bin >/dev/null 2>&1)
+}
+
+# One JSON error object on stdout for --json callers: kind, message, exit code.
+json_die() {
+  jq -n --arg schema "$CLI_OUTPUT_SCHEMA" --arg kind "$1" --arg error "$2" \
+    '{schema: $schema, kind: $kind, error: $error}'
+  exit "${3:-1}"
+}
+
 # Managed setup/service/selection verbs run in the Python runtime.
 a2a_manage() {
   local command="$1"
@@ -204,15 +235,53 @@ notify() { # title, body
   echo "NOTIFY: $1 — $2"
 }
 
+legacy_next() {
+  case "$1" in
+    DRAFT) echo "human plan review, then handoff approve" ;;
+    "READY FOR EXECUTION" | "CHANGES REQUESTED") echo "handoff execute" ;;
+    "READY FOR QA") echo "Planner QA" ;;
+    APPROVED) echo "human merge; handoff archive" ;;
+    *) echo "" ;;
+  esac
+}
+
 cmd_status() {
+  local repo_arg="" json=0 a
+  for a in "$@"; do
+    case "$a" in
+      --json) json=1 ;;
+      -*) die "unknown status option: $a (try --help)" ;;
+      *) repo_arg="$a" ;;
+    esac
+  done
   local repo
-  repo="$(resolve_repo "${1:-}")"
+  if [[ $json -eq 1 ]]; then
+    command -v jq >/dev/null || die "jq is required for --json (brew install jq)"
+    repo="$(cd "${repo_arg:-$PWD}" 2>/dev/null && pwd)" || json_die status "no such directory: ${repo_arg:-$PWD}"
+    [[ -f "$repo/HANDOFF.md" ]] || json_die status "no HANDOFF.md in $repo (run 'handoff init $repo' first?)"
+  else
+    repo="$(resolve_repo "$repo_arg")"
+  fi
   if has_outstanding "$repo" || is_a2a "$repo"; then
-    a2a_cli "$repo" status
+    if [[ $json -eq 1 ]]; then
+      a2a_cli "$repo" status --json
+    else
+      a2a_cli "$repo" status
+    fi
     return
   fi
   local status
   status="$(read_status "$repo")"
+  if [[ $json -eq 1 ]]; then
+    # Legacy stays Python-free: the same object shape, built with jq.
+    jq -n --arg schema "$CLI_OUTPUT_SCHEMA" --arg repo "$repo" --arg status "$status" \
+      --arg turn "$(turn_for "$status")" --arg goal "$(read_goal "$repo")" --arg next "$(legacy_next "$status")" \
+      '{schema: $schema, kind: "status", repo: $repo, transport: "legacy", managed: false,
+        status: (if $status == "" then null else $status end), turn: $turn, goal: $goal,
+        execution: null, workflow: null, mode: null, watcher: null, executor: null, run: null,
+        reason: null, next: (if $next == "" then null else $next end)}'
+    return
+  fi
   echo "repo:   $repo"
   echo "status: ${status:-"(no Status line found)"}"
   echo "turn:   $(turn_for "$status")"
@@ -304,6 +373,7 @@ cmd_execute_legacy() {
     for v in $(compgen -e | grep -E '^(ANTHROPIC_|CLAUDE)' || true); do unset "$v"; done
     "$CLAUDE_BIN" -p "$RITUAL_PROMPT" --permission-mode acceptEdits \
       --model "$CLAUDE_MODEL" \
+      --disallowedTools "$EXECUTOR_DISALLOWED_TOOLS" \
       --output-format json > "$raw_result" 2>> "$log" || exit $?
   ) || rc=$?
 
@@ -763,37 +833,117 @@ ensure_excludes() {
   done
 }
 
-# Copy the repository-owned Planner skill into the project's .cursor/skills,
-# never over an unrelated or tracked skill (legacy path; A2A init does this in Python).
+skill_dir_for() {
+  case "$1" in
+    cursor) echo ".cursor/skills/handoff-cli" ;;
+    codex) echo ".agents/skills/handoff-cli" ;;
+    claude) echo ".claude/skills/handoff-cli" ;;
+    *) die "unknown Planner host '$1' (cursor, codex, or claude)" ;;
+  esac
+}
+
+# Install the repository-owned Planner skill for a host (legacy init path; A2A
+# init does this in Python). With the A2A runtime present, the one Python
+# installer runs (markers, upgrades). Without it, legacy stays Python-free: a
+# fresh copy only, never over an unrelated, modified, or tracked skill.
 install_planner_skill_legacy() {
-  local repo="$1" src="$SCRIPT_DIR/../skills/handoff-cli" dest="$1/.cursor/skills/handoff-cli"
+  local repo="$1" host="$2" rel
+  rel="$(skill_dir_for "$host")"
+  if a2a_available; then
+    a2a_manage skill install "$repo" --host "$host"
+    return
+  fi
+  local src="$SCRIPT_DIR/../skills/handoff-cli" dest="$repo/$rel"
   if [[ -e "$dest" || -L "$dest" ]]; then
-    if [[ ! -L "$dest" ]] && [[ -z "$(git -C "$repo" ls-files -- .cursor/skills/handoff-cli)" ]] \
-      && diff -rq "$src" "$dest" >/dev/null 2>&1; then
+    if [[ ! -L "$dest" ]] && [[ -z "$(git -C "$repo" ls-files -- "$rel")" ]] \
+      && diff -rq -x .handoff-skill.json "$src" "$dest" >/dev/null 2>&1; then
       echo "planner skill already installed: $dest"
       return 0
     fi
-    die ".cursor/skills/handoff-cli already exists with different or tracked content; not overwriting it"
+    die "$rel already exists with different or tracked content; not overwriting it (upgrades need the A2A runtime: uv sync, then handoff skill install)"
   fi
   mkdir -p "$(dirname "$dest")"
   cp -R "$src" "$dest"
-  ensure_excludes "$repo" ".cursor/skills/handoff-cli/"
-  echo "installed Planner skill: $dest (project-local; type /handoff-cli in Cursor)"
+  ensure_excludes "$repo" "$rel/"
+  echo "installed Planner skill: $dest (project-local; type /handoff-cli in your Planner chat)"
+}
+
+cmd_skill() {
+  a2a_available || die "handoff skill needs the A2A runtime (handoff-a2a). Set it up once with:
+  (cd \"$(cd "$SCRIPT_DIR/.." && pwd)\" && uv sync)"
+  a2a_manage skill "$@"
+}
+
+legacy_mode_hint() {
+  echo "handoff init \"$1\" --transport a2a --executor <claude|codex|cursor> --model \"<model-id>\" --mode <drive|watch>"
+}
+
+# Run mode is managed-A2A configuration. The legacy answer is Python-free.
+cmd_mode() {
+  local repo_arg="" value="" json=0 a npos=0
+  for a in "$@"; do
+    case "$a" in
+      --json) json=1 ;;
+      -*) die "unknown mode option: $a (try --help)" ;;
+      *)
+        npos=$((npos + 1))
+        case "$npos" in
+          1) repo_arg="$a" ;;
+          2) value="$a" ;;
+          *) die "mode takes a repo and an optional drive|watch" ;;
+        esac
+        ;;
+    esac
+  done
+  case "$value" in "" | drive | watch) ;; *) die "unknown run mode '$value' (drive or watch)" ;; esac
+  local repo
+  if [[ $json -eq 1 ]]; then
+    command -v jq >/dev/null || die "jq is required for --json (brew install jq)"
+    repo="$(cd "${repo_arg:-$PWD}" 2>/dev/null && pwd)" || json_die mode "no such directory: ${repo_arg:-$PWD}"
+    [[ -f "$repo/HANDOFF.md" ]] || json_die mode "no HANDOFF.md in $repo (run 'handoff init $repo' first?)"
+  else
+    repo="$(resolve_repo "$repo_arg")"
+  fi
+  handoff_transport "$repo"
+  if [[ "$TRANSPORT" == "legacy" ]]; then
+    local hint msg
+    hint="$(legacy_mode_hint "$repo")"
+    if [[ -n "$value" ]]; then
+      msg="run mode requires managed A2A setup (this repository uses legacy direct Claude, which has no saved run mode). To migrate: $hint"
+      [[ $json -eq 1 ]] && json_die mode "$msg" 2
+      echo "handoff: $msg" >&2
+      exit 2
+    fi
+    if [[ $json -eq 1 ]]; then
+      jq -n --arg schema "$CLI_OUTPUT_SCHEMA" --arg repo "$repo" --arg hint "To migrate: $hint" \
+        '{schema: $schema, kind: "mode", repo: $repo, transport: "legacy", managed: false, mode: null,
+          changed: false, previous: null, hint: $hint}'
+      return 0
+    fi
+    echo "mode:    not set (legacy; run mode requires managed A2A setup)"
+    echo "hint:    to migrate: $hint"
+    return 0
+  fi
+  local -a pass=("$repo")
+  [[ -n "$value" ]] && pass+=("$value")
+  [[ $json -eq 1 ]] && pass+=(--json)
+  a2a_manage mode "${pass[@]}"
 }
 
 init_choices_hint() {
   local repo="$1"
   cat >&2 <<EOF
 handoff: choose how to set up $repo (no terminal to ask on):
-  handoff init "$repo" --transport a2a --executor <claude|codex|cursor> --model "<model-id>" [--planner cursor]
+  handoff init "$repo" --transport a2a --executor <claude|codex|cursor> --model "<model-id>" [--mode <drive|watch>] [--planner <cursor|codex|claude>]
   handoff init "$repo" --transport legacy
+or let your Planner agent ask you: handoff skill install "$repo" --host <cursor|codex|claude>, then /handoff-cli set up handoff
 list model IDs first: handoff models "$repo" --provider <claude|codex|cursor>
 nothing was changed
 EOF
 }
 
 cmd_init() {
-  local repo="" transport="" planner="" arg
+  local repo="" transport="" planner="" mode="" arg
   local -a choice=()
   while [[ $# -gt 0 ]]; do
     arg="$1"
@@ -802,6 +952,8 @@ cmd_init() {
       --transport=*) transport="${arg#*=}"; shift ;;
       --planner) planner="${2:-}"; choice+=("$arg" "${2:-}"); shift 2 || die "--planner needs a value" ;;
       --planner=*) planner="${arg#*=}"; choice+=("$arg"); shift ;;
+      --mode) mode="${2:-}"; choice+=("$arg" "${2:-}"); shift 2 || die "--mode needs a value" ;;
+      --mode=*) mode="${arg#*=}"; choice+=("$arg"); shift ;;
       --executor | --model | --reasoning-effort | --port)
         [[ $# -ge 2 ]] || die "$arg needs a value"
         choice+=("$arg" "$2"); shift 2 ;;
@@ -815,7 +967,8 @@ cmd_init() {
   local given="${repo:-$PWD}"
   repo="$(cd "$given" 2>/dev/null && pwd)" || die "no such directory: $given"
   repo="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null)" || die "not a git repository: $repo"
-  case "$planner" in "" | cursor | none) ;; *) die "unknown --planner '$planner' (cursor or none)" ;; esac
+  case "$planner" in "" | cursor | codex | claude | none) ;; *) die "unknown --planner '$planner' (cursor, codex, claude, or none)" ;; esac
+  case "$mode" in "" | drive | watch) ;; *) die "unknown --mode '$mode' (drive or watch)" ;; esac
   if git -C "$repo" ls-files --error-unmatch .handoff-config.json >/dev/null 2>&1; then
     die ".handoff-config.json is already tracked; refuse to treat secrets as git-excluded"
   fi
@@ -823,16 +976,20 @@ cmd_init() {
   if [[ -z "$transport" ]]; then
     local has_executor_choice=0 c
     for c in ${choice[@]+"${choice[@]}"}; do
-      case "$c" in --executor* | --model* | --reasoning-effort* | --port*) has_executor_choice=1 ;; esac
+      case "$c" in --executor* | --model* | --reasoning-effort* | --port* | --mode*) has_executor_choice=1 ;; esac
     done
     if [[ $has_executor_choice -eq 1 ]]; then
       transport="a2a"
     elif [[ -f "$repo/HANDOFF.md" ]]; then
       transport="existing" # bare re-init: nondestructive
     elif [[ -t 0 && -t 1 ]]; then
-      local answer=""
+      local answer="?"
+      echo "Transport: A2A (recommended) = a Claude/Codex/Cursor Executor, model switching, a saved run mode,"
+      echo "           and resumable runs through a local service; legacy = direct Claude only."
       while [[ "$answer" != "a2a" && "$answer" != "legacy" ]]; do
-        read -r -p "Transport [a2a = choose Claude/Codex/Cursor Executor and model; legacy = direct Claude]: " answer </dev/tty
+        read -r -p "Transport [A2A/legacy] (Enter = A2A): " answer </dev/tty
+        answer="$(printf '%s' "$answer" | tr '[:upper:]' '[:lower:]')"
+        [[ -z "$answer" ]] && answer="a2a"
       done
       transport="$answer"
     else
@@ -841,6 +998,9 @@ cmd_init() {
     fi
   fi
 
+  if [[ "$transport" == "legacy" && -n "$mode" ]]; then
+    die "run mode requires managed A2A setup; legacy has no saved run mode (drive or watch is followed by your Planner for the conversation). Use: $(legacy_mode_hint "$repo")"
+  fi
   case "$transport" in
     legacy) cmd_init_legacy "$repo" "$planner" ;;
     existing)
@@ -848,7 +1008,7 @@ cmd_init() {
       if [[ -f "$repo/.handoff-config.json" ]] && jq -e '.managed != null' "$repo/.handoff-config.json" >/dev/null 2>&1; then
         a2a_manage setup "$repo" --template "$TEMPLATE_DIR/HANDOFF.md" ${choice[@]+"${choice[@]}"}
       else
-        [[ "$planner" == "cursor" ]] && install_planner_skill_legacy "$repo"
+        if [[ -n "$planner" && "$planner" != "none" ]]; then install_planner_skill_legacy "$repo" "$planner"; fi
         echo "already initialized: $repo/HANDOFF.md (ensured local excludes; nothing else changed)"
         echo "managed A2A setup: handoff init \"$repo\" --transport a2a --executor <provider> --model \"<model-id>\""
       fi
@@ -879,8 +1039,8 @@ cmd_init() {
 cmd_init_legacy() {
   local repo="$1" planner="${2:-}"
   ensure_excludes "$repo" HANDOFF.md HANDOFF-ARCHIVE.md .handoff-logs/ .claude/settings.local.json .handoff-config.json
-  if [[ "$planner" == "cursor" ]]; then
-    install_planner_skill_legacy "$repo"
+  if [[ -n "$planner" && "$planner" != "none" ]]; then
+    install_planner_skill_legacy "$repo" "$planner"
   fi
   if [[ -f "$repo/HANDOFF.md" ]]; then
     echo "already initialized: $repo/HANDOFF.md (ensured local excludes, including .handoff-config.json)"
@@ -896,9 +1056,12 @@ cmd_init_legacy() {
 command="${1:-}"
 shift || true
 case "$command" in
-  status | execute | runs | watch | permissions | approve | resume | cancel)
+  execute | runs | watch | permissions | approve | resume | cancel)
     "cmd_$command" "${1:-}"
     ;;
+  status) cmd_status "$@" ;;
+  mode) cmd_mode "$@" ;;
+  skill) cmd_skill "$@" ;;
   init) cmd_init "$@" ;;
   archive) cmd_archive "$@" ;;
   models | model | server | planner) a2a_manage "$command" "$@" ;;

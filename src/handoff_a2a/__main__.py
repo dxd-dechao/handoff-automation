@@ -22,18 +22,20 @@ from handoff_a2a.integration import main as integration_main
 from handoff_a2a.server import load_server_config, serve
 
 
-def _module(name: str):
+def _module(name: str, entry: str = "main"):
     import importlib
 
-    return lambda: importlib.import_module(f"handoff_a2a.{name}")
+    return lambda: getattr(importlib.import_module(f"handoff_a2a.{name}"), entry)
 
 
 MANAGED_COMMANDS = {
     "setup": _module("setup"),
     "models": _module("providers"),
     "model": _module("selection"),
+    "mode": _module("selection", "mode_main"),
     "server": _module("service"),
     "planner": _module("planner"),
+    "skill": _module("skills"),
 }
 
 
@@ -55,6 +57,8 @@ def build_parser() -> argparse.ArgumentParser:
         ("model", "show or change the Executor selection (handoff model)"),
         ("server", "start/status/stop the managed local service (handoff server)"),
         ("planner", "launch an interactive Cursor Planner (handoff planner)"),
+        ("mode", "show or set the run mode, drive or watch (handoff mode)"),
+        ("skill", "install or inspect the Planner skill (handoff skill)"),
     ):
         managed = sub.add_parser(name, help=help_text, add_help=False)
         managed.add_argument("args", nargs=argparse.REMAINDER)
@@ -69,7 +73,8 @@ def build_parser() -> argparse.ArgumentParser:
     cli_sub.add_parser("execute")
     cli_sub.add_parser("resume")
     cli_sub.add_parser("cancel")
-    cli_sub.add_parser("status")
+    cli_status = cli_sub.add_parser("status")
+    cli_status.add_argument("--json", action="store_true")
     cli_watch = cli_sub.add_parser("watch")
     cli_watch.add_argument("--interval", type=float, default=30.0)
     cli_archive = cli_sub.add_parser("archive")
@@ -123,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
     raw = sys.argv[1:] if argv is None else list(argv)
     if raw and raw[0] in MANAGED_COMMANDS:
         # argparse REMAINDER cannot start with an option, so hand off directly.
-        return MANAGED_COMMANDS[raw[0]]().main(raw[1:])
+        return MANAGED_COMMANDS[raw[0]]()(raw[1:])
     parser = build_parser()
     args = parser.parse_args(raw)
     if args.command == "serve":
@@ -141,6 +146,8 @@ def main(argv: list[str] | None = None) -> int:
             argv.extend(["--interval", str(getattr(args, "interval", 30.0))])
         if args.cli_command == "archive" and getattr(args, "superseded", False):
             argv.append("--superseded")
+        if args.cli_command == "status" and getattr(args, "json", False):
+            argv.append("--json")
         return integration_main(argv)
     if args.command == "execute":
         try:

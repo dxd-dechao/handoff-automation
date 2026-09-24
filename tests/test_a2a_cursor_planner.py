@@ -60,7 +60,7 @@ def test_planner_launch_is_interactive_and_leaves_executor_selection_alone(tmp_p
 def test_planner_requires_skill_and_an_available_model(tmp_path: Path) -> None:
     repo, env = managed_repo(tmp_path)
     missing = handoff(env, "planner", str(repo), "--provider", "cursor", "--model", "fake-model", "--print-command")
-    assert missing.returncode == 1 and "--planner cursor" in missing.stderr
+    assert missing.returncode == 1 and "handoff skill install" in missing.stderr and "--host cursor" in missing.stderr
     assert handoff(env, "init", str(repo), "--planner", "cursor").returncode == 0  # additive re-init
     unknown = handoff(env, "planner", str(repo), "--provider", "cursor", "--model", "grok-9", "--print-command")
     assert unknown.returncode == 1 and "not in cursor-agent models" in unknown.stderr

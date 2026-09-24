@@ -8,7 +8,7 @@ Layout (all git-excluded, machine-local):
                                               pending selection, history
   <repo>/.handoff-logs/credentials/service-token   local bearer token (0600)
   <repo>/.handoff-logs/server-evidence/       server state DB + run evidence
-  <repo>/.cursor/skills/handoff-cli/          only with --planner cursor
+  <repo>/<host skill dir>/handoff-cli/        only with --planner <host> (skills.py)
 
 Setup never launches a model task, approves a plan, logs into an account, or
 downloads anything. Re-running it preserves HANDOFF content, the token, the
@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from handoff_a2a.client import write_json_atomic
-from handoff_a2a.config import MANAGED_SCHEMA, ConfigError, load_config
+from handoff_a2a.config import MANAGED_SCHEMA, RUN_MODES, ConfigError, load_config
 from handoff_a2a.adapters.cursor import RULE_EXCLUDE_PATTERN
 from handoff_a2a.providers import (
     LOGIN_COMMANDS,
@@ -45,11 +45,18 @@ from handoff_a2a.providers import (
     list_models,
     validate_model,
 )
+from handoff_a2a.skills import (
+    HOSTS as PLANNER_HOSTS,
+    SkillError,
+    exclude_pattern as skill_exclude,
+    install as install_skill,
+    project_location,
+    skill_state,
+)
 from handoff_a2a.workspace import (
     CONFIG_NAME,
     HANDOFF_NAME,
     LOG_DIRNAME,
-    PLANNER_SKILL_DIR,
     DirLock,
     WorkspaceBusy,
 )
@@ -60,7 +67,6 @@ CREDENTIALS_DIRNAME = "credentials"
 TOKEN_NAME = "service-token"
 EVIDENCE_DIRNAME = "server-evidence"
 SERVICE_LOCK_NAME = "service.lock"
-REPO_SKILL = Path(__file__).resolve().parents[2] / "skills" / "handoff-cli"
 BASE_EXCLUDES = (
     HANDOFF_NAME,
     "HANDOFF-ARCHIVE.md",
@@ -69,7 +75,6 @@ BASE_EXCLUDES = (
     CONFIG_NAME,
     RULE_EXCLUDE_PATTERN,
 )
-PLANNER_EXCLUDE = f"{PLANNER_SKILL_DIR}/"
 DEFAULT_TIMEOUTS = {"request_timeout_s": 30, "wait_timeout_s": 180, "poll_interval_s": 1}
 
 
@@ -114,10 +119,6 @@ class ManagedPaths:
     @property
     def state_db(self) -> Path:
         return self.evidence / "state.sqlite"
-
-    @property
-    def planner_skill(self) -> Path:
-        return self.repo / PLANNER_SKILL_DIR
 
     @property
     def backups(self) -> Path:
@@ -256,7 +257,22 @@ def build_server_config(
     }
 
 
-def build_client_config(paths: ManagedPaths, *, workspace_id: str, port: int, planner: str | None, max_rounds: int = 3) -> dict[str, Any]:
+def build_client_config(
+    paths: ManagedPaths,
+    *,
+    workspace_id: str,
+    port: int,
+    planner: str | None,
+    max_rounds: int = 3,
+    run_mode: str | None = None,
+) -> dict[str, Any]:
+    managed: dict[str, Any] = {
+        "schema": MANAGED_SCHEMA,
+        "server_config": str(paths.server_config),
+        "planner": {"host": planner} if planner else None,
+    }
+    if run_mode:
+        managed["run_mode"] = run_mode
     return {
         "transport": "a2a",
         "max_rounds": max_rounds,
@@ -266,11 +282,7 @@ def build_client_config(paths: ManagedPaths, *, workspace_id: str, port: int, pl
             "credential_file": str(paths.token),
             **DEFAULT_TIMEOUTS,
         },
-        "managed": {
-            "schema": MANAGED_SCHEMA,
-            "server_config": str(paths.server_config),
-            "planner": {"host": planner} if planner else None,
-        },
+        "managed": managed,
     }
 
 
@@ -346,42 +358,11 @@ def ensure_excludes(journal: Journal, repo: Path, patterns: list[str]) -> list[s
     return added
 
 
-def _tree_digest(root: Path) -> dict[str, str]:
-    return {
-        str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
-        for p in sorted(root.rglob("*"))
-        if p.is_file()
-    }
-
-
-def planner_skill_state(paths: ManagedPaths) -> str:
-    """'absent', 'current' (identical copy), or 'foreign' (never overwritten)."""
-    target = paths.planner_skill
-    if target.is_symlink():
-        return "foreign"
-    if not target.exists():
-        return "absent"
-    if tracked_under(paths.repo, PLANNER_SKILL_DIR):
-        return "foreign"
-    return "current" if _tree_digest(target) == _tree_digest(REPO_SKILL) else "foreign"
-
-
-def install_planner_skill(journal: Journal, paths: ManagedPaths) -> str:
-    state = planner_skill_state(paths)
-    if state == "current":
-        return "already installed (identical)"
-    if state == "foreign":
-        raise SetupError(
-            f"{PLANNER_SKILL_DIR} already exists with different or tracked content; "
-            "not overwriting an unrelated skill (move it aside or install manually)"
-        )
-    for parent in (paths.repo / ".cursor", paths.repo / ".cursor" / "skills"):
-        if parent.is_symlink():
-            raise SetupError(f"{parent.relative_to(paths.repo)} is a symlink; refusing to install the Planner skill")
-    journal.mkdir(paths.planner_skill.parent)
-    journal.before_write(paths.planner_skill)
-    shutil.copytree(REPO_SKILL, paths.planner_skill)
-    return "installed"
+def install_planner_skill(journal: Journal, paths: ManagedPaths, host: str) -> str:
+    try:
+        return install_skill(project_location(paths.repo, host), journal=journal)
+    except SkillError as exc:
+        raise SetupError(str(exc), exit_code=exc.exit_code) from exc
 
 
 def check_collisions(paths: ManagedPaths) -> None:
@@ -423,6 +404,7 @@ class SetupOptions:
     port: int | None = None
     template: Path | None = None
     interactive: bool = False
+    mode: str | None = None
 
 
 @dataclass
@@ -433,6 +415,7 @@ class SetupReport:
     notes: list[str] = field(default_factory=list)
     selection: str = ""
     validation: str = ""
+    mode: str | None = None
     next_steps: list[str] = field(default_factory=list)
 
 
@@ -470,8 +453,12 @@ def prompt_choices(opts: SetupOptions) -> SetupOptions:
                 opts.model = listing.models[int(answer) - 1].id
             elif answer:
                 opts.model = answer
+    if opts.mode is None:
+        print("Run mode: drive = your Planner agent runs execute + QA itself;")
+        print("          watch = a `handoff watch` terminal dispatches, the Planner does QA")
+        opts.mode = ask("Run mode", RUN_MODES)
     if opts.planner is None:
-        opts.planner = ask("Planner host integration", ("cursor", "none"))
+        opts.planner = ask("Planner skill for host", (*PLANNER_HOSTS, "none"))
     return opts
 
 
@@ -480,8 +467,10 @@ def run_setup(opts: SetupOptions) -> SetupReport:
     paths = ManagedPaths(repo)
     report = SetupReport(repo=repo)
     planner = None if opts.planner in (None, "none") else opts.planner
-    if planner not in (None, "cursor"):
-        raise SetupError(f"unknown planner host {opts.planner!r} (cursor or none)")
+    if planner not in (None, *PLANNER_HOSTS):
+        raise SetupError(f"unknown planner host {opts.planner!r} ({', '.join(PLANNER_HOSTS)} or none)")
+    if opts.mode is not None and opts.mode not in RUN_MODES:
+        raise SetupError(f"unknown run mode {opts.mode!r} ({' or '.join(RUN_MODES)})", exit_code=2)
     check_collisions(paths)
     try:
         existing = load_config(repo)
@@ -518,7 +507,7 @@ def _require_choice(opts: SetupOptions) -> None:
         raise SetupError(
             "choose an Executor provider and model: "
             f'handoff init {_q(opts.repo)} --transport a2a --executor <{"|".join(PROVIDERS)}> '
-            '--model "<model-id>" [--planner cursor]',
+            '--model "<model-id>" [--mode <drive|watch>] [--planner <cursor|codex|claude>]',
             exit_code=2,
         )
 
@@ -544,10 +533,14 @@ def _fresh(
         if reason:
             raise SetupError(f"refusing to migrate to managed A2A: {reason}")
     validation = _validate(opts)
-    if planner == "cursor" and planner_skill_state(paths) == "foreign":
-        raise SetupError(
-            f"{PLANNER_SKILL_DIR} already exists with different or tracked content; not overwriting it"
-        )
+    if planner is not None:
+        location = project_location(paths.repo, planner)
+        state, detail = skill_state(location)
+        if state == "foreign":
+            raise SetupError(
+                f"{location.display} already exists and is not an unmodified handoff install ({detail}); "
+                "not overwriting it. Move it aside, or re-run without --planner"
+            )
     if paths.server_config.exists():
         raise SetupError(f"{paths.server_config} already exists without a managed {CONFIG_NAME}; move it aside first")
     workspace_id = workspace_id_for(paths.repo)
@@ -584,9 +577,11 @@ def _fresh(
             port=port,
             planner=planner,
             max_rounds=existing.max_rounds if existing is not None else 3,
+            run_mode=opts.mode,
         ),
     )
     report.created.append(str(paths.config))
+    report.mode = opts.mode
     _record_history(paths, journal, {"event": "selected", "generation": 1, "provider": validation.provider, "model": validation.model})
     report.selection = f"{validation.provider} / {validation.model}"
     report.validation = validation.describe()
@@ -624,17 +619,29 @@ def _reinit(
     _common_files(paths, opts, planner, report, journal)
     config = read_json(paths.config)
     current_planner = ((config.get("managed") or {}).get("planner") or {}).get("host")
+    current_mode = (config.get("managed") or {}).get("run_mode")
+    changed = False
     if planner and planner != current_planner:
         config["managed"]["planner"] = {"host": planner}
-        journal.write_json(paths.config, config)
         report.notes.append(f"Planner host integration added: {planner}")
+        changed = True
+    if opts.mode and opts.mode != current_mode:
+        # Run mode is configuration only: workflow, approval, rounds, holds,
+        # and Git state are untouched (same as `handoff mode`).
+        config["managed"]["run_mode"] = opts.mode
+        report.notes.append(f"run mode set to {opts.mode} (was {current_mode or 'not set'})")
+        _record_history(paths, journal, {"event": "run_mode", "mode": opts.mode, "previous": current_mode})
+        changed = True
+    if changed:
+        journal.write_json(paths.config, config)
+    report.mode = opts.mode or current_mode
     report.selection = f"{provider} / {model} (unchanged)"
     report.validation = str((server.get("selection") or {}).get("validation") or "recorded at selection time")
     _next_steps(paths, provider, planner or current_planner, report)
 
 
 def _common_files(paths: ManagedPaths, opts: SetupOptions, planner: str | None, report: SetupReport, journal: Journal) -> None:
-    patterns = list(BASE_EXCLUDES) + ([PLANNER_EXCLUDE] if planner == "cursor" else [])
+    patterns = list(BASE_EXCLUDES) + ([skill_exclude(planner)] if planner else [])
     added = ensure_excludes(journal, paths.repo, patterns)
     if added:
         report.created.append(f"local git excludes: {', '.join(added)}")
@@ -647,10 +654,10 @@ def _common_files(paths: ManagedPaths, opts: SetupOptions, planner: str | None, 
         journal.before_write(handoff)
         shutil.copyfile(opts.template, handoff)
         report.created.append(str(handoff))
-    if planner == "cursor":
-        outcome = install_planner_skill(journal, paths)
-        target = report.created if outcome == "installed" else report.kept
-        target.append(f"{paths.planner_skill} ({outcome})")
+    if planner:
+        outcome = install_planner_skill(journal, paths, planner)
+        target = report.created if outcome in {"installed", "upgraded"} else report.kept
+        target.append(f"{project_location(paths.repo, planner).path} ({outcome})")
 
 
 def _record_history(paths: ManagedPaths, journal: Journal, event: dict[str, Any]) -> None:
@@ -671,19 +678,27 @@ def _next_steps(paths: ManagedPaths, provider: str, planner: str | None, report:
     login = LOGIN_COMMANDS.get(provider)
     report.notes.append(f"Executor login stays yours: if needed, run `{login}` for the Executor account")
     report.next_steps = [f"handoff server start {q}"]
-    if planner == "cursor":
-        report.next_steps.append(f'handoff planner {q} --provider cursor --model "<model-id>"   (or the Cursor editor: /handoff-cli)')
-    report.next_steps += [
-        "write a DRAFT plan in HANDOFF.md (Planner), get explicit human approval, then:",
-        f"handoff approve {q}",
-        f"handoff watch {q}      (or: handoff execute {q})",
-    ]
+    if report.mode is None:
+        report.next_steps.append(f"choose the run mode: handoff mode {q} <drive|watch>")
+    elif report.mode == "watch":
+        report.next_steps.append(f"keep a terminal open with: handoff watch {q}")
+    if planner:
+        report.next_steps.append(
+            f"in your {planner.capitalize()} Planner chat: /handoff-cli plan <task> in the handoff "
+            "(the skill writes a DRAFT, waits for your approval, then runs the CLI)"
+        )
+    else:
+        report.next_steps.append(
+            f"make the Planner skill available: handoff skill install {q} --host <cursor|codex|claude>, "
+            "then in the Planner chat: /handoff-cli plan <task> in the handoff"
+        )
 
 
 def print_report(report: SetupReport) -> None:
     print(f"repo:      {report.repo}")
     print(f"executor:  {report.selection}")
     print(f"model check: {report.validation}")
+    print(f"mode:      {report.mode or 'not set'}")
     for item in report.created:
         print(f"created:   {item}")
     for item in report.kept:
@@ -701,7 +716,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--executor", choices=PROVIDERS)
     parser.add_argument("--model")
     parser.add_argument("--reasoning-effort")
-    parser.add_argument("--planner", choices=("cursor", "none"))
+    parser.add_argument("--planner", choices=(*PLANNER_HOSTS, "none"))
+    parser.add_argument("--mode", choices=RUN_MODES)
     parser.add_argument("--port", type=int)
     parser.add_argument("--template", type=Path)
     parser.add_argument("--interactive", action="store_true")
@@ -719,6 +735,7 @@ def main(argv: list[str] | None = None) -> int:
         port=args.port,
         template=args.template,
         interactive=args.interactive,
+        mode=args.mode,
     )
     if opts.port is not None and not (1024 <= opts.port <= 65535):
         print("handoff: --port must be 1024-65535", file=sys.stderr)

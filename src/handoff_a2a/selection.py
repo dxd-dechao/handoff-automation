@@ -19,12 +19,17 @@ dispatch hold, Git branch/HEAD, or continuation fingerprint.
   until the human replaces or cancels it.
 - A switch is never a move of an in-progress conversation: interrupting
   means `handoff cancel`, review, and a new execution under the same rules.
+
+The run mode (`handoff mode`: drive or watch) is the same kind of
+configuration: `managed.run_mode` in the client config, written only by
+`handoff init --mode` and `handoff mode`, never part of the plan or approval.
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+import io
 import json
 import re
 import sys
@@ -33,7 +38,9 @@ from pathlib import Path
 from typing import Any
 
 from handoff_a2a.client import write_json_atomic
+from handoff_a2a.config import RUN_MODES, ConfigError, load_config
 from handoff_a2a.providers import PROVIDERS, ProviderError, Validation, validate_model
+from handoff_a2a.reporting import print_json, print_json_error
 from handoff_a2a.service import (
     Managed,
     ServiceError,
@@ -42,7 +49,9 @@ from handoff_a2a.service import (
     refusal_guidance,
     start_locked,
     stop_locked,
+    unmanaged_hint,
     unresolved,
+    watcher_state,
 )
 from handoff_a2a.setup import (
     SetupError,
@@ -290,8 +299,45 @@ def describe_lines(managed: Managed) -> list[str]:
     return lines
 
 
-def cmd_show(repo: Path) -> int:
+def describe(managed: Managed) -> dict[str, Any]:
+    """`handoff model --json`: the same facts as describe_lines."""
+    provider, model, effort = selection_of(managed.server)
+    state = inspect(managed)
+    pending = load_pending(managed)
+    return {
+        "repo": str(managed.paths.repo),
+        "selected": {
+            "provider": provider,
+            "model": model,
+            "reasoning_effort": effort,
+            "generation": managed.generation,
+            "validation": (managed.server.get("selection") or {}).get("validation"),
+        },
+        "active": {
+            "state": "verified" if state.verified else ("unverified" if state.running else "stopped"),
+            "provider": (state.card or {}).get("executor_provider") if state.running else None,
+            "model": (state.card or {}).get("executor_model") if state.running else None,
+            "generation": (state.card or {}).get("config_generation") if state.running else None,
+            "detail": state.detail,
+        },
+        "current_run": run_identity(managed.paths.repo),
+        "pending": None
+        if not pending
+        else {
+            "provider": pending.get("provider"),
+            "model": pending.get("model"),
+            "reasoning_effort": pending.get("reasoning_effort"),
+            "failed": bool(pending.get("failed")),
+            "error": pending.get("error"),
+        },
+    }
+
+
+def cmd_show(repo: Path, as_json: bool = False) -> int:
     managed = load_managed(repo)
+    if as_json:
+        print_json("model", describe(managed))
+        return 0
     for line in describe_lines(managed):
         print(line)
     return 0
@@ -395,26 +441,134 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reasoning-effort")
     parser.add_argument("--after-current", action="store_true")
     parser.add_argument("--cancel-pending", action="store_true")
+    parser.add_argument("--json", action="store_true")
     return parser
+
+
+def _change(args: argparse.Namespace, repo: Path) -> int:
+    if args.cancel_pending:
+        if args.provider or args.model or args.after_current:
+            raise SelectionError("--cancel-pending takes no other options", exit_code=2)
+        return cmd_cancel_pending(repo)
+    if not args.provider or not args.model:
+        raise SelectionError("--provider and --model are both required to change the selection", exit_code=2)
+    if args.after_current:
+        return cmd_queue(repo, args.provider, args.model, args.reasoning_effort)
+    return cmd_switch(repo, args.provider, args.model, args.reasoning_effort)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     repo = Path(args.repo).expanduser().resolve()
+    kind = "model"
     try:
-        if args.cancel_pending:
-            if args.provider or args.model or args.after_current:
-                raise SelectionError("--cancel-pending takes no other options", exit_code=2)
-            return cmd_cancel_pending(repo)
-        if not args.provider and not args.model:
+        if not args.provider and not args.model and not args.cancel_pending:
             if args.after_current or args.reasoning_effort:
                 raise SelectionError("--provider and --model are required to change the selection", exit_code=2)
-            return cmd_show(repo)
-        if not args.provider or not args.model:
-            raise SelectionError("--provider and --model are both required to change the selection", exit_code=2)
-        if args.after_current:
-            return cmd_queue(repo, args.provider, args.model, args.reasoning_effort)
-        return cmd_switch(repo, args.provider, args.model, args.reasoning_effort)
+            return cmd_show(repo, args.json)
+        if not args.json:
+            return _change(args, repo)
+        kind = "model-change"
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = _change(args, repo)
+        print_json(kind, {"messages": buffer.getvalue().splitlines(), **describe(load_managed(repo))})
+        return code
     except SetupError as exc:
+        if args.json:
+            return print_json_error(kind, str(exc), exc.exit_code)
         print(f"handoff: {exc}", file=sys.stderr)
         return exc.exit_code
+
+
+# ── run mode: `handoff mode` ────────────────────────────────────────────────
+
+MODE_HELP = {
+    "drive": "the Planner agent runs handoff execute and QA itself; handoff watch refuses to start",
+    "watch": "a handoff watch terminal dispatches executions; the Planner does QA",
+    None: "not set (behaves as before; choose with handoff mode <repo> <drive|watch>)",
+}
+
+
+def run_mode(repo: Path) -> tuple[str, bool, str | None]:
+    """(transport, managed, mode) for status and the Planner skill. Never raises."""
+    try:
+        config = load_config(repo)
+    except ConfigError:
+        return "a2a", False, None
+    if config is None:
+        return "legacy", False, None
+    managed = config.managed is not None and config.transport == "a2a"
+    return config.transport, managed, config.managed.run_mode if managed and config.managed else None
+
+
+def mode_payload(repo: Path) -> dict[str, Any]:
+    transport, managed, mode = run_mode(repo)
+    payload: dict[str, Any] = {"repo": str(repo), "transport": transport, "managed": managed, "mode": mode}
+    if managed:
+        payload["watcher"] = watcher_state(repo)
+    else:
+        payload["hint"] = unmanaged_hint(repo)
+    return payload
+
+
+def set_mode(repo: Path, mode: str) -> tuple[str | None, bool]:
+    """Write managed.run_mode; returns (previous, changed). Nothing else changes."""
+    if mode not in RUN_MODES:
+        raise SelectionError(f"unknown run mode {mode!r} ({' or '.join(RUN_MODES)})", exit_code=2)
+    managed = load_managed(repo)
+    with holding(service_lock(managed.paths), "service"):
+        path = managed.paths.config
+        config = json.loads(path.read_text(encoding="utf-8"))
+        previous = (config.get("managed") or {}).get("run_mode")
+        if previous == mode:
+            return previous, False
+        config["managed"]["run_mode"] = mode
+        write_json_atomic(path, config)
+    append_history(managed.paths, {"event": "run_mode", "mode": mode, "previous": previous})
+    return previous, True
+
+
+def mode_main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="handoff mode")
+    parser.add_argument("repo", nargs="?", default=".")
+    parser.add_argument("mode", nargs="?", choices=RUN_MODES)
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+    repo = Path(args.repo).expanduser().resolve()
+    try:
+        transport, managed, _mode = run_mode(repo)
+        if args.mode and not managed:
+            raise SelectionError(
+                f"run mode requires managed A2A setup (this repository is {transport}"
+                f"{'' if transport == 'legacy' else ', not CLI-managed'}). {unmanaged_hint(repo)}",
+                exit_code=2,
+            )
+        previous, changed = set_mode(repo, args.mode) if args.mode else (None, False)
+    except SetupError as exc:
+        if args.json:
+            return print_json_error("mode", str(exc), exc.exit_code)
+        print(f"handoff: {exc}", file=sys.stderr)
+        return exc.exit_code
+    payload = mode_payload(repo)
+    if args.json:
+        print_json("mode", {**payload, "changed": changed, "previous": previous if changed else payload["mode"]})
+        return 0
+    mode = payload["mode"]
+    if not managed:
+        print(f"mode:    not set ({transport}; run mode requires managed A2A setup)")
+        print(f"hint:    {unmanaged_hint(repo)}")
+        return 0
+    if changed:
+        print(f"mode:    {mode} (was {previous or 'not set'})")
+        print("workflow, approval, rounds, hold, and Git state are unchanged")
+    else:
+        print(f"mode:    {mode or 'not set'}")
+    print(f"meaning: {MODE_HELP[mode]}")
+    watcher = payload["watcher"]
+    if watcher["running"]:
+        note = " (it stops after its current run)" if mode == "drive" else ""
+        print(f"watcher: running, pid {watcher['pid']} since {watcher['started_at']}{note}")
+    elif mode == "watch":
+        print(f'watcher: not running; keep a terminal open with: handoff watch "{repo}"')
+    return 0

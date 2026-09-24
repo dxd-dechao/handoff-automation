@@ -279,15 +279,36 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
     import sys
 
+    from handoff_a2a.reporting import print_json, print_json_error
+
     parser = argparse.ArgumentParser(prog="handoff models")
     parser.add_argument("repo", nargs="?", default=".")
     parser.add_argument("--provider", choices=PROVIDERS, required=True)
+    parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
         listing = list_models(args.provider)
     except ProviderError as exc:
+        if args.json:
+            return print_json_error("models", str(exc))
         print(f"handoff: {exc}", file=sys.stderr)
         return 1
+    if args.json:
+        print_json(
+            "models",
+            {
+                "provider": listing.provider,
+                "binary": listing.binary,
+                "version": listing.version,
+                "available": listing.available,
+                "source": listing.source,
+                "models": [{"id": item.id, "name": item.name} for item in listing.models],
+                "note": listing.note or None,
+                "reasoning_effort_supported": listing.provider in REASONING_EFFORT_PROVIDERS,
+                "login_command": LOGIN_COMMANDS[listing.provider],
+            },
+        )
+        return 0
     print(f"provider: {listing.provider}")
     print(f"binary:   {listing.binary}")
     print(f"version:  {listing.version}")

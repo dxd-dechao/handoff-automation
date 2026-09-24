@@ -2,7 +2,8 @@
 
 The session is interactive and editable (native `--mode plan` is read-only
 and cannot write the HANDOFF draft). Planner guidance is the project-local
-`handoff-cli` skill that `handoff init --planner cursor` installs; invoke it
+`handoff-cli` skill that `handoff skill install --host cursor` (or
+`handoff init --planner cursor`) installs; invoke it
 with `/handoff-cli` in the session. This launcher never starts an Executor,
 never approves a draft, never reads the session's exit as approval, and never
 touches the Executor selection (server.json) or a running task.
@@ -17,7 +18,8 @@ import sys
 from pathlib import Path
 
 from handoff_a2a.providers import ProviderError, validate_model
-from handoff_a2a.setup import SetupError, planner_skill_state, resolve_worktree, ManagedPaths
+from handoff_a2a.setup import SetupError, resolve_worktree
+from handoff_a2a.skills import install_command, project_location, skill_state
 from handoff_a2a.workspace import HANDOFF_NAME, PLANNER_SKILL_DIR
 
 SUPPORTED = ("cursor",)
@@ -42,11 +44,12 @@ def main(argv: list[str] | None = None) -> int:
         repo = resolve_worktree(Path(args.repo).expanduser().resolve())
         if not (repo / HANDOFF_NAME).is_file():
             raise SetupError(f'no {HANDOFF_NAME} in {repo}; run handoff init "{repo}" --planner cursor first')
-        state = planner_skill_state(ManagedPaths(repo))
+        location = project_location(repo, "cursor")
+        state, _detail = skill_state(location)
         if state == "absent":
             raise SetupError(
                 f"the Planner skill is not installed in {repo / PLANNER_SKILL_DIR}; "
-                f'run handoff init "{repo}" --planner cursor (project-local; nothing global)'
+                f"run {install_command(location)} (project-local; nothing global)"
             )
         validation = validate_model(args.provider, args.model)
     except (SetupError, ProviderError) as exc:
@@ -55,6 +58,8 @@ def main(argv: list[str] | None = None) -> int:
     command = planner_argv(validation.binary, repo, validation.model)
     if state == "foreign":
         print(f"note: {PLANNER_SKILL_DIR} differs from this installation's skill; it is used as found")
+    elif state == "outdated":
+        print(f"note: {PLANNER_SKILL_DIR} is an older release; upgrade it with: {install_command(location)}")
     print(f"planner:  {args.provider} / {validation.model} ({validation.describe()})")
     print(f"repo:     {repo}")
     print("guidance: type /handoff-cli in the session (plan, QA, status). The Executor selection is not changed.")
