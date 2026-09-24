@@ -198,6 +198,88 @@ def test_skill_has_valid_metadata_and_existing_cli_intents() -> None:
         assert command in body
 
 
+SKILL_DIR = Path("skills/handoff-cli")
+CLI_VERBS = {
+    "init", "skill", "models", "server", "model", "mode", "planner", "permissions", "status", "approve",
+    "execute", "watch", "resume", "cancel", "runs", "archive",
+}
+
+
+def _section(text: str, heading: str) -> str:
+    start = text.index(heading)
+    end = text.find("\n## ", start + 1)
+    return text[start : end if end > 0 else len(text)]
+
+
+def test_skill_mentions_only_real_cli_verbs_and_links_its_reference() -> None:
+    import re
+
+    skill = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    reference = (SKILL_DIR / "reference.md").read_text(encoding="utf-8")
+    assert "[reference.md](reference.md)" in skill
+    assert len(skill.splitlines()) <= 200
+    bin_text = Path("bin/handoff").read_text(encoding="utf-8")
+    for verb in CLI_VERBS:
+        assert re.search(rf"^\s+(\S+ \| )*{verb}( \|[^)]*)?\)", bin_text, re.MULTILINE), verb
+    warning = "There is no `handoff plan`, `handoff qa`, or `handoff drive` subcommand"
+    assert warning in skill
+    for text in (skill.replace(warning, ""), reference):
+        used = set(re.findall(r"`handoff ([a-z-]+)", text))
+        assert used <= CLI_VERBS, used - CLI_VERBS
+
+
+def test_skill_setup_interview_never_silently_chooses() -> None:
+    skill = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    setup = _section(skill, "## Setup")
+    # Existing state first, via --json, and only missing questions.
+    for probe in ('handoff status "<repo>" --json', 'handoff model "<repo>" --json', 'handoff skill status "<repo>" --json'):
+        assert probe in setup
+    assert setup.index("--json") < setup.index("Ask every open question in one round")
+    assert "run-mode question" in setup
+    # A2A proposed as default, explicit agreement, legacy fallback with limits, migration offer.
+    assert "Use managed A2A (recommended)? Yes/No" in setup and "preselected" in setup
+    assert "Silence or" in setup and "not agreement" in setup
+    assert "--transport legacy" in setup and "only Claude as Executor" in setup and "HANDOFF_MODEL" in setup
+    assert "Migrate to managed A2A (recommended)?" in setup
+    # Provider, real model IDs, Codex-only effort, run mode, skill location.
+    assert "claude, codex, or cursor" in setup
+    assert 'handoff models "<repo>" --provider <p> --json' in setup and "explicit provider-native ID" in setup
+    assert "Reasoning effort:** only for codex" in setup
+    assert "drive =" in setup and "watch =" in setup and "the human chooses" in setup
+    assert "Planner skill location" in setup
+    assert "Never choose a transport, provider, model, or mode yourself" in setup
+    # The commands it runs carry exactly the human's choices.
+    assert "--transport a2a --executor <p>" in setup and "--mode <drive|watch>" in setup
+    assert 'handoff server start "<repo>"' in setup and 'handoff mode "<repo>" <drive|watch>' in setup
+    assert "login_command" in setup and "sandbox" in setup
+
+
+def test_skill_is_mode_aware_and_keeps_the_safety_rules() -> None:
+    skill = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    run = _section(skill, "## Approve and run")
+    assert "explicit chat approval" in run and "never self-approve" in run
+    assert "**drive:**" in run and "**watch:** do not run `handoff execute`" in run
+    assert "watcher.running" in run and 'handoff watch "<repo>"' in run
+    plan = _section(skill, "## Plan")
+    assert "**DRAFT**" in plan and "Do not dispatch a DRAFT" in plan
+    drive = _section(skill, "## Drive loop")
+    assert "three launched executions" in drive and "Merge and push are the human's" in drive
+    assert "must **not** run" in _section(skill, "## Boundaries")
+    assert "Never hand-edit" in skill
+    recovery = _section(skill, "## Status and recovery")
+    assert "(also in watch mode)" in recovery
+
+
+def test_installed_copies_of_every_host_are_workflow_paths() -> None:
+    from handoff_a2a.skills import PROJECT_DIRS
+    from handoff_a2a.workspace import is_workflow_path
+
+    for rel in PROJECT_DIRS.values():
+        assert is_workflow_path(f"{rel}/reference.md")
+    assert not is_workflow_path(".agents/skills/other/SKILL.md")
+    assert not is_workflow_path(".claude/skills/handoff-cli-extra/SKILL.md")
+
+
 
 def test_non_loopback_config_is_rejected(tmp_path: Path) -> None:
     token = tmp_path / "token"
