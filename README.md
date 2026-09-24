@@ -314,7 +314,8 @@ in managed repos) supplies `host`, `port`, `workspace_id`, `workspace_path`,
   login is used. HANDOFF.md is git-excluded, so the validated snapshot is
   passed to Codex as `developer_instructions`, alongside the repo's own
   AGENTS.md guidance.
-  Inherited `OPENAI_*` / `CODEX_API_KEY` values are stripped. Codex reports no
+  Inherited `OPENAI_*` / `CODEX_API_KEY` values (and a Cursor Planner shell's
+  `CURSOR_*`) are stripped. Codex reports no
   price, so `cost_usd` stays `null`. These sandboxes are not equivalent to
   Claude's permission file (for example, Codex may also write temp
   directories).

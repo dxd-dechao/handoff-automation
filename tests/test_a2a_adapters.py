@@ -70,6 +70,8 @@ def test_codex_child_environment_strips_provider_credentials() -> None:
             "AZURE_OPENAI_API_KEY": "x",
             "ANTHROPIC_API_KEY": "x",
             "CLAUDECODE": "1",
+            "CURSOR_ASKPASS_SECRET": "x",
+            "CURSOR_AGENT": "1",
         }
     )
     assert env == {"PATH": "/bin", "HOME": "/h", "CODEX_HOME": "/h/.codex"}

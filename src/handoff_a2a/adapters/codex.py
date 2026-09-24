@@ -46,8 +46,9 @@ from handoff_a2a.adapters.base import (
 from handoff_a2a.contracts import Usage
 
 # Inherited API keys would silently bill a different account than the
-# Executor's stored login; Claude selectors are irrelevant to this child.
-_STRIP_PREFIXES = ("OPENAI_", "AZURE_OPENAI_", "ANTHROPIC_", "CLAUDE")
+# Executor's stored login; Claude selectors and a Cursor Planner session's
+# CURSOR_* variables are irrelevant to this child.
+_STRIP_PREFIXES = ("OPENAI_", "AZURE_OPENAI_", "ANTHROPIC_", "CLAUDE", "CURSOR_")
 _STRIP_NAMES = ("CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
 
 PERMISSION_PROFILE = "handoff"

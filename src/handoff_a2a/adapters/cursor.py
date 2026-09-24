@@ -65,6 +65,12 @@ DENY_RULES = (
     "Shell(git:push*)",
     "Shell(git:merge*)",
     "Shell(git:remote*)",
+    # Global options before the subcommand (`git -C . push`); the matcher's
+    # glob is best effort, so the shell sandbox's empty network allowlist is
+    # what actually stops a push.
+    "Shell(git:* push*)",
+    "Shell(git:* merge*)",
+    "Shell(git:* remote*)",
     "Shell(gh)",
     "Shell(*/gh)",
     "Shell(handoff)",
@@ -76,7 +82,9 @@ DENY_RULES = (
     "Shell(agent)",
     "Shell(*/agent)",
     "Shell(claude)",
+    "Shell(*/claude)",
     "Shell(codex)",
+    "Shell(*/codex)",
     "Write(.git/config)",
     "Write(.git/hooks/**)",
     # The workflow's own state: the local service token, server/run state,

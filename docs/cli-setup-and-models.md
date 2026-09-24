@@ -193,7 +193,15 @@ the same history rules.
   rules for `git push/merge/remote`, `gh`, `handoff`, `handoff-a2a`, and
   nested agents, plus Cursor's sandbox with an empty network allowlist for
   shell commands. Your global `~/.cursor/cli-config.json` is neither read nor
-  changed, and MCP servers are not auto-approved.
+  changed, and MCP servers are not auto-approved. The deny rules are Cursor's
+  best-effort command matching (`git push` and `git <options> push` forms are
+  listed); what actually stops a push or PR is the sandbox's empty network
+  allowlist for shell commands.
+- Every Executor adapter (Claude, Codex, Cursor) strips inherited `CURSOR_*`
+  variables, so a server started from a Cursor Planner shell never passes
+  that session's variables to a worker. The Cursor Executor gets only its
+  own per-run `CURSOR_CONFIG_DIR` (plus `CURSOR_API_KEY` when a server-side
+  `api_key_file` is configured).
 - User-level Cursor content that the CLI loads from your home directory
   (`~/.cursor/rules`, `~/.cursor/skills`, `~/.agents/skills`, and the MCP
   server list) is not isolated. The delivery rule states the Executor role,

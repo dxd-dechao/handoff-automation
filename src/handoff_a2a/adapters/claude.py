@@ -28,7 +28,8 @@ __all__ = [
     "parse_claude_json",
 ]
 
-_STRIP_PREFIXES = ("ANTHROPIC_", "CLAUDE")
+# CURSOR_* covers a Cursor Planner session that started or restarted the server.
+_STRIP_PREFIXES = ("ANTHROPIC_", "CLAUDE", "CURSOR_")
 
 
 @dataclass(frozen=True)

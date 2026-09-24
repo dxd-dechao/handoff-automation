@@ -114,11 +114,14 @@ def test_auth_stripping_and_ritual_prompt() -> None:
             "PATH": "/bin",
             "ANTHROPIC_AUTH_TOKEN": "secret",
             "CLAUDECODE": "1",
+            "CURSOR_ASKPASS_SECRET": "x",
+            "CURSOR_AGENT": "1",
             "HANDOFF_FAKE_MODE": "ok",
         }
     )
     assert "ANTHROPIC_AUTH_TOKEN" not in env
     assert "CLAUDECODE" not in env
+    assert not [k for k in env if k.startswith("CURSOR_")]  # a Cursor Planner shell never leaks
     assert env["HANDOFF_FAKE_MODE"] == "ok"
     assert RITUAL_PROMPT == "execute the handoff"
 

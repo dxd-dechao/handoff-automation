@@ -37,7 +37,7 @@ binding permitted):
 |---|---|
 | `bash -n bin/handoff` | pass |
 | `bash tests/smoke-manifest.sh` | 17 passed, 0 failed |
-| `uv run --offline --extra test python -m pytest -q` | 157 passed (baseline at 7ee6d78: 99) |
+| `uv run --offline --extra test python -m pytest -q` | 157 passed, run from a shell with `CURSOR_AGENT`, `CURSOR_ASKPASS_SECRET`, `CURSOR_ASKPASS_SOCKET`, `CURSOR_CONVERSATION_ID`, `CURSOR_INVOKED_AS`, `CURSOR_REQUEST_ID`, `CURSOR_RIPGREP_PATH` set (QA round 1 correction; before it, 2 failed in such a shell). Baseline at 7ee6d78: 99 |
 | `./bin/handoff --help` | lists init/models/server/model/planner |
 | `git diff --check` | clean |
 
@@ -108,6 +108,11 @@ Codex.
    extra rules are unit-tested but not yet exercised live.
 2. `read_declared_branch` accepts a single Markdown code span
    (`` `live/clamp` ``), which is how the live Cursor Planner wrote it.
+
+## QA round 1 correction
+
+- Blocking: Claude and Codex adapters now strip `CURSOR_*` as well (a server started from a Cursor Planner shell leaked that session's variables to non-Cursor workers). Unit assertions added for both adapters' child environments; the fake worker's AUTH_PROBE already flags any `CURSOR_*` except the Cursor adapter's own `CURSOR_CONFIG_DIR`.
+- Nit: Cursor deny rules also list `git <options> push|merge|remote` forms and `*/claude`, `*/codex`. The matcher is best effort; the documented backstop is the shell sandbox's empty network allowlist (docs/cli-setup-and-models.md §8). Not exercised live (budget spent).
 
 ## Pending / not verified
 
