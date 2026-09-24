@@ -11,7 +11,7 @@
   "workflows": {
     "claude": {
       "title": "Claude endpoint: implementation + correction",
-      "handoff_code": "ceac9ef",
+      "handoff_code": "e582fcb",
       "error": null,
       "stopped": null,
       "executions": [
@@ -271,7 +271,7 @@
     },
     "codex-prefix": {
       "title": "Codex endpoint, first attempt (adapter before skill/HANDOFF-discovery fixes)",
-      "handoff_code": "ceac9ef",
+      "handoff_code": "e582fcb",
       "error": null,
       "stopped": null,
       "executions": [
@@ -556,7 +556,7 @@
     },
     "mixed": {
       "title": "Claude implementation, Codex correction after endpoint switch",
-      "handoff_code": "ceac9ef (impl) / bef2a6b (correction)",
+      "handoff_code": "e582fcb (impl) / 93c5d13 (correction)",
       "error": null,
       "stopped": null,
       "executions": [
@@ -780,7 +780,7 @@
     },
     "codex": {
       "title": "Codex endpoint, fresh identical fixture (exec 1 at bef2a6b; exec 2-3 at 278c869)",
-      "handoff_code": "bef2a6b / 278c869",
+      "handoff_code": "93c5d13 / e595bb6",
       "error": null,
       "stopped": null,
       "executions": [
@@ -1086,5 +1086,6 @@
         }
       ]
     }
-  }
+  },
+  "commit_mapping_note": "Branch history was rewritten after the runs to drop a stray dry-run commit; content is identical. Recorded -> current: ceac9ef->e582fcb, bef2a6b->93c5d13, 278c869->e595bb6, fc23aa6->6c488e4."
 }

@@ -72,7 +72,7 @@ Continuation: `5197e2f` adds `test_config_switch_to_legacy_keeps_outstanding_run
 
 ## Continuation results (A3-A4-COMPLETE, Executor self-report)
 
-Commits on `codex/a2a-executor-mvp` after `7c45000`: `5197e2f` (A3 fix), `b57729a` (Codex adapter), `ceac9ef` (live check), `bef2a6b` / `278c869` / `fc23aa6` (fixes from live evidence), then the documentation commit. Independent Planner QA is still pending for A3 (from `756ad06`) and for this continuation (from `7c45000`).
+Commits on `codex/a2a-executor-mvp` after `7c45000`: `5197e2f` (A3 fix), `b57729a` (Codex adapter), `e582fcb` (live check), `93c5d13` / `e595bb6` / `6c488e4` (fixes from live evidence), then the documentation commit. Independent Planner QA is still pending for A3 (from `756ad06`) and for this continuation (from `7c45000`).
 
 | Area | State | Evidence |
 |---|---|---|

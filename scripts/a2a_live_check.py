@@ -568,9 +568,11 @@ def main(argv: list[str] | None = None) -> int:
         codex_block["reasoning_effort"] = args.codex_reasoning_effort
     codex_adapter = {"codex": codex_block}
 
+    # Probe versions from the scratch directory, never from this checkout.
+    probe = run([args.codex_bin, "--version"], cwd=root)
     versions = {
-        "claude": run([args.claude_bin, "--version"]).stdout.strip(),
-        "codex": run([args.codex_bin, "--version"]).stdout.strip() or run([args.codex_bin, "--version"]).stderr.strip(),
+        "claude": run([args.claude_bin, "--version"], cwd=root).stdout.strip(),
+        "codex": probe.stdout.strip() or probe.stderr.strip(),
         "python": sys.version.split()[0],
         "handoff_commit": git(REPO_ROOT, "rev-parse", "HEAD"),
     }

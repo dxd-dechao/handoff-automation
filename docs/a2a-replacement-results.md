@@ -11,7 +11,7 @@ Durable data: [`docs/evidence/a2a-replacement-2026-09-24.json`](evidence/a2a-rep
 | Claude CLI | `2.1.281 (Claude Code)`; model `bedrock.claude-opus-4-8` (the legacy `HANDOFF_MODEL` default). The Executor account uses its own stored settings. Model reported in the provider output: `bedrock.claude-opus-4-8` |
 | Codex CLI | `codex-cli 0.156.0`; model `gpt-5.6-luna`, `reasoning_effort=medium` (configured; Codex JSONL does not report the model) |
 | Python / SDK | 3.13.14; `a2a-sdk==1.1.2` (locked) |
-| handoff code | Runs started at `ceac9ef`. Later executions used the fixed adapter (see "Defects found live") |
+| handoff code | Runs started at `e582fcb` (recorded in the evidence as `ceac9ef`, a content-identical commit later rewritten to drop a stray commit; see Execution Notes). Later executions used the fixed adapter (see "Defects found live") |
 | Fixture | Deterministic initial commit `5566e2a` in every workflow: `pricing.py` stub plus `test_pricing.py`; branch `live/pricing` |
 | Plan | Implement `total(items)`, run `python3 -m unittest -q`, commit, fill notes, set READY FOR QA |
 | Correction (fixture QA feedback) | `total()` raises `ValueError` for a negative quantity (zero stays valid); add a test; commit |
@@ -48,7 +48,7 @@ Endpoint replacement changes only `.handoff-config.json` → `a2a.agent_card_url
 | | 2 diagnosed rerun | Codex | completed | pass | `d2a6ef8` | 32.9 | 100616/1066 (79360/—) | null |
 | | 3 correction | Codex | completed | pass | `4f9fa84` | 39.4 | 96475/1470 (86528/—) | null |
 
-Worker seconds is `duration_s` from the server's coding result. Where no result was captured, the row shows client wall time. Codex usage comes from `turn.completed.usage`: Codex `input_tokens` includes cached tokens, and `—` means not reported by the adapter version used. Every raw Codex output reported `cache_write_input_tokens: 0`; the adapter now keeps that as a real zero (`fc23aa6`). Codex reports no price, so cost stays `null` and nothing is inferred. The Claude cost is the Claude CLI's own `total_cost_usd` for these runs ($1.10 total). Actual gateway billing was not checked.
+Worker seconds is `duration_s` from the server's coding result. Where no result was captured, the row shows client wall time. Codex usage comes from `turn.completed.usage`: Codex `input_tokens` includes cached tokens, and `—` means not reported by the adapter version used. Every raw Codex output reported `cache_write_input_tokens: 0`; the adapter now keeps that as a real zero (`6c488e4`). Codex reports no price, so cost stays `null` and nothing is inferred. The Claude cost is the Claude CLI's own `total_cost_usd` for these runs ($1.10 total). Actual gateway billing was not checked.
 
 Final code in all three passing workflows changes only `pricing.py` and `test_pricing.py`. It rejects negative quantities with `ValueError`, keeps zero valid, and adds a test for it. The three implementations differ in style; the behaviour is the same. The Claude and fresh-Codex workflows were archived as approved (2/3 and 3/3 rounds); the mixed workflow was archived at 2/3.
 
@@ -69,10 +69,10 @@ Continuity and correlation (all in the evidence file):
 
 ## Defects found live (fixed, then verified)
 
-1. **Operator skills hijacked the Codex Executor** (fixed in `bef2a6b`). An operator skill in `~/.agents/skills` (`orca-cli`) has a description matching "handoff". Codex treated "execute the handoff" as an agent-handoff request and never opened HANDOFF.md. `--ignore-user-config` does not disable user-scope skills. The adapter now disables every user-scope skill for each run via `skills.config` by SKILL.md path. `codex debug prompt-input` (no model call) confirmed the effect.
-2. **Codex could not see HANDOFF.md** (fixed in `278c869`). `handoff init` git-excludes HANDOFF.md, and Codex's `rg --files` honours that. On the fresh fixture Codex guessed the task from the code: it implemented `total()` but did not commit, write notes, or set Status. The adapter now sets `project_doc_fallback_filenames=["HANDOFF.md"]`, so Codex loads the validated handoff file itself. The ritual prompt stays fixed and no text is added. `prompt-input` confirmed the handoff reaches the model. The earlier mixed correction had found the file on its own.
-3. **The live tool retried without a diagnosis** (tooling; fixed in `bef2a6b`). The first Codex workflow spent its 2nd and 3rd executions automatically after an undiagnosed failure. The tool now stops on a failed delivery and allows a third run only after a completed delivery fails its QA checks.
-4. **Token counts arrived as floats** in manifests (the protobuf `Struct` transport; fixed in `bef2a6b`).
+1. **Operator skills hijacked the Codex Executor** (fixed in `93c5d13`). An operator skill in `~/.agents/skills` (`orca-cli`) has a description matching "handoff". Codex treated "execute the handoff" as an agent-handoff request and never opened HANDOFF.md. `--ignore-user-config` does not disable user-scope skills. The adapter now disables every user-scope skill for each run via `skills.config` by SKILL.md path. `codex debug prompt-input` (no model call) confirmed the effect.
+2. **Codex could not see HANDOFF.md** (fixed in `e595bb6`). `handoff init` git-excludes HANDOFF.md, and Codex's `rg --files` honours that. On the fresh fixture Codex guessed the task from the code: it implemented `total()` but did not commit, write notes, or set Status. The adapter now sets `project_doc_fallback_filenames=["HANDOFF.md"]`, so Codex loads the validated handoff file itself. The ritual prompt stays fixed and no text is added. `prompt-input` confirmed the handoff reaches the model. The earlier mixed correction had found the file on its own.
+3. **The live tool retried without a diagnosis** (tooling; fixed in `93c5d13`). The first Codex workflow spent its 2nd and 3rd executions automatically after an undiagnosed failure. The tool now stops on a failed delivery and allows a third run only after a completed delivery fails its QA checks.
+4. **Token counts arrived as floats** in manifests (the protobuf `Struct` transport; fixed in `93c5d13`).
 5. **Not fixed, out of scope:** `bin/handoff` finds `templates/` relative to its own path without resolving symlinks, so `handoff init` fails through a symlinked install. The README documents PATH installation, which works.
 
 ## Execution count

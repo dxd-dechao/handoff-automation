@@ -62,7 +62,7 @@ Planner is authorized to make documentation-only QA corrections directly at any 
 | A1 | Standalone local A2A server, Claude adapter, provider-neutral client, request/result contract, and Planner-facing CLI skill | Existing baseline | APPROVED | d615f09 + b9bd0aa; reviewed through 123eccc; 23 A2A + 17 legacy checks and five independent CLI probes passed |
 | A2 | Durable execution identity, reconnect/restart handling, and cancellation | A1 | APPROVED | b8468ce + 756ad06; 35 A2A + 17 legacy checks and both independent cancellation/restart probes passed on 2026-09-15 |
 | A3 | Wire A2A into handoff CLI, workflow status, gates, and reporting | A2 | Implemented; config-switch correction and failed-delivery routing fix self-tested; independent QA pending | 756ad06 → 7c45000, corrected in 5197e2f; see product-status.md |
-| A4 | Codex adapter and real replacement validation through handoff CLI | A3 | Implemented, self-tested, live-verified (Executor-run fixture QA); independent QA pending | b57729a, ceac9ef, bef2a6b, 278c869, fc23aa6; [live results](a2a-replacement-results.md) |
+| A4 | Codex adapter and real replacement validation through handoff CLI | A3 | Implemented, self-tested, live-verified (Executor-run fixture QA); independent QA pending | b57729a, e582fcb, 93c5d13, e595bb6, 6c488e4; [live results](a2a-replacement-results.md) |
 
 ### A1 — Make a real A2A execution path work
 
