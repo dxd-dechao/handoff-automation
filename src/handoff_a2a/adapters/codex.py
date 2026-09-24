@@ -167,7 +167,8 @@ def interpret_codex_files(
         usage = Usage(
             input_tokens=totals.get("input_tokens"),
             output_tokens=totals.get("output_tokens"),
-            cache_creation_input_tokens=None,
+            # Reported by codex-cli 0.156.0 as cache_write_input_tokens; absent → unknown.
+            cache_creation_input_tokens=totals.get("cache_write_input_tokens"),
             cache_read_input_tokens=totals.get("cached_input_tokens"),
         )
         usage_provenance = USAGE_PROVENANCE

@@ -79,6 +79,11 @@ def test_codex_jsonl_success_usage_and_unknown_cost(tmp_path: Path) -> None:
             json.dumps({"type": "turn.completed", "usage": {"input_tokens": 10, "cached_input_tokens": 0, "output_tokens": 3}}),
         ],
     )
+    written = _interpret(
+        tmp_path,
+        [json.dumps({"type": "turn.completed", "usage": {"input_tokens": 5, "cache_write_input_tokens": 0, "output_tokens": 1}})],
+    )
+    assert written.usage is not None and written.usage.cache_creation_input_tokens == 0
     assert outcome.invalid_output is False
     assert outcome.provider_error is False  # transient error before a completed turn
     assert outcome.summary == "done"
