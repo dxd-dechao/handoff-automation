@@ -115,9 +115,11 @@ when the human asks for a handoff workflow.
 - **Planner:** follow [`skills/handoff-cli/SKILL.md`](skills/handoff-cli/SKILL.md).
   Keep new plans as DRAFT until the human approves them. Read state with
   `--json`. QA the diff, not the Executor's notes.
-- **Executor:** implement the Current Task in `HANDOFF.md` directly. Edit
-  only its Status line and Execution Notes. Do not run `handoff`, the
-  Planner skill, or another agent.
+- **Executor:** implement the Current Task in `HANDOFF.md` directly, following
+  its `### Executor rules`. Edit only its Status line and Execution Notes.
+  Do not run `handoff`, the Planner skill, or another agent.
+  `handoff template refresh` updates an old preamble and leaves the task
+  byte-for-byte.
 
 There are no `handoff plan`, `qa`, or `drive` commands; those are agent work.
 
@@ -125,8 +127,8 @@ There are no `handoff plan`, `qa`, or `drive` commands; those are agent work.
 
 Current evidence, 2026-09-25:
 
-- **214 Python tests and 24 legacy smoke checks** pass
-  ([A8 report](docs/qa-a8-preflight-sandbox.md)).
+- **226 Python tests and 28 legacy smoke checks** pass
+  ([A10 report](docs/qa-a10-slim-handoff-template.md)).
 - A live **Claude Code Planner** (auto mode, sandboxed shell) drove a live
   **Cursor Executor** (`grok-4.7-high-fast`) through two drive-mode rounds.
   The second round fixed QA feedback and was approved (A8).

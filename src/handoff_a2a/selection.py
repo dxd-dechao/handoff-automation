@@ -44,6 +44,7 @@ from handoff_a2a.reporting import print_json, print_json_error
 from handoff_a2a.service import (
     Managed,
     ServiceError,
+    PROBE_NOT_PERMITTED,
     inspect,
     load_managed,
     refusal_guidance,
@@ -283,6 +284,8 @@ def describe_lines(managed: Managed) -> list[str]:
     lines = [f"selected: {label(provider, model, effort)} (generation {managed.generation}; {(managed.server.get('selection') or {}).get('validation', 'recorded')})"]
     if state.verified:
         lines.append(f"active:   {state.active_identity} (service verified)")
+    elif state.probe == PROBE_NOT_PERMITTED:
+        lines.append(f"active:   unknown ({'; '.join(state.detail)})")
     elif state.running:
         lines.append(f"active:   UNVERIFIED service ({'; '.join(state.detail)})")
     else:
@@ -314,7 +317,15 @@ def describe(managed: Managed) -> dict[str, Any]:
             "validation": (managed.server.get("selection") or {}).get("validation"),
         },
         "active": {
-            "state": "verified" if state.verified else ("unverified" if state.running else "stopped"),
+            "state": (
+                "unknown"
+                if state.probe == PROBE_NOT_PERMITTED
+                else "verified"
+                if state.verified
+                else "unverified"
+                if state.running
+                else "stopped"
+            ),
             "provider": (state.card or {}).get("executor_provider") if state.running else None,
             "model": (state.card or {}).get("executor_model") if state.running else None,
             "generation": (state.card or {}).get("config_generation") if state.running else None,

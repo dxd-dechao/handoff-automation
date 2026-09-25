@@ -561,7 +561,7 @@ def _next_action(
     execution: str,
     workflow: dict[str, Any] | None,
 ) -> str:
-    if execution in {"WORKING", "SUBMITTED", "UNRESOLVED"}:
+    if execution in {"WORKING", "SUBMITTED", "UNRESOLVED", "UNKNOWN"}:
         return "wait or run handoff resume"
     if execution == "RECOVERY":
         return "inspect recovery_required; do not dispatch again"
@@ -1060,6 +1060,7 @@ async def cmd_status_async(repo: Path, *, as_json: bool = False) -> int:
     outstanding = load_outstanding(repo)
     execution = "IDLE"
     reason = None
+    probe = None
     if outstanding:
         execution = "UNRESOLVED"
         record_path = Path(str(outstanding["run_record"]))
@@ -1107,9 +1108,11 @@ async def cmd_status_async(repo: Path, *, as_json: bool = False) -> int:
         except Exception as exc:  # noqa: BLE001 — status must stay honest when the endpoint is down
             if permission_denied(exc):
                 reason = "local service connection not permitted (sandbox?); run handoff outside the sandbox"
+                execution = "UNKNOWN"
+                probe = "not_permitted"
             else:
                 reason = f"saved endpoint or credential unavailable: {exc}"
-            execution = "UNRESOLVED"
+                execution = "UNRESOLVED"
     turn = _turn(document.status)
     last = (workflow or {}).get("last_outcome") or {}
     if (
@@ -1119,14 +1122,14 @@ async def cmd_status_async(repo: Path, *, as_json: bool = False) -> int:
         and not outstanding
     ):
         turn = "PLANNER"
-    if execution in {"WORKING", "SUBMITTED", "UNRESOLVED", "RECOVERY"}:
+    if execution in {"WORKING", "SUBMITTED", "UNRESOLVED", "UNKNOWN", "RECOVERY"}:
         turn = "WAIT" if execution != "RECOVERY" else "RECOVERY"
     transport, managed, mode = run_mode(repo)
     watcher = watcher_state(repo)
     next_action = _mode_next(
         _next_action(markdown_status=document.status, execution=execution, workflow=workflow), mode, watcher, repo
     )
-    code = 2 if execution in {"UNRESOLVED", "RECOVERY"} else 0
+    code = 2 if execution in {"UNRESOLVED", "UNKNOWN", "RECOVERY"} else 0
     if as_json:
         print_json(
             "status",
@@ -1146,6 +1149,7 @@ async def cmd_status_async(repo: Path, *, as_json: bool = False) -> int:
                 if not outstanding
                 else {"run_id": outstanding.get("run_id"), "task_id": outstanding.get("task_id")},
                 "reason": reason,
+                "probe": probe,
                 "next": next_action,
                 "preflight": _status_preflight(repo),
             },

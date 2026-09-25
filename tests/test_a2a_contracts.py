@@ -201,7 +201,7 @@ def test_skill_has_valid_metadata_and_existing_cli_intents() -> None:
 SKILL_DIR = Path("skills/handoff-cli")
 CLI_VERBS = {
     "init", "skill", "models", "server", "model", "mode", "planner", "permissions", "status", "approve",
-    "execute", "watch", "resume", "cancel", "runs", "archive", "preflight",
+    "execute", "watch", "resume", "cancel", "runs", "archive", "preflight", "template",
 }
 
 
@@ -354,3 +354,212 @@ def test_documented_commands_use_real_verbs_and_flags() -> None:
                     assert flag in known_flags, (doc, line, flag)
                 checked += 1
     assert checked >= 20
+
+
+def test_template_preamble_is_slim_and_outside_the_hashes() -> None:
+    from handoff_a2a.workspace import approved_plan_hash, planner_fingerprint
+
+    raw = Path("templates/HANDOFF.md").read_bytes()
+    preamble, sep, rest = raw.partition(b"## Current Task")
+    assert sep == b"## Current Task"
+    assert len(preamble) <= 3072
+    text = preamble.decode()
+    assert "OPT-IN ONLY" in text
+    assert "Planner" in text and "Executor" in text
+    assert "### Executor rules" in text
+    assert "### Status values" in text
+    assert "Leave every other byte of Current Task and QA Feedback unchanged" in text
+    for banned in ("## Protocol", "### Drive mode", "### Rules for PLANNER", "### Rules for EXECUTOR"):
+        assert banned not in text
+    body = b"## Current Task" + rest
+    old = b"legacy preamble with Protocol and Drive mode\n\n" + body
+    new = preamble + body
+    assert approved_plan_hash(old.decode()) == approved_plan_hash(new.decode())
+    assert planner_fingerprint(old.decode()) == planner_fingerprint(new.decode())
+    from handoff_a2a.adapters.cursor import rule_text
+
+    assert "### Executor rules" in rule_text("abc", "# x\n")
+
+
+def test_skill_covers_planner_rules_removed_from_the_template() -> None:
+    skill = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    assert "self-contained" in skill
+    assert "gh pr list" in skill
+    assert "actual git diff" in skill
+    assert "file, problem, what fixed looks like" in skill
+    assert "nits" in skill
+    assert "documentation remains" in skill
+    assert "three launched executions" in skill
+
+
+def test_skill_waiting_does_not_block_or_pipe() -> None:
+    skill = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    drive = _section(skill, "## Drive loop")
+    watch = _section(skill, "## Approve and run")
+    for section in (drive, watch):
+        assert "background" in section
+        assert "only this command stopped waiting" in section
+        assert "still running" in section
+        assert "no pipes" in section
+        assert "long foreground sleeps" in section
+        assert "not permitted" in section
+    assert "handoff resume" in drive
+    assert "read `reason`" in drive
+    assert "when a run starts" in drive
+    assert "terminal outcome" in drive
+    recovery = _section(skill, "## Status and recovery")
+    assert "UNKNOWN" in recovery and "not_permitted" in recovery
+
+
+def test_template_refresh_keeps_the_task_and_refuses_unsafe_files(tmp_path: Path) -> None:
+    import os
+    import subprocess
+
+    bin_handoff = Path("bin/handoff").resolve()
+    template = Path("templates/HANDOFF.md").read_bytes()
+    preamble, _, rest = template.partition(b"## Current Task")
+    task = b"## Current Task" + rest.replace(b"**Status:** NO TASK", b"**Status:** READY FOR QA")
+    task += b"\nexecutor notes stay\n"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    handoff = repo / "HANDOFF.md"
+    handoff.write_bytes(b"# old protocol\n\nDrive mode lives here.\n\n" + task)
+    env = os.environ.copy()
+
+    def run(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([str(bin_handoff), *args], cwd=repo, env=env, capture_output=True, text=True)
+
+    first = run("template", "refresh", str(repo))
+    assert first.returncode == 0, first.stderr
+    assert "replaced the preamble" in first.stdout
+    refreshed = handoff.read_bytes()
+    assert refreshed.startswith(preamble)
+    assert refreshed[len(preamble):] == task
+    backups = list((repo / ".handoff-logs").glob("HANDOFF.preamble-*.md"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes().startswith(b"# old protocol")
+    again = run("template", "refresh", str(repo))
+    assert again.returncode == 0 and "already current" in again.stdout
+    assert handoff.read_bytes() == refreshed
+    assert len(list((repo / ".handoff-logs").glob("HANDOFF.preamble-*.md"))) == 1
+
+    missing = tmp_path / "missing"
+    missing.mkdir()
+    (missing / "HANDOFF.md").write_text("no heading\n", encoding="utf-8")
+    refused = run("template", "refresh", str(missing))
+    assert refused.returncode != 0 and "no '## Current Task'" in refused.stderr
+    assert (missing / "HANDOFF.md").read_text() == "no heading\n"
+
+    dup = tmp_path / "dup"
+    dup.mkdir()
+    (dup / "HANDOFF.md").write_bytes(task + b"\n" + task)
+    refused_dup = run("template", "refresh", str(dup))
+    assert refused_dup.returncode != 0 and "appears 2 times" in refused_dup.stderr
+    assert (dup / "HANDOFF.md").read_bytes() == task + b"\n" + task
+
+    outstanding = tmp_path / "busy"
+    outstanding.mkdir()
+    (outstanding / "HANDOFF.md").write_bytes(b"# old\n\n" + task)
+    (outstanding / ".handoff-logs").mkdir()
+    (outstanding / ".handoff-logs" / "outstanding.json").write_text("{}\n", encoding="utf-8")
+    before = (outstanding / "HANDOFF.md").read_bytes()
+    refused_run = run("template", "refresh", str(outstanding))
+    assert refused_run.returncode != 0 and "outstanding" in refused_run.stderr
+    assert (outstanding / "HANDOFF.md").read_bytes() == before
+    assert not list((outstanding / ".handoff-logs").glob("HANDOFF.preamble-*.md"))
+
+
+def test_init_names_refresh_only_when_the_preamble_differs(tmp_path: Path) -> None:
+    import os
+    import subprocess
+
+    bin_handoff = Path("bin/handoff").resolve()
+    template = Path("templates/HANDOFF.md").read_bytes()
+    env = os.environ.copy()
+
+    def init_repo(name: str, body: bytes) -> subprocess.CompletedProcess[str]:
+        repo = tmp_path / name
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "T"], check=True)
+        (repo / "HANDOFF.md").write_bytes(body)
+        (repo / "keep.txt").write_text("x\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "keep.txt"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "init"], check=True)
+        before = (repo / "HANDOFF.md").read_bytes()
+        result = subprocess.run(
+            [str(bin_handoff), "init", str(repo), "--transport", "legacy"],
+            env=env, capture_output=True, text=True,
+        )
+        assert (repo / "HANDOFF.md").read_bytes() == before
+        return result
+
+    stale = init_repo("stale", b"# old\n\n## Current Task\n\n**Status:** DRAFT\n")
+    assert stale.returncode == 0, stale.stderr
+    assert "already initialized" in stale.stdout
+    assert 'handoff template refresh' in stale.stdout
+    current = init_repo("current", template)
+    assert current.returncode == 0, current.stderr
+    assert "already initialized" in current.stdout
+    assert "template refresh" not in current.stdout
+
+
+def test_permission_denied_status_is_unknown_not_unresolved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    import asyncio
+    import errno
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "HANDOFF.md").write_text(
+        "## Current Task\n\n**Status:** READY FOR QA\n\n**Branch:** main\n\n## Execution Notes\n\nx\n\n## QA Feedback\n\n",
+        encoding="utf-8",
+    )
+    token = repo / "token"
+    token.write_text("secret\n", encoding="utf-8")
+    logs = repo / ".handoff-logs"
+    logs.mkdir()
+    (logs / "outstanding.json").write_text(
+        '{"run_id":"r","task_id":"t","run_record":"missing.json","credential_file":"' + str(token) + '"}\n',
+        encoding="utf-8",
+    )
+    from handoff_a2a.integration import cmd_status_async
+
+    async def denied(**_kwargs):
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr("handoff_a2a.integration.status_from_record", denied)
+    assert asyncio.run(cmd_status_async(repo, as_json=True)) == 2
+    body = json.loads(capsys.readouterr().out)
+    assert body["execution"] == "UNKNOWN"
+    assert body["probe"] == "not_permitted"
+    assert "not permitted" in body["reason"]
+    assert body["turn"] == "WAIT"
+    assert "QA" not in body["next"]
+
+    async def down(**_kwargs):
+        raise ConnectionError("connection refused")
+
+    monkeypatch.setattr("handoff_a2a.integration.status_from_record", down)
+    assert asyncio.run(cmd_status_async(repo, as_json=True)) == 2
+    other = json.loads(capsys.readouterr().out)
+    assert other["execution"] == "UNRESOLVED"
+    assert other["probe"] is None
+
+
+def test_executor_active_state_is_unknown_when_probe_is_denied(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from handoff_a2a.selection import describe
+    from handoff_a2a.service import PROBE_NOT_PERMITTED, Managed, ServiceState
+
+    state = ServiceState(
+        running=False, verified=False, port=9, generation=1, provider="cursor", model="m", probe=PROBE_NOT_PERMITTED
+    )
+    state.detail.append("unknown (probe not permitted; run outside the sandbox)")
+    monkeypatch.setattr("handoff_a2a.selection.inspect", lambda _managed: state)
+    monkeypatch.setattr("handoff_a2a.selection.load_pending", lambda _managed: None)
+    managed = Managed(
+        paths=type("Paths", (), {"repo": tmp_path})(),
+        config=None,  # type: ignore[arg-type]
+        server={"port": 9, "cursor": {"model": "m"}, "selection": {}},
+    )
+    assert describe(managed)["active"]["state"] == "unknown"

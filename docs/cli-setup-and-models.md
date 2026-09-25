@@ -125,8 +125,26 @@ target, a malformed config, or a `foreign` Planner skill copy is refused,
 and any files the failed attempt created are removed. `init "<repo>" --mode
 <drive|watch>` on a managed repo changes only the run mode.
 
-**Existing repos.** Bare re-init changes nothing but the excludes. A manually
-configured endpoint keeps working for `execute`/`resume`/`status`/`cancel`,
+**Existing repos.** Bare re-init changes nothing but the excludes. When
+`HANDOFF.md` is already there and its preamble differs from the installed
+template, init adds one line naming `handoff template refresh "<repo>"`.
+Init never rewrites an existing `HANDOFF.md`. Refresh does, and only the
+preamble:
+
+```sh
+handoff template refresh "/path/to/project"
+handoff template refresh "/path/to/project" --json
+```
+
+It copies the old file to `.handoff-logs/HANDOFF.preamble-<UTC timestamp>.md`,
+then replaces every byte before the `## Current Task` line with the current
+template. That line and everything after it stay byte-for-byte. A second run
+prints `already current` and writes nothing. It refuses, with no write, when
+there is no `HANDOFF.md`, when `## Current Task` is missing or duplicated, or
+when `.handoff-logs/outstanding.json` shows an A2A run still in progress
+(including Markdown `READY FOR QA` with that run still unresolved).
+
+A manually configured endpoint keeps working for `execute`/`resume`/`status`/`cancel`,
 but managed `server`/`model` commands refuse to touch it. To migrate, run
 `init --transport a2a --executor ... --model ...`. Migration refuses while a
 run is unresolved, keeps the old workspace ID so approval receipts still
@@ -167,7 +185,14 @@ with the token succeeds. A matching port alone is never enough.
 process state or connect to the loopback service. A sandboxed Planner shell
 can block `ps`, port binding, and localhost connects. A blocked probe is
 `unknown (probe not permitted; run outside the sandbox)`, never "stopped" or
-"stale", and the process record is kept. `server start` will not launch a
+"stale", and the process record is kept. The same distinction applies to an
+outstanding run: if the saved-endpoint status query is denied,
+`handoff status --json` reports `execution: "UNKNOWN"` and
+`probe: "not_permitted"`, keeps the sandbox `reason`, sets `turn` to `WAIT`,
+and exits 2. That is not `UNRESOLVED` (the endpoint was not reached, so QA
+must not start). `executor.active.state` is `"unknown"` in that case, not
+`"stopped"`. Other connection failures stay `execution: "UNRESOLVED"`.
+`server start` will not launch a
 second server, `server stop` will not signal, and `execute` lists that
 blocker instead of telling you to start the server.
 
@@ -247,9 +272,10 @@ object on stdout:
 
 | `kind` | From | Main fields |
 |---|---|---|
-| `status` | `handoff status --json` | `transport` (`legacy`/`a2a`), `managed`, `status`, `turn`, `goal`, `execution`, `workflow`, `mode`, `watcher`, `executor`, `run`, `reason`, `next` |
+| `status` | `handoff status --json` | `transport` (`legacy`/`a2a`), `managed`, `status`, `turn`, `goal`, `execution` (`UNKNOWN` when a status probe is not permitted), `probe`, `workflow`, `mode`, `watcher`, `executor`, `run`, `reason`, `next` |
+| `template_refresh` | `handoff template refresh --json` | `replaced`, `backup`, `old_preamble_bytes`, `new_preamble_bytes`, `message` |
 | `models` | `handoff models --json` | `provider`, `binary`, `version`, `models_listed` (false only means no enumeration, as for Claude), `source`, `models[]` (`id`, `name`), `note`, `reasoning_effort_supported`, `login_command` |
-| `model` / `model-change` | `handoff model [...] --json` | `selected`, `active` (`state`: `verified`/`unverified`/`stopped`), `current_run`, `pending`; changes add `messages[]` |
+| `model` / `model-change` | `handoff model [...] --json` | `selected`, `active` (`state`: `verified`/`unverified`/`stopped`/`unknown`), `current_run`, `pending`; changes add `messages[]` |
 | `server-status` / `server-stop` | `handoff server ... --json` | `service`, `verified`, `endpoint`, `port`, `selected`, `active`, `pid`, `started_at`, `log`, `notes`, `last_failure` / `outcome` |
 | `mode` | `handoff mode --json` | `transport`, `managed`, `mode`, `changed`, `previous`, `watcher` or `hint` |
 | `skill-install` / `skill-status` | `handoff skill ... --json` | `outcome` / `locations[]` (`host`, `scope`, `path`, `state`, `detail`, `install_command`) |

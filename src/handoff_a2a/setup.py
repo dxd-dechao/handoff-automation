@@ -653,6 +653,25 @@ def _reinit(
     _next_steps(paths, provider, planner or current_planner, report)
 
 
+def _preamble(data: bytes) -> bytes | None:
+    lines = data.splitlines(keepends=True)
+    hits = [index for index, line in enumerate(lines) if line.rstrip(b"\r\n") == b"## Current Task"]
+    if len(hits) != 1:
+        return None
+    return b"".join(lines[: hits[0]])
+
+
+def _preamble_refresh_note(handoff: Path, template: Path | None, repo: Path) -> str | None:
+    """Name `handoff template refresh` when an existing preamble is not current."""
+    if template is None or not template.is_file() or not handoff.is_file():
+        return None
+    current = _preamble(handoff.read_bytes())
+    installed = _preamble(template.read_bytes())
+    if current is not None and current == installed:
+        return None
+    return f'preamble differs from the template; handoff template refresh "{repo}"'
+
+
 def _common_files(paths: ManagedPaths, opts: SetupOptions, planner: str | None, report: SetupReport, journal: Journal) -> None:
     patterns = list(BASE_EXCLUDES) + ([skill_exclude(planner)] if planner else [])
     added = ensure_excludes(journal, paths.repo, patterns)
@@ -661,6 +680,9 @@ def _common_files(paths: ManagedPaths, opts: SetupOptions, planner: str | None, 
     handoff = paths.repo / HANDOFF_NAME
     if handoff.is_file():
         report.kept.append(str(handoff))
+        note = _preamble_refresh_note(handoff, opts.template, paths.repo)
+        if note:
+            report.notes.append(note)
     elif opts.template is not None:
         if not opts.template.is_file():
             raise SetupError(f"template not found: {opts.template}")

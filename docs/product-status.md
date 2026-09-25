@@ -2,6 +2,8 @@
 
 Reviewed: **2026-09-24**. Checkout: `codex/a2a-executor-mvp`, commit `1e09ec58f4f059c9d7f3e01fe875eb01b99ce588`.
 
+**A10 update (2026-09-25, Executor self-report; independent Planner QA pending).** The HANDOFF preamble is a short Executor contract. `handoff template refresh` replaces only that preamble. A sandboxed status probe of an outstanding run is `UNKNOWN`, not `UNRESOLVED`. See [the A10 report](qa-a10-slim-handoff-template.md).
+
 **A9 update (2026-09-25, Executor self-report; independent Planner QA pending).** Untracked Python bytecode is left out of the code fingerprint and the dirty-path list. Re-approving a changed plan records the current workspace as the new baseline when one already exists. A baseline recorded before this change that included bytecode still mismatches; revise Current Task and re-approve to recover. See [the A9 report](qa-a9-fingerprint-rebaseline.md).
 
 **A8 update (2026-09-25, Executor self-report; independent Planner QA pending).** `handoff preflight` lists every execute blocker and its fix. A sandboxed probe is `unknown`, not stopped. `init --planner` keeps setup when the skill install fails. See [the A8 report](qa-a8-preflight-sandbox.md).
@@ -169,3 +171,15 @@ The human retains final merge/push and target-repository opt-in decisions. Legac
 - [ ] Human decides merge/push and whether to enable A2A in a target repo.
 
 Execution policy throughout: human approval followed by manual Executor launch; Planner owns QA. After three executions, preserve passing work and narrow the remaining material scope into an explicitly linked successor. Planner handles documentation-only corrections directly. Do not reset predecessor counters, relax the original goal silently, or launch another broad round merely to polish prose.
+
+## Known follow-ups
+
+- (A8) A delivery that adds or duplicates a Planner-owned heading is not rejected; `planner_fingerprint` hashes only the last `## QA Feedback` section.
+- (A8) A redundant branch in `processes.process_start_identity`.
+- (A9) `approve` now needs a git checkout to compute the snapshot.
+- (A9) `approve` prints "rebaselined" even when the new snapshot equals the old one.
+- (A10) This repository's own `HANDOFF.md` preamble is out of date; the Planner refreshes it with `handoff template refresh` after A10 merges.
+- (A10) `init` on an existing repo calls `mktemp` only to compare preambles, so a locked-down temp directory makes `init` fail. The comparison could be done without temp files.
+- (A10) The bash `template refresh` matches `## Current Task` with `grep -x`, so a CRLF file is refused as "no Current Task", while the Python init hint strips `\r`. The two paths disagree on CRLF files.
+- (A10) A refreshed `HANDOFF.md` takes the temp file's mode (0600).
+- (A10) The delivered `HANDOFF.md` is not saved with the run; only the dispatched request is. A bad Planner edit to Execution Notes can only be rebuilt from that request and the chat, and happened once during A10 QA.

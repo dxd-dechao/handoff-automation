@@ -69,6 +69,9 @@ workflow
   runs      list past executor runs from their manifests
   archive   append Current Task / Execution Notes / QA Feedback to HANDOFF-ARCHIVE.md
             (add --superseded to close an exhausted A2A workflow)
+  template  handoff template refresh <repo> [--json]
+            replace the HANDOFF.md preamble with the installed template's;
+            Current Task and everything after it stay byte-for-byte
 
 env: HANDOFF_CLAUDE_BIN (default: claude), HANDOFF_MODEL (legacy; default: bedrock.claude-opus-4-8),
      HANDOFF_CODEX_BIN, HANDOFF_CURSOR_BIN (provider CLIs for init/models/model),
@@ -1000,6 +1003,126 @@ nothing was changed
 EOF
 }
 
+# Bytes before the single line that is exactly "## Current Task".
+# Returns 1 when that heading is missing or duplicated.
+write_preamble() {
+  local src="$1" dest="$2" count line
+  count="$(grep -c -x '## Current Task' "$src" || true)"
+  [[ "$count" == "1" ]] || return 1
+  line="$(grep -n -x '## Current Task' "$src" | head -n 1 | cut -d: -f1)"
+  if [[ "$line" == "1" ]]; then
+    : > "$dest"
+  else
+    head -n $((line - 1)) "$src" > "$dest"
+  fi
+}
+
+# One extra line when an existing HANDOFF.md preamble is not the template's.
+preamble_refresh_hint() {
+  local repo="$1" tmpl="$TEMPLATE_DIR/HANDOFF.md" old new
+  [[ -f "$repo/HANDOFF.md" && -f "$tmpl" ]] || return 0
+  old="$(mktemp)"
+  new="$(mktemp)"
+  if write_preamble "$repo/HANDOFF.md" "$old" && write_preamble "$tmpl" "$new" && cmp -s "$old" "$new"; then
+    rm -f "$old" "$new"
+    return 0
+  fi
+  rm -f "$old" "$new"
+  echo "preamble differs from the template; handoff template refresh \"$repo\""
+}
+
+cmd_template() {
+  local sub="${1:-}"
+  shift || true
+  case "$sub" in
+    refresh) cmd_template_refresh "$@" ;;
+    *) die "unknown template command: ${sub:-} (try --help)" ;;
+  esac
+}
+
+cmd_template_refresh() {
+  local repo_arg="" json=0 a
+  for a in "$@"; do
+    case "$a" in
+      --json) json=1 ;;
+      -*) die "unknown template option: $a (try --help)" ;;
+      *)
+        [[ -z "$repo_arg" ]] || die "template refresh takes one repo path"
+        repo_arg="$a" ;;
+    esac
+  done
+  local repo given="${repo_arg:-$PWD}"
+  if [[ $json -eq 1 ]]; then
+    command -v jq >/dev/null || die "jq is required for --json (brew install jq)"
+    repo="$(cd "$given" 2>/dev/null && pwd)" || json_die template_refresh "no such directory: $given"
+  else
+    repo="$(cd "$given" 2>/dev/null && pwd)" || die "no such directory: $given"
+  fi
+  local handoff="$repo/HANDOFF.md" tmpl="$TEMPLATE_DIR/HANDOFF.md"
+  if [[ ! -f "$handoff" ]]; then
+    if [[ $json -eq 1 ]]; then json_die template_refresh "no HANDOFF.md in $repo"; fi
+    die "no HANDOFF.md in $repo (run 'handoff init $repo' first?)"
+  fi
+  [[ -f "$tmpl" ]] || die "template not found: $tmpl"
+  if [[ -f "$repo/.handoff-logs/outstanding.json" ]]; then
+    local msg="outstanding A2A run; refusing to refresh (run 'handoff status', 'handoff resume', or 'handoff cancel' first)"
+    if [[ $json -eq 1 ]]; then json_die template_refresh "$msg"; fi
+    die "$msg"
+  fi
+  local count
+  count="$(grep -c -x '## Current Task' "$handoff" || true)"
+  if [[ "$count" != "1" ]]; then
+    local msg
+    if [[ "$count" == "0" ]]; then
+      msg="no '## Current Task' line in $handoff; refusing to refresh"
+    else
+      msg="'## Current Task' appears $count times in $handoff; refusing to refresh"
+    fi
+    if [[ $json -eq 1 ]]; then json_die template_refresh "$msg"; fi
+    die "$msg"
+  fi
+  local old new
+  old="$(mktemp)"
+  new="$(mktemp)"
+  write_preamble "$handoff" "$old"
+  write_preamble "$tmpl" "$new"
+  local old_size new_size
+  old_size="$(wc -c < "$old" | tr -d ' ')"
+  new_size="$(wc -c < "$new" | tr -d ' ')"
+  if cmp -s "$old" "$new"; then
+    rm -f "$old" "$new"
+    if [[ $json -eq 1 ]]; then
+      jq -n --arg schema "$CLI_OUTPUT_SCHEMA" --arg repo "$repo" \
+        '{schema: $schema, kind: "template_refresh", repo: $repo, replaced: false, message: "already current"}'
+    else
+      echo "already current"
+    fi
+    return 0
+  fi
+  mkdir -p "$repo/.handoff-logs"
+  local stamp backup tmp line
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  backup="$repo/.handoff-logs/HANDOFF.preamble-$stamp.md"
+  cp "$handoff" "$backup"
+  line="$(grep -n -x '## Current Task' "$handoff" | head -n 1 | cut -d: -f1)"
+  tmp="$(mktemp "$repo/.handoff-logs/HANDOFF.md.XXXXXX")"
+  cat "$new" > "$tmp"
+  tail -n +"$line" "$handoff" >> "$tmp"
+  mv "$tmp" "$handoff"
+  rm -f "$old" "$new"
+  if [[ $json -eq 1 ]]; then
+    jq -n --arg schema "$CLI_OUTPUT_SCHEMA" --arg repo "$repo" --arg backup "$backup" \
+      --argjson old_preamble_bytes "$old_size" --argjson new_preamble_bytes "$new_size" \
+      '{schema: $schema, kind: "template_refresh", repo: $repo, replaced: true,
+        backup: $backup, old_preamble_bytes: $old_preamble_bytes, new_preamble_bytes: $new_preamble_bytes,
+        message: "replaced the preamble; Current Task and everything after it are unchanged"}'
+  else
+    echo "replaced the preamble; Current Task and everything after it are unchanged"
+    echo "backup: $backup"
+    echo "preamble: $old_size bytes -> $new_size bytes"
+  fi
+}
+
 cmd_init() {
   local repo="" transport="" planner="" mode="" arg
   local -a choice=()
@@ -1068,6 +1191,7 @@ cmd_init() {
       else
         if [[ -n "$planner" && "$planner" != "none" ]]; then install_planner_skill_legacy "$repo" "$planner"; fi
         echo "already initialized: $repo/HANDOFF.md (ensured local excludes; nothing else changed)"
+        preamble_refresh_hint "$repo"
         echo "managed A2A setup: handoff init \"$repo\" --transport a2a --executor <provider> --model \"<model-id>\""
       fi
       ;;
@@ -1102,6 +1226,7 @@ cmd_init_legacy() {
   fi
   if [[ -f "$repo/HANDOFF.md" ]]; then
     echo "already initialized: $repo/HANDOFF.md (ensured local excludes, including .handoff-config.json)"
+    preamble_refresh_hint "$repo"
     return 0
   fi
   [[ -f "$TEMPLATE_DIR/HANDOFF.md" ]] || die "template not found: $TEMPLATE_DIR/HANDOFF.md"
@@ -1125,6 +1250,7 @@ case "$command" in
   mode) cmd_mode "$@" ;;
   skill) cmd_skill "$@" ;;
   init) cmd_init "$@" ;;
+  template) cmd_template "$@" ;;
   archive) cmd_archive "$@" ;;
   models | model | server | planner) a2a_manage "$command" "$@" ;;
   -h | --help | "") usage ;;

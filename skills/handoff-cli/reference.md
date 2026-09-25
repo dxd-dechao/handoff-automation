@@ -28,11 +28,12 @@ explicit ID, which is recorded as unverified.
 | `handoff status "<repo>" [--json]` | Markdown status, execution, turn, mode, watcher, Executor, next action (`kind: status`). A2A repos with a workflow include `preflight`. |
 | `handoff preflight "<repo>" [--json]` | Every execute blocker and its fix (`kind: preflight`). Exit 0 when ready, 1 when blocked. Legacy repos refuse: preflight needs managed A2A. |
 | `handoff approve "<repo>"` | Record the human's chat approval of the current plan. |
-| `handoff execute "<repo>"` | Dispatch one execution and wait (drive mode; also clears a reviewed dispatch hold). |
+| `handoff execute "<repo>"` | Dispatch one execution and wait (drive mode; also clears a reviewed dispatch hold). A wait timeout (exit 2, "only this command stopped waiting") means the run is still going; re-run a plain `handoff resume "<repo>"` to reattach. |
 | `handoff watch "<repo>"` | Poll and dispatch (watch mode; refuses in drive mode). The human keeps it running. |
 | `handoff resume "<repo>"` / `handoff cancel "<repo>"` | Reconnect to / cancel an outstanding run. |
 | `handoff runs "<repo>"` | Past runs from manifests. |
 | `handoff archive "<repo>" [--superseded]` | Move the finished task to HANDOFF-ARCHIVE.md; `--superseded` closes an exhausted workflow. |
+| `handoff template refresh "<repo>" [--json]` | Replace the HANDOFF.md preamble from the installed template (`kind: template_refresh`). Everything from `## Current Task` on stays byte-for-byte. Prints "already current" when nothing differs. Refuses, without writing, when the heading is missing or duplicated or an A2A run is outstanding. |
 
 ## Executor and run mode
 
@@ -47,8 +48,9 @@ explicit ID, which is recorded as unverified.
 
 - `status`: `transport` (`legacy`|`a2a`), `managed` (bool), `status`
   (Markdown), `turn`, `execution` (`IDLE`, `WORKING`, `SUBMITTED`,
-  `UNRESOLVED`, `RECOVERY`, `COMPLETED`, `FAILED`, `CANCELED`; `null` for
-  legacy), `mode` (`drive`|`watch`|`null`), `watcher` (`running`, `stale`,
+  `UNRESOLVED`, `UNKNOWN`, `RECOVERY`, `COMPLETED`, `FAILED`, `CANCELED`; `null` for
+  legacy), `probe` (`not_permitted` when a status query was sandbox-denied, otherwise
+  null), `mode` (`drive`|`watch`|`null`), `watcher` (`running`, `stale`,
   `pid`, `started_at`), `workflow` (`workflow_id`, `rounds_used`,
   `max_rounds`, `dispatch_hold`, `last_outcome`,
   `plan_changed_since_approval`), `executor` (as `model`), `run`, `reason`,
@@ -63,7 +65,8 @@ explicit ID, which is recorded as unverified.
   only for `auth`. `network` is not a login problem.
 - `model`: `selected` (`provider`, `model`, `reasoning_effort`,
   `generation`, `validation`), `active` (`state`:
-  `verified`|`unverified`|`stopped`), `current_run`, `pending`.
+  `verified`|`unverified`|`stopped`|`unknown`), `current_run`, `pending`.
+  `unknown` means the service probe was not permitted.
 - `server-status`: `service` (`running`|`stopped`|`unknown`), `state`
   (`verified`|`running`|`stopped`|`unknown`), `probe` (`ok`|`not_permitted`),
   `verified`, `endpoint`, `selected`, `active`, `pid`, `notes`,
