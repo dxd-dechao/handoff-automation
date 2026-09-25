@@ -103,7 +103,7 @@ The skill checks what already exists, then asks in one round:
 - **Executor provider and model**, from the IDs your installed CLI reports
   (Claude needs an explicit model ID). For Codex, an optional reasoning
   effort.
-- **Run mode:** drive or watch.
+- **Run mode:** drive or watch (see step 5).
 
 It repeats your choices, runs setup and starts the local service, and
 reports the Executor, the mode, and the service state. It never picks a
@@ -115,8 +115,25 @@ provider, model, or mode for you.
 handoff watch "/path/to/project"
 ```
 
-In watch mode this terminal dispatches the Executor whenever it is the
-Executor's turn. In drive mode you do not need it (and it refuses to start).
+Run this yourself in a separate terminal and leave it open; the Planner
+does not start it. The watcher does not read your chat. It checks the
+handoff state and starts one Executor run each time the Executor has work:
+after you approve a plan, and after each `CHANGES REQUESTED`. The Executor
+only ever runs the plan you approved; if the plan changes afterwards, it
+waits for re-approval.
+
+Both modes share setup, planning, approval, and QA in the Planner chat.
+They differ after you approve:
+
+| | Drive | Watch |
+| --- | --- | --- |
+| Starts each Executor run | The Planner, in the chat | The `handoff watch` terminal |
+| Planner chat during a run | Waits for the run to finish | Free to use or close |
+| QA after a run | Starts automatically | You ask: "QA the handoff" (the watcher notifies you when the run ends) |
+| Extra terminal | None (`handoff watch` refuses to start) | One per repository |
+
+Choose drive for approve-and-wait. Choose watch for long runs, or to keep
+the Planner chat free.
 
 That is every command you type. Manual and scripted setup, including the
 flags the skill uses, is in the [CLI guide](docs/cli-setup-and-models.md).
