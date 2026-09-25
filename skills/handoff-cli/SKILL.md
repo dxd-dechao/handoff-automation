@@ -87,10 +87,12 @@ environment already set. Quote paths.
 6. **Blocked by your sandbox:** if `server start` fails on port binding,
    process, or permission denial from your shell, say so, request the host
    permission, or give the single command for their terminal. It is not a
-   product failure. On a Claude Code host, also say that a user-settings
-   allow rule `Bash(handoff server:*)` (plus the absolute `bin/handoff`
-   path form) stops this from recurring. Do not edit their settings
-   yourself.
+   product failure. On a Claude Code host, also say that user-settings
+   allow rules stop this from recurring: `Bash(handoff server:*)`, and for
+   drive mode `execute`, `resume`, `status`, and `runs`, each with the
+   absolute `bin/handoff` path form as well. Never suggest allowlisting
+   `approve`. Do not edit their settings yourself. The same applies when
+   `execute` is blocked in drive mode; offer watch mode as the alternative.
 7. **Report:** provider / model, run mode, service `verified`, and the next
    thing to say ("plan <task> in the handoff"). In watch mode, if `watcher`
    is not running, give `handoff watch "<repo>"` for a terminal they keep open.

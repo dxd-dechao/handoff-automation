@@ -110,8 +110,9 @@ reports the Executor, the mode, and the service state. It never picks a
 provider, model, or mode for you.
 
 Some Planner hosts block `handoff server start` because it launches a
-background service that listens on a local port. If yours does, the Planner
-gives you the command to run in your own terminal. To allow it from then on,
+background service that listens on a local port. In drive mode they may also
+block `handoff execute`. If yours does, the Planner gives you the command to
+run in your own terminal. To allow it from then on,
 see [When the Planner's host blocks `server start`](docs/cli-setup-and-models.md#when-the-planners-host-blocks-server-start).
 
 ### 5. Watch mode only: keep a watcher running
