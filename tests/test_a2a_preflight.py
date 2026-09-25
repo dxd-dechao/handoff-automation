@@ -28,6 +28,7 @@ from a2a_harness import (
 from handoff_a2a.processes import LIVENESS_DEAD, LIVENESS_UNKNOWN, process_liveness
 from handoff_a2a.providers import failure_kind
 from handoff_a2a.service import PROBE_NOT_PERMITTED, ServiceState
+from handoff_a2a.workflow import load_workflow, save_workflow
 from handoff_a2a.workspace import GitWorkspace, approved_plan_hash, parse_handoff
 
 
@@ -77,6 +78,93 @@ def test_first_execute_creates_a_missing_branch(tmp_path: Path) -> None:
     assert git(repo, "branch", "--show-current").stdout.strip() == "feature"
     manifests = list((repo / ".handoff-logs").glob("*-manifest.json"))
     assert manifests and json.loads(manifests[0].read_text())["branch_created"] == "feature"
+
+
+def test_bytecode_baseline_and_reapprove_rebaseline(tmp_path: Path) -> None:
+    repo, env = managed_repo(tmp_path)
+    empty = tmp_path / "empty-exclude"
+    empty.write_text("", encoding="utf-8")
+    git(repo, "config", "core.excludesFile", str(empty))
+    write_handoff(repo, status="DRAFT")
+    (repo / ".fake-mode").write_text("bytecode\n", encoding="utf-8")
+    approved = handoff(env, "approve", str(repo))
+    assert approved.returncode == 0, approved.stderr
+    assert "rebaselined" not in approved.stdout
+    workflow_id = load_workflow(repo)["workflow_id"]
+    assert load_workflow(repo)["post_run_fingerprint"] is None
+    assert handoff(env, "server", "start", str(repo)).returncode == 0
+    try:
+        run = handoff(env, "execute", str(repo))
+        assert run.returncode == 0, run.stdout + run.stderr
+        assert (repo / "pkg" / "__pycache__" / "m.cpython-312.pyc").is_file()
+        assert (repo / "x.pyc").is_file()
+        (repo / "pkg" / "__pycache__" / "m.cpython-312.pyc").unlink()
+        (repo / "x.pyc").unlink()
+        write_handoff(repo, status="CHANGES REQUESTED", notes="left bytecode")
+        ready = handoff(env, "preflight", str(repo), "--json")
+        assert ready.returncode == 0, ready.stdout + ready.stderr
+        assert _json(ready)["ready"] is True
+        rounds = load_workflow(repo)["rounds_used"]
+        assert rounds == 1
+        legacy = load_workflow(repo)
+        legacy["post_run_fingerprint"] = "f" * 64
+        save_workflow(repo, legacy)
+        blocked = handoff(env, "preflight", str(repo), "--json")
+        body = _json(blocked)
+        fingerprint = next(item for item in body["blockers"] if item["code"] == "fingerprint")
+        assert fingerprint["message"] == "workspace code does not match the last recorded post-run snapshot"
+        assert "re-approve" in fingerprint["fix"]
+        text = (repo / "HANDOFF.md").read_text(encoding="utf-8")
+        (repo / "HANDOFF.md").write_text(
+            text.replace("Set app.py value according to the current round.", "Revised remaining work."),
+            encoding="utf-8",
+        )
+        again = handoff(env, "approve", str(repo))
+        assert again.returncode == 0, again.stderr
+        assert "rebaselined code snapshot (previous ffffffffffff)" in again.stdout
+        saved = load_workflow(repo)
+        assert saved["workflow_id"] == workflow_id
+        assert saved["rounds_used"] == rounds
+        assert saved["previous_post_run_fingerprint"] == "f" * 64
+        assert saved["rebaselined_at"]
+        assert saved["post_run_fingerprint"] != "f" * 64
+        passed = handoff(env, "preflight", str(repo), "--json")
+        assert passed.returncode == 0, passed.stdout + passed.stderr
+        assert _json(passed)["ready"] is True
+        unchanged = handoff(env, "approve", str(repo))
+        assert unchanged.returncode == 0, unchanged.stderr
+        assert "rebaselined" not in unchanged.stdout
+        assert load_workflow(repo)["post_run_fingerprint"] == saved["post_run_fingerprint"]
+    finally:
+        stop_managed(repo)
+
+
+def test_revised_approve_refuses_a_dirty_tree(tmp_path: Path) -> None:
+    repo, env = managed_repo(tmp_path)
+    write_handoff(repo, status="DRAFT")
+    assert handoff(env, "approve", str(repo)).returncode == 0
+    workflow = load_workflow(repo)
+    workflow["post_run_fingerprint"] = "a" * 64
+    workflow["post_run_branch"] = "main"
+    workflow["rounds_used"] = 1
+    save_workflow(repo, workflow)
+    text = (repo / "HANDOFF.md").read_text(encoding="utf-8")
+    (repo / "HANDOFF.md").write_text(
+        text.replace("Set app.py value according to the current round.", "Revised remaining work."),
+        encoding="utf-8",
+    )
+    (repo / "app.py").write_text("value = 4\n", encoding="utf-8")
+    before_status = parse_handoff((repo / "HANDOFF.md").read_text()).status
+    before = json.loads((repo / ".handoff-logs" / "workflow.json").read_text())
+    refused = handoff(env, "approve", str(repo))
+    assert refused.returncode != 0
+    assert "app.py" in refused.stderr
+    assert "commit or discard" in refused.stderr
+    assert parse_handoff((repo / "HANDOFF.md").read_text()).status == before_status
+    after = json.loads((repo / ".handoff-logs" / "workflow.json").read_text())
+    assert after["approved_plan_hash"] == before["approved_plan_hash"]
+    assert after["post_run_fingerprint"] == "a" * 64
+    assert "rebaselined_at" not in after
 
 
 def test_existing_branch_is_not_switched_and_dirty_tree_is_untouched(tmp_path: Path) -> None:

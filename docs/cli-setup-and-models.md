@@ -34,7 +34,10 @@ handoff skill status "/path/to/project" --json
 ```
 
 Project installs add a local git exclude and are ignored by the workflow's
-code fingerprints. A user install (`--user`, never a default) writes nothing
+code fingerprints. Untracked Python bytecode (a `__pycache__` directory, or a
+file ending in `.pyc` or `.pyo`) is also ignored, whether or not the
+repository gitignores it. A committed `.pyc` still counts. A user install
+(`--user`, never a default) writes nothing
 into any repository: `~/.cursor/skills`, `~/.agents/skills` (Codex), or
 `~/.claude/skills`. Claude Code documents `~/.claude/skills`; with
 `CLAUDE_CONFIG_DIR` pointing elsewhere the folder it reads is not verified,
@@ -329,6 +332,7 @@ the same history rules.
 | Planner says `server start` or `execute` was blocked, or status says `probe not permitted` | run `handoff` outside the sandbox ([§4](#when-the-planners-host-blocks-local-commands)) |
 | `connection not permitted (sandbox?)` | run `handoff` outside the sandbox; do not start another server |
 | `preflight: blocked` | apply each listed fix, then `handoff preflight` again |
+| `workspace code does not match the last recorded post-run snapshot` | restore that snapshot, or revise Current Task and `handoff approve` to record the current workspace as the new baseline. Untracked `.pyc` files are not part of a new snapshot |
 | `Cursor CLI is not logged in for the Executor` | `cursor-agent login` (Executor account), then retry |
 | `this repository has no CLI-managed A2A service` | `handoff init "<repo>" --transport a2a --executor ... --model ...` (explicit migration) |
 | `run mode is drive: ... handoff watch does not start` | `handoff mode "<repo>" watch`, or let the Planner drive |
