@@ -1,13 +1,15 @@
 # QA evidence — A8 preflight and sandbox
 
-Executor self-report for `claude/a8-preflight-sandbox`. Independent Planner QA
-still has to review the diff. Counts below are from this session.
+Evidence for `claude/a8-preflight-sandbox`. Round 1 (`6fb4469`) got CHANGES
+REQUESTED: watch stopped retrying a stopped service, and several criteria had no
+test. Round 2 (`50459d8`) fixed both. Independent Planner QA approved round 2 on
+2026-09-25; its counts are below.
 
 ## Checks
 
 | Check | Result |
 | --- | --- |
-| `uv run --offline --extra test python -m pytest -q` | 203 passed, 100 warnings (proto deprecations), 2026-09-25 |
+| `uv run --offline --extra test python -m pytest -q` | 214 passed, 100 warnings (proto deprecations), 2026-09-25. Needs local process and localhost access; in a sandboxed shell the service tests report `unknown (probe not permitted)` and fail |
 | `bash -n bin/handoff` | exit 0 |
 | `bash tests/smoke-manifest.sh` | 24 passed, 0 failed |
 | `git diff --check` | clean |
@@ -33,3 +35,16 @@ still has to review the diff. Counts below are from this session.
 - An outdated copy at the project install path is still upgraded on re-init. Skip applies to a current copy and to a copy found under another folder (including a user-level copy).
 - A running but unverified service is not a preflight blocker, so a generation mismatch still uses the existing "not running the selected Executor" deferral.
 - `approved_plan_hash` is not normalized. Only the in-run delivery comparison ignores trailing whitespace, blank lines, and `---` lines.
+
+## Round 2 tests (QA correction)
+
+All in `tests/test_a2a_preflight.py`:
+
+- Criterion 1: `test_preflight_reports_service_unknown`.
+- Criterion 1 and watch deferral: `test_watch_retries_a_stopped_service_and_refuses_other_blockers`, `test_watch_retries_an_unknown_service`.
+- Criterion 3: `test_init_planner_permission_error_warns_and_keeps_setup`.
+- Criterion 5: `test_unknown_service_refuses_start_stop_and_defers_execute`.
+- Criterion 7: `test_models_json_distinguishes_network_from_login`.
+- Criterion 8: `test_init_omits_install_hint_when_a_copy_exists`.
+- Criterion 10: `test_eperm_connect_is_not_a_stopped_service`, `test_refused_connection_still_suggests_server_start`, `test_wait_timeout_names_the_run`.
+- Criterion 11: `test_executor_boundary_diff_is_in_the_manifest`.
