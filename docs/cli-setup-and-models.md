@@ -158,6 +158,41 @@ with the token succeeds. A matching port alone is never enough.
 
 `init` never starts the service, and `watch` never starts it for you.
 
+### When the Planner's host blocks `server start`
+
+`server start` launches a long-lived background process that listens on a
+local port. That is the kind of command a Planner host's permission check
+or shell sandbox often stops, so the Planner reports it as blocked. This is
+not a handoff failure. You have two options:
+
+- **One-off:** run the command the Planner gives you in your own terminal.
+  Once the service is verified, `execute`, `status`, and QA work from the
+  Planner as normal.
+- **Permanent, Claude Code Planner:** add an allow rule to your user
+  settings (`~/.claude/settings.json`, and every other Claude config
+  directory you use):
+
+  ```json
+  { "permissions": { "allow": [
+      "Bash(handoff server:*)",
+      "Bash(/absolute/path/to/handoff-automation/bin/handoff server:*)"
+  ] } }
+  ```
+
+  This covers `server start|status|stop` and nothing else. It does not reach
+  the Executor: every Claude Executor launch denies `Bash(handoff:*)` and
+  `Bash(*/handoff:*)`, and a deny beats an allow.
+
+  If `start` then fails with `EPERM` on its port, the Bash sandbox is
+  blocking local binding. Either run `start` yourself as above, or set
+  `"sandbox": { "network": { "allowLocalBinding": true } }`. That lets
+  every sandboxed command listen on a port, not just handoff, so turn it on
+  deliberately. The handoff service itself binds loopback only and requires
+  its bearer token.
+
+For Codex or Cursor Planners, approve the command when prompted, or use the
+host's own allowlist for `handoff server`.
+
 ## Run mode: drive or watch
 
 ```sh
@@ -284,6 +319,7 @@ the same history rules.
 | `queued Executor change ... failed` | `handoff model ... --after-current` (replace) or `--cancel-pending` |
 | `cannot switch now: an A2A run is outstanding` | `handoff status` / `resume` / `cancel`, or `--after-current` |
 | `port N is in use by a process this CLI did not start` | `handoff server start "<repo>" --port <free>` |
+| Planner says `server start` was blocked by its permission check or sandbox | run it in your own terminal, or allowlist it ([§4](#when-the-planners-host-blocks-server-start)) |
 | `Cursor CLI is not logged in for the Executor` | `cursor-agent login` (Executor account), then retry |
 | `this repository has no CLI-managed A2A service` | `handoff init "<repo>" --transport a2a --executor ... --model ...` (explicit migration) |
 | `run mode is drive: ... handoff watch does not start` | `handoff mode "<repo>" watch`, or let the Planner drive |
