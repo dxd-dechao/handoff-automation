@@ -32,7 +32,7 @@ usage() {
 usage: handoff <subcommand> [repo-path] [options]     (repo-path defaults to $PWD)
 
 Start here (one-time bootstrap, then talk to your Planner agent):
-  handoff skill install <repo> --host <cursor|codex|claude> [--user]
+  handoff skill install <repo> --host <cursor|codex|claude>     (or: --host <h> --user, no repo)
             makes the handoff-cli skill available to your Planner chat. Then say
             "/handoff-cli set up handoff in this repo": the skill asks for the
             Executor provider/model and the run mode (drive or watch), proposes
@@ -48,7 +48,7 @@ setup
                   [--reasoning-effort <e>] [--port <n>]
               handoff init <repo> --transport legacy     (Python-free direct Claude)
             Generates every JSON/token/skill file; re-running preserves them.
-  skill     handoff skill install <repo> --host <h> [--user]; handoff skill status <repo> [--json]
+  skill     handoff skill install <repo> --host <h> | --host <h> --user; handoff skill status <repo> [--json]
   models    handoff models <repo> --provider <name> [--json]: model IDs the installed CLI reports
   server    handoff server start|status|stop <repo> [--port <n>] [--json]: the managed local service
   model     handoff model <repo> [--json]: selected / active / pending Executor
