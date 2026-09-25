@@ -303,7 +303,7 @@ def collect_preflight(repo: Path, config: HandoffConfig, settings: Any) -> Prefl
                 Blocker(
                     "fingerprint",
                     "workspace code does not match the last recorded post-run snapshot",
-                    "restore the recorded snapshot or re-approve a new plan",
+                    "restore the recorded snapshot, or revise Current Task and re-approve it to record the current workspace as the new baseline",
                 )
             )
         else:
@@ -595,15 +595,24 @@ def _next_action(
 
 def cmd_approve(repo: Path) -> int:
     _config, settings = require_a2a_config(repo)
+    before = load_workflow(repo)
+    git = GitWorkspace(settings.workspace_id, repo)
     workflow = record_approval(
         repo,
         workspace_id=settings.workspace_id,
         max_rounds=_config.max_rounds,
+        current_fingerprint=git.code_fingerprint(),
+        current_branch=git.current_branch(),
+        dirty_code_paths=git.dirty_code_paths(),
     )
     print(f"approved workflow {workflow['workflow_id']}")
     print(f"plan_hash {workflow['approved_plan_hash']}")
     if workflow.get("parent_workflow_id"):
         print(f"parent_workflow_id {workflow['parent_workflow_id']}")
+    previous_stamp = None if before is None else before.get("rebaselined_at")
+    if workflow.get("rebaselined_at") and workflow.get("rebaselined_at") != previous_stamp:
+        previous = str(workflow.get("previous_post_run_fingerprint") or "")
+        print(f"rebaselined code snapshot (previous {previous[:12]})")
     return 0
 
 

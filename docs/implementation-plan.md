@@ -141,6 +141,10 @@ Run the installed handoff CLI, not only the development helper, against two sepa
 
 Acceptance: endpoint/configuration changes only; no provider conditionals in Planner/client workflow; both real providers pass implementation and correction QA; inspect Agent Cards and standard operations with an SDK client; record actual commands, model identities, time/usage, git evidence, and limitations. Default CI remains offline; live checks require working logins and an explicit command.
 
+### A9 — Fingerprint rebaseline
+
+Untracked Python bytecode (`__pycache__`, `.pyc`, `.pyo`) is not code: it stays out of `code_fingerprint` and `dirty_code_paths` even when the target repository does not gitignore it. Tracked bytecode still counts. A fingerprint recorded before that filter can still mismatch; re-approving a *changed* plan for an existing workflow, when a post-run fingerprint is already set and no round is reserved, records the current clean workspace as the new baseline (`previous_post_run_fingerprint`, `rebaselined_at`). A dirty tree is refused and nothing is written. First approval and `archive --superseded` inheritance are unchanged. There is no workflow history log; the receipt fields are the record.
+
 ## Final completion bar
 
 The feature is complete when the actual handoff CLI can switch Claude/Codex endpoints, run the existing Planner/QA loop against real git changes, and handle ordinary duplicate/disconnection/cancellation cases without losing workspace control. Human plan approval and final merge authority remain explicit. Keep A2A opt-in until these checks pass.

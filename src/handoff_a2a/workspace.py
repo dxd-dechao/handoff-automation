@@ -125,6 +125,19 @@ PLANNER_SKILL_DIRS = (PLANNER_SKILL_DIR, ".agents/skills/handoff-cli", ".claude/
 _DELIVERY_RULE_RE = re.compile(r"^\.cursor/rules/handoff-executor-[^/]+\.mdc$")
 
 
+def is_bytecode_path(rel: str) -> bool:
+    """Python bytecode is not source. Untracked copies are ignored by fingerprints."""
+    normalized = rel.replace("\\", "/")
+    if normalized.startswith("./"):
+        normalized = normalized[2:]
+    parts = [part for part in normalized.split("/") if part]
+    if not parts:
+        return False
+    if "__pycache__" in parts:
+        return True
+    return parts[-1].endswith(".pyc") or parts[-1].endswith(".pyo")
+
+
 def is_workflow_path(rel: str) -> bool:
     normalized = rel.replace("\\", "/")
     if normalized.startswith("./"):
@@ -361,7 +374,7 @@ class GitWorkspace:
         """Deterministic hash of branch/HEAD plus tracked diffs and nonignored untracked code."""
         untracked: list[list[str]] = []
         for rel in self._untracked_files():
-            if is_workflow_path(rel):
+            if is_workflow_path(rel) or is_bytecode_path(rel):
                 continue
             path = self.path / rel
             data = path.read_bytes() if path.is_file() else b""
@@ -390,6 +403,9 @@ class GitWorkspace:
             if path.startswith('"') and path.endswith('"'):
                 path = path[1:-1]
             path = path.replace("\\", "/")
+            # Only untracked bytecode is ignored. A committed .pyc still counts.
+            if line.startswith("??") and is_bytecode_path(path):
+                continue
             if not is_workflow_path(path):
                 found.append(path)
         return found

@@ -99,6 +99,9 @@ def approve(
     parent_workflow_id: str | None = None,
     inherit_baseline: str | None = None,
     inherit_branch: str | None = None,
+    current_fingerprint: str | None = None,
+    current_branch: str | None = None,
+    dirty_code_paths: list[str] | None = None,
 ) -> dict[str, Any]:
     markdown = (repo / HANDOFF_NAME).read_text(encoding="utf-8")
     document = parse_handoff(markdown)
@@ -123,6 +126,12 @@ def approve(
     if existing and outstanding:
         raise WorkflowError("cannot change the approved plan while work is unresolved")
     if existing:
+        _maybe_rebaseline(
+            existing,
+            current_fingerprint=current_fingerprint,
+            current_branch=current_branch,
+            dirty_code_paths=dirty_code_paths,
+        )
         existing["approved_plan_hash"] = plan_hash
         existing["submitted_snapshot_hash"] = full_hash
         existing["approved_at"] = utc_now()
@@ -162,6 +171,39 @@ def approve(
     save_workflow(repo, workflow)
     _set_status(repo, "READY FOR EXECUTION")
     return load_workflow(repo) or workflow
+
+
+def _maybe_rebaseline(
+    existing: dict[str, Any],
+    *,
+    current_fingerprint: str | None,
+    current_branch: str | None,
+    dirty_code_paths: list[str] | None,
+) -> None:
+    """Replace a recorded baseline when a changed plan is re-approved.
+
+    ``current_fingerprint is None`` means the caller did not ask to rebaseline.
+    A dirty tree is refused before any field is written.
+    """
+    if current_fingerprint is None:
+        return
+    if not existing.get("post_run_fingerprint"):
+        return
+    if existing.get("reserved_execution_id"):
+        return
+    dirty = list(dirty_code_paths or [])
+    if dirty:
+        shown = ", ".join(dirty[:10])
+        extra = len(dirty) - min(len(dirty), 10)
+        tail = f" (+{extra} more)" if extra else ""
+        raise WorkflowError(
+            "refusing to rebaseline onto a dirty tree: "
+            f"{shown}{tail}; commit or discard them first"
+        )
+    existing["previous_post_run_fingerprint"] = existing.get("post_run_fingerprint")
+    existing["rebaselined_at"] = utc_now()
+    existing["post_run_fingerprint"] = current_fingerprint
+    existing["post_run_branch"] = current_branch
 
 
 def _set_status(repo: Path, status: str) -> None:

@@ -274,6 +274,15 @@ if mode == "strip_separator":
     write_handoff(set_notes(set_status(stripped, "READY FOR QA"), "dropped a trailing separator"))
     result_json()
     sys.exit(0)
+if mode == "bytecode":
+    set_value(1)
+    cache = root / "pkg" / "__pycache__"
+    cache.mkdir(parents=True, exist_ok=True)
+    (cache / "m.cpython-312.pyc").write_bytes(b"pyc-left-by-executor")
+    (root / "x.pyc").write_bytes(b"stray-pyc")
+    write_handoff(set_notes(set_status(text, "READY FOR QA"), "left untracked bytecode"))
+    result_json()
+    sys.exit(0)
 
 set_value(1)
 (root / "scratch.txt").write_text("uncommitted executor file\n", encoding="utf-8")

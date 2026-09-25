@@ -5,11 +5,25 @@ from pathlib import Path
 
 import pytest
 
-from a2a_harness import make_repo, write_handoff
+from a2a_harness import git, make_repo, write_handoff
 from handoff_a2a.config import ConfigError, load_config
 from handoff_a2a.contracts import CODING_TASK_PROFILE, parse_coding_request, snapshot_sha256
-from handoff_a2a.workflow import approve, archive_current, consume_round, reserve_round, rounds_available
-from handoff_a2a.workspace import GitWorkspace, approved_plan_hash, planner_fingerprint
+from handoff_a2a.workflow import (
+    WorkflowError,
+    approve,
+    archive_current,
+    consume_round,
+    load_workflow,
+    reserve_round,
+    rounds_available,
+    save_workflow,
+)
+from handoff_a2a.workspace import (
+    GitWorkspace,
+    approved_plan_hash,
+    is_workflow_path,
+    planner_fingerprint,
+)
 
 
 def test_approved_plan_hash_ignores_status_notes_and_qa(tmp_path: Path) -> None:
@@ -39,6 +53,135 @@ def test_fingerprint_excludes_handoff_and_detects_code(tmp_path: Path) -> None:
     (repo / "extra.py").write_text("x = 1\n", encoding="utf-8")
     assert gitws.code_fingerprint() != clean
     assert not gitws.code_is_clean()
+
+
+def _original_code_fingerprint(gitws: GitWorkspace) -> str:
+    """The pre-A9 payload: untracked files except workflow paths, including bytecode."""
+    untracked: list[list[str]] = []
+    for rel in gitws._untracked_files():
+        if is_workflow_path(rel):
+            continue
+        path = gitws.path / rel
+        data = path.read_bytes() if path.is_file() else b""
+        untracked.append([rel, snapshot_sha256(data)])
+    untracked.sort(key=lambda item: item[0])
+    payload = {
+        "branch": gitws.current_branch(),
+        "head": gitws.current_head(),
+        "index": snapshot_sha256(gitws.git_bytes("diff", "--cached", "--binary")),
+        "worktree": snapshot_sha256(gitws.git_bytes("diff", "--binary")),
+        "untracked": untracked,
+    }
+    encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+    return snapshot_sha256(encoded)
+
+
+def _no_global_pyc_ignore(repo: Path, tmp_path: Path) -> None:
+    empty = tmp_path / "empty-exclude"
+    empty.write_text("", encoding="utf-8")
+    git(repo, "config", "core.excludesFile", str(empty))
+
+
+def test_untracked_bytecode_is_not_code(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    _no_global_pyc_ignore(repo, tmp_path)
+    gitws = GitWorkspace("fixture", repo)
+    clean = gitws.code_fingerprint()
+    assert clean == _original_code_fingerprint(gitws)
+    cache = repo / "pkg" / "__pycache__"
+    cache.mkdir(parents=True)
+    pyc = cache / "m.cpython-312.pyc"
+    stray = repo / "x.pyc"
+    pyc.write_bytes(b"one")
+    stray.write_bytes(b"two")
+    assert "pkg/__pycache__/m.cpython-312.pyc" in gitws.git("status", "--porcelain", "-uall")
+    assert gitws.code_fingerprint() == clean
+    assert gitws.dirty_code_paths() == []
+    pyc.write_bytes(b"changed")
+    stray.write_bytes(b"changed")
+    assert gitws.code_fingerprint() == clean
+    assert gitws.dirty_code_paths() == []
+    pyc.unlink()
+    stray.unlink()
+    cache.rmdir()
+    (repo / "pkg").rmdir()
+    assert gitws.code_fingerprint() == clean
+    assert gitws.dirty_code_paths() == []
+
+
+def test_tracked_bytecode_still_counts(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    _no_global_pyc_ignore(repo, tmp_path)
+    tracked = repo / "vendor.pyc"
+    tracked.write_bytes(b"committed")
+    git(repo, "add", "-f", "vendor.pyc")
+    git(repo, "commit", "-qm", "commit bytecode")
+    gitws = GitWorkspace("fixture", repo)
+    clean = gitws.code_fingerprint()
+    tracked.write_bytes(b"modified")
+    assert gitws.code_fingerprint() != clean
+    assert "vendor.pyc" in gitws.dirty_code_paths()
+
+
+def test_rebaseline_on_changed_plan_only(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    write_handoff(repo, status="DRAFT")
+    first = approve(repo, workspace_id="fixture", max_rounds=3, current_fingerprint="should-not-apply")
+    assert first["post_run_fingerprint"] is None
+    assert first["workflow_id"]
+    workflow_id = first["workflow_id"]
+    recorded = "a" * 64
+    first["post_run_fingerprint"] = recorded
+    first["post_run_branch"] = "main"
+    first["rounds_used"] = 1
+    first["consumed_execution_ids"] = ["exec-1"]
+    save_workflow(repo, first)
+    same = approve(
+        repo,
+        workspace_id="fixture",
+        max_rounds=3,
+        current_fingerprint="b" * 64,
+        current_branch="main",
+        dirty_code_paths=[],
+    )
+    assert same["post_run_fingerprint"] == recorded
+    assert same["workflow_id"] == workflow_id
+    assert "rebaselined_at" not in same
+    text = (repo / "HANDOFF.md").read_text(encoding="utf-8")
+    (repo / "HANDOFF.md").write_text(
+        text.replace("Set app.py value according to the current round.", "Narrower goal."),
+        encoding="utf-8",
+    )
+    (repo / "app.py").write_text("value = 9\n", encoding="utf-8")
+    before = (repo / "HANDOFF.md").read_text(encoding="utf-8")
+    before_workflow = json.loads((repo / ".handoff-logs" / "workflow.json").read_text())
+    with pytest.raises(WorkflowError, match="app.py"):
+        approve(
+            repo,
+            workspace_id="fixture",
+            max_rounds=3,
+            current_fingerprint="c" * 64,
+            current_branch="main",
+            dirty_code_paths=["app.py"],
+        )
+    assert (repo / "HANDOFF.md").read_text(encoding="utf-8") == before
+    assert json.loads((repo / ".handoff-logs" / "workflow.json").read_text())["approved_plan_hash"] == before_workflow["approved_plan_hash"]
+    (repo / "app.py").write_text("value = 0\n", encoding="utf-8")
+    updated = approve(
+        repo,
+        workspace_id="fixture",
+        max_rounds=3,
+        current_fingerprint="c" * 64,
+        current_branch="main",
+        dirty_code_paths=[],
+    )
+    assert updated["workflow_id"] == workflow_id
+    assert updated["rounds_used"] == 1
+    assert updated["post_run_fingerprint"] == "c" * 64
+    assert updated["post_run_branch"] == "main"
+    assert updated["previous_post_run_fingerprint"] == recorded
+    assert updated["rebaselined_at"]
+    assert load_workflow(repo)["post_run_fingerprint"] == "c" * 64
 
 
 def test_optional_fingerprint_is_additive() -> None:
