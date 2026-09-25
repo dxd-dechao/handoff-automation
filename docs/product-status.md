@@ -179,3 +179,7 @@ Execution policy throughout: human approval followed by manual Executor launch; 
 - (A9) `approve` now needs a git checkout to compute the snapshot.
 - (A9) `approve` prints "rebaselined" even when the new snapshot equals the old one.
 - (A10) This repository's own `HANDOFF.md` preamble is out of date; the Planner refreshes it with `handoff template refresh` after A10 merges.
+- (A10) `init` on an existing repo calls `mktemp` only to compare preambles, so a locked-down temp directory makes `init` fail. The comparison could be done without temp files.
+- (A10) The bash `template refresh` matches `## Current Task` with `grep -x`, so a CRLF file is refused as "no Current Task", while the Python init hint strips `\r`. The two paths disagree on CRLF files.
+- (A10) A refreshed `HANDOFF.md` takes the temp file's mode (0600).
+- (A10) The delivered `HANDOFF.md` is not saved with the run; only the dispatched request is. A bad Planner edit to Execution Notes can only be rebuilt from that request and the chat, and happened once during A10 QA.
