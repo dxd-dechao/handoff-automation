@@ -382,7 +382,7 @@ def write_server_json(path: Path, config: ServerConfig) -> Path:
 
 
 def make_server_config(
-    root: Path,
+    tmp_root: Path,
     repo: Path,
     fake_claude: Path,
     *,
@@ -393,9 +393,9 @@ def make_server_config(
     state_db: Path | None = None,
     provider: str = "claude",
 ) -> tuple[ServerConfig, Path, Path]:
-    token_path = root / "token"
+    token_path = tmp_root / "token"
     token_path.write_text("test-token\n", encoding="utf-8")
-    evidence = root / "evidence"
+    evidence = tmp_root / "evidence"
     evidence.mkdir(exist_ok=True)
     port = port or free_port()
     config = ServerConfig(
@@ -560,17 +560,17 @@ def stop_managed(repo: Path) -> None:
 
 
 def managed_repo(
-    root: Path,
+    tmp_root: Path,
     *,
     provider: str = "cursor",
     model: str = "fake-model",
     planner: str | None = None,
     extra_env: dict[str, str] | None = None,
 ) -> tuple[Path, dict[str, str]]:
-    repo = make_repo(root)
+    repo = make_repo(tmp_root)
     ignore_probes(repo)
     (repo / "HANDOFF.md").unlink()  # init installs the template; tests write their own plan
-    env = managed_env(root, extra_env)
+    env = managed_env(tmp_root, extra_env)
     args = ["init", str(repo), "--transport", "a2a", "--executor", provider, "--model", model]
     if planner:
         args += ["--planner", planner]
