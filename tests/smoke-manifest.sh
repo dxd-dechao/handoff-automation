@@ -165,6 +165,25 @@ HANDOFF_A2A_BIN="$TMPDIR_BASE/no-a2a" "$HANDOFF_BIN" preflight "$REPO" > "$TMPDI
 assert_eq "legacy preflight refuses without Python" "1" "$PRE_RC"
 assert "legacy preflight names managed A2A" grep -q "preflight needs managed A2A" "$TMPDIR_BASE/preflight.txt"
 
+# ── template refresh (Python-free) ───────────────────────────────────────────
+echo ""
+echo "=== template refresh without Python ==="
+OLD_PATH="$PATH"
+export PATH="/usr/bin:/bin"
+REFRESH_REPO="$TMPDIR_BASE/refresh-repo"
+mkdir -p "$REFRESH_REPO"
+TASK_BODY="$(awk 'found || $0 == "## Current Task" { found=1 } found { print }' "$SCRIPT_DIR/../templates/HANDOFF.md")"
+printf '%s\n' "# stale preamble" "" "$TASK_BODY" > "$REFRESH_REPO/HANDOFF.md"
+BEFORE_TAIL="$(awk 'found || $0 == "## Current Task" { found=1 } found { print }' "$REFRESH_REPO/HANDOFF.md")"
+"$HANDOFF_BIN" template refresh "$REFRESH_REPO" > "$TMPDIR_BASE/refresh.txt"
+assert "refresh replaces the preamble" grep -q "replaced the preamble" "$TMPDIR_BASE/refresh.txt"
+AFTER_TAIL="$(awk 'found || $0 == "## Current Task" { found=1 } found { print }' "$REFRESH_REPO/HANDOFF.md")"
+assert_eq "task bytes unchanged" "$BEFORE_TAIL" "$AFTER_TAIL"
+assert "preamble backup exists" test -n "$(find "$REFRESH_REPO/.handoff-logs" -name 'HANDOFF.preamble-*.md' -print -quit)"
+"$HANDOFF_BIN" template refresh "$REFRESH_REPO" > "$TMPDIR_BASE/refresh-again.txt"
+assert "second refresh is already current" grep -q "already current" "$TMPDIR_BASE/refresh-again.txt"
+export PATH="$OLD_PATH"
+
 # ── Final report ─────────────────────────────────────────────────────────────
 echo ""
 echo "═══════════════════════════════════════"

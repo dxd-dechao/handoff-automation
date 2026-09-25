@@ -122,7 +122,7 @@ def rule_text(execution_id: str, handoff_markdown: str) -> str:
         f"{RULE_MARKER}\n"
         f"Handoff execution: {execution_id}\n\n"
         "You are the headless Executor started with the prompt \"execute the handoff\". "
-        "Implement the Current Task below directly, following its Executor rules. "
+        "Implement the Current Task below directly, following its `### Executor rules`. "
         "Do not use a handoff skill, do not run the `handoff` or `handoff-a2a` CLI, "
         "and do not start another agent. "
         "Edit only the Status line and Execution Notes. Leave every other byte of "

@@ -145,6 +145,10 @@ Acceptance: endpoint/configuration changes only; no provider conditionals in Pla
 
 Untracked Python bytecode (`__pycache__`, `.pyc`, `.pyo`) is not code: it stays out of `code_fingerprint` and `dirty_code_paths` even when the target repository does not gitignore it. Tracked bytecode still counts. A fingerprint recorded before that filter can still mismatch; re-approving a *changed* plan for an existing workflow, when a post-run fingerprint is already set and no round is reserved, records the current clean workspace as the new baseline (`previous_post_run_fingerprint`, `rebaselined_at`). A dirty tree is refused and nothing is written. First approval and `archive --superseded` inheritance are unchanged. There is no workflow history log; the receipt fields are the record.
 
+### A10 — Slim handoff template
+
+The installed `templates/HANDOFF.md` preamble stays at or under 3 KB: opt-in banner, roles, Executor rules, and Status values. Planner loop rules live in the skill. `handoff template refresh` replaces only the preamble of an existing file and leaves `## Current Task` onward byte-for-byte. A sandboxed status probe of an outstanding run is `execution: UNKNOWN` with `probe: not_permitted`, distinct from `UNRESOLVED`. Known follow-ups are listed at the end of `docs/product-status.md` and are not fixed here.
+
 ## Final completion bar
 
 The feature is complete when the actual handoff CLI can switch Claude/Codex endpoints, run the existing Planner/QA loop against real git changes, and handle ordinary duplicate/disconnection/cancellation cases without losing workspace control. Human plan approval and final merge authority remain explicit. Keep A2A opt-in until these checks pass.

@@ -117,23 +117,14 @@ is not approval): `handoff approve "<repo>"`. Then read `mode` from
 `handoff status "<repo>" --json`:
 
 - **drive:** follow the Drive loop.
-- **watch:** do not run `handoff execute`. If `watcher.running` is true, say
-  the watcher will dispatch and ask the human to return with "QA the
-  handoff" when it reports READY FOR QA (or poll `status --json` about once a
-  minute if your host allows). If not running, give `handoff watch "<repo>"`
-  for their terminal; start it as a background process only if your host
-  supports long-lived background commands and the human agrees.
+- **watch:** do not run `handoff execute`. If `watcher.running` is true, say the watcher will dispatch. Poll with a plain background `handoff status "<repo>" --json` (no pipes, loops, `$(…)`, or `&&`). A wait timeout (exit 2, "only this command stopped waiting") means the run is still running. Read `reason` and pass it on; "not permitted" is the sandbox. Tell the human when it starts, times out ("still running, here is how I'm waiting"), and finishes. Never use long foreground sleeps. Start QA only after `status` records a terminal outcome. If the watcher is not running, give `handoff watch "<repo>"`.
 - **null** (older setup or legacy): ask drive or watch; set it with
   `handoff mode` on managed repos.
 
 ## Drive loop
 
-1. `handoff preflight "<repo>" --json` and report every blocker with its
-   fix. Then `handoff execute "<repo>"`. If your shell times out, poll
-   `handoff status "<repo>" --json` about once a minute; use
-   `handoff resume "<repo>"` for an unresolved run. Never start a second one.
-2. QA (below) once `execution` is terminal. Never QA while it is WORKING,
-   SUBMITTED, or UNRESOLVED, or from an early Markdown READY FOR QA.
+1. `handoff preflight "<repo>" --json` and report every blocker with its fix. Then run `handoff execute "<repo>"` in the background when the host supports it. A wait timeout (exit 2, "only this command stopped waiting") is not a failure; the run continues on the service. Every wait or poll must be a plain `handoff …` command: no pipes, loops, `$(…)`, or `&&` (sandbox exclusions match only that). After each timeout, re-run a plain `handoff resume "<repo>"` in the background; that reattaches and records the outcome. When `execution` is not terminal, read `reason` and pass it on; "not permitted" is the sandbox, not a run still working. Never block the conversation with long foreground sleeps. Tell the human when a run starts, when a timeout happens ("still running, here is how I'm waiting"), and when it finishes. Never start a second run.
+2. Start QA only after `resume`, `execute`, or `status` has recorded a terminal outcome. Never QA while `execution` is WORKING, SUBMITTED, UNRESOLVED, or UNKNOWN, or from an early Markdown READY FOR QA.
 3. On CHANGES REQUESTED, execute again.
 4. After three launched executions without approval, stop dispatching.
    Review the diff, preserve passing work, and write a short scope review
@@ -144,23 +135,11 @@ is not approval): `handoff approve "<repo>"`. Then read `mode` from
 
 ## QA: "QA the handoff"
 
-Review the **actual git diff**, not Execution Notes. Run the checks the task
-lists (or the project's ordinary test/lint commands). Block on reproducible
-failures, materially wrong code, a broken legacy path, or a practical safety
-regression; not on naming, formatting, or doc wording. Write concrete
-CHANGES REQUESTED (file, problem, what fixed looks like) or APPROVED. Do not
-implement runtime, test, or behavior fixes as Planner. If only
-documentation remains, fix it yourself, verify it, record files and checks in
-QA Feedback, and approve without another Executor run.
+Review the **actual git diff**, not Execution Notes. Run the checks the task lists (or the project's ordinary test/lint commands). Block on reproducible failures, materially wrong code, a broken legacy path, or a practical safety regression. Distinguish blocking items from nits (naming, formatting, or doc wording). Write concrete CHANGES REQUESTED (file, problem, what fixed looks like) or APPROVED. Do not implement runtime, test, or behavior fixes as Planner. If only documentation remains, fix it yourself, verify it, record files and checks in QA Feedback, and approve without another Executor run.
 
 ## Change the Executor: "switch the Executor to <model>"
 
-Use the human's exact provider and model ID (list with `models --json`; never
-pick one). Between runs: `handoff model "<repo>" --provider <p> --model
-"<id>" --json` (the service restarts and is verified). While a run is in
-flight: add `--after-current`. A switch keeps the workflow, approval, rounds,
-hold, and Git state; it is not approval. Your own Planner model is chosen in
-your host and never changes the Executor.
+Use the human's exact provider and model ID (list with `models --json`; never pick one). Between runs: `handoff model "<repo>" --provider <p> --model "<id>" --json` (the service restarts and is verified). While a run is in flight: add `--after-current`. A switch keeps the workflow, approval, rounds, hold, and Git state; it is not approval. Your own Planner model is chosen in your host and never changes the Executor.
 
 ## Change the run mode: "switch to watch/drive mode"
 
@@ -174,6 +153,7 @@ give `handoff watch "<repo>"` unless `watcher.running`.
 Treat Markdown `status` and `execution` separately; follow `next`. Do not
 launch a worker from a status request.
 
+- `execution: UNKNOWN` with `probe: not_permitted` means the status query was blocked (sandbox), not that the run is unresolved. Say so; do not QA.
 - Unresolved or timed-out run: `handoff resume "<repo>"`; to stop it,
   `handoff cancel "<repo>"` on the human's request. A canceled run is a failed
   delivery, not QA success.
