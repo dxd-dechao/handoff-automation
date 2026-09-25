@@ -32,7 +32,8 @@ explicit ID, which is recorded as unverified.
 | `handoff watch "<repo>"` | Poll and dispatch (watch mode; refuses in drive mode). The human keeps it running. |
 | `handoff resume "<repo>"` / `handoff cancel "<repo>"` | Reconnect to / cancel an outstanding run. |
 | `handoff runs "<repo>"` | Past runs from manifests. |
-| `handoff archive "<repo>" [--superseded]` | Move the finished task to HANDOFF-ARCHIVE.md; `--superseded` closes an exhausted workflow. |
+| `handoff archive "<repo>" [--superseded]` | Move the finished task to HANDOFF-ARCHIVE.md; `--superseded` closes an exhausted workflow. Refuses a damaged heading structure or a plan that changed since approval. |
+| `handoff qa "<repo>" --status <APPROVED\|CHANGES REQUESTED> --file <path> [--append] [--json]` | A2A only (`kind: qa`). Replaces QA Feedback and sets Status. `--append` on APPROVED or CHANGES REQUESTED adds a note and leaves Status unchanged. Refuses while a run is outstanding, on a bad structure, or if Current Task would change. |
 | `handoff template refresh "<repo>" [--json]` | Replace the HANDOFF.md preamble from the installed template (`kind: template_refresh`). Everything from `## Current Task` on stays byte-for-byte. Prints "already current" when nothing differs. Refuses, without writing, when the heading is missing or duplicated or an A2A run is outstanding. |
 
 ## Executor and run mode

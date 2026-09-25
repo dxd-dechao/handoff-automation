@@ -7,9 +7,11 @@ import asyncio
 import json
 import os
 import signal
+import stat
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -76,14 +78,20 @@ from handoff_a2a.workflow import (
 from handoff_a2a.workspace import (
     GitWorkspace,
     HANDOFF_NAME,
+    HandoffStructureError,
     LOCK_DIRNAME,
     LOG_DIRNAME,
     WorkspaceBusy,
     WorkspaceError,
     approved_plan_hash,
+    handoff_structure,
     parse_handoff,
+    plan_changed_since_approval,
+    read_status,
+    render_qa,
     replace_status,
     submit_lock,
+    _current_task_without_status,
 )
 import httpx
 from google.protobuf.json_format import MessageToDict
@@ -684,6 +692,19 @@ def _prepare_request(
     return record, workflow, request
 
 
+def _delivered_copy(repo: Path, run_id: str, result: dict[str, Any] | None) -> dict[str, Any]:
+    """Copy the bytes the server evaluated. A missing copy is recorded and is not a failure."""
+    evidence = (result or {}).get("evidence_dir")
+    source = Path(str(evidence)) / "handoff-delivered.md" if evidence else None
+    if source is None or not source.is_file():
+        return {"delivered_handoff": None, "delivered_handoff_sha256": None}
+    data = source.read_bytes()
+    dest = repo / LOG_DIRNAME / f"{run_id}-delivered.md"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(data)
+    return {"delivered_handoff": str(dest), "delivered_handoff_sha256": snapshot_sha256(data)}
+
+
 def _set_ready_for_qa(repo: Path) -> None:
     path = repo / HANDOFF_NAME
     text = path.read_text(encoding="utf-8")
@@ -760,6 +781,7 @@ def _reconcile(
         snap = None
         fingerprint = None
     manifest = load_manifest(repo, run_id) or {}
+    delivered = _delivered_copy(repo, run_id, result)
     manifest.update(
         {
             "run_id": run_id,
@@ -794,6 +816,7 @@ def _reconcile(
                 "events": str(repo / LOG_DIRNAME / f"{run_id}-events.jsonl"),
             },
             **usage_fields(result),
+            **delivered,
         }
     )
     write_manifest(repo, manifest)
@@ -1055,6 +1078,7 @@ async def cmd_cancel_async(repo: Path) -> int:
 
 async def cmd_status_async(repo: Path, *, as_json: bool = False) -> int:
     markdown = (repo / HANDOFF_NAME).read_text(encoding="utf-8")
+    structure_problems = handoff_structure(markdown)
     document = parse_handoff(markdown)
     workflow = load_workflow(repo)
     outstanding = load_outstanding(repo)
@@ -1130,6 +1154,9 @@ async def cmd_status_async(repo: Path, *, as_json: bool = False) -> int:
         _next_action(markdown_status=document.status, execution=execution, workflow=workflow), mode, watcher, repo
     )
     code = 2 if execution in {"UNRESOLVED", "UNKNOWN", "RECOVERY"} else 0
+    if structure_problems:
+        structure_reason = "; ".join(structure_problems)
+        reason = f"{reason}; {structure_reason}" if reason else structure_reason
     if as_json:
         print_json(
             "status",
@@ -1174,7 +1201,7 @@ async def cmd_status_async(repo: Path, *, as_json: bool = False) -> int:
             print(f"last:   {last['outcome']} run {last.get('run_id')}{detail}")
             if last.get("executor_status_discarded"):
                 print(f"        executor-written Status {last['executor_status_discarded']!r} was not accepted")
-        if workflow.get("approved_plan_hash") and approved_plan_hash(markdown) != workflow.get("approved_plan_hash"):
+        if plan_changed_since_approval(markdown, workflow.get("approved_plan_hash")):
             print("plan:   changed since approval; re-approval required before execution")
         if workflow.get("parent_workflow_id"):
             print(f"parent: {workflow.get('parent_workflow_id')}")
@@ -1241,9 +1268,7 @@ def _workflow_json(workflow: dict[str, Any] | None, markdown: str) -> dict[str, 
         "last_outcome": {k: last.get(k) for k in ("outcome", "run_id", "reason", "executor_status_discarded")}
         if last.get("outcome")
         else None,
-        "plan_changed_since_approval": bool(
-            workflow.get("approved_plan_hash") and approved_plan_hash(markdown) != workflow.get("approved_plan_hash")
-        ),
+        "plan_changed_since_approval": plan_changed_since_approval(markdown, workflow.get("approved_plan_hash")),
         "parent_workflow_id": workflow.get("parent_workflow_id"),
     }
 
@@ -1389,6 +1414,76 @@ def cmd_preflight(repo: Path, *, as_json: bool) -> int:
     return 0 if preflight.ready else 1
 
 
+def _qa_message() -> str:
+    return "handoff qa is A2A only; on legacy, edit Status and QA Feedback in HANDOFF.md by hand"
+
+
+def cmd_qa(repo: Path, *, status: str, file: str, append: bool, as_json: bool) -> int:
+    try:
+        config, _settings = require_a2a_config(repo)
+    except ConfigError:
+        config = None
+    if config is None or config.transport != "a2a":
+        raise IntegrationError(_qa_message())
+    if status not in {"APPROVED", "CHANGES REQUESTED"}:
+        raise IntegrationError("--status must be APPROVED or CHANGES REQUESTED")
+    path = repo / HANDOFF_NAME
+    raw = path.read_bytes()
+    crlf = b"\r\n" in raw
+    text = raw.replace(b"\r\n", b"\n").decode("utf-8")
+    problems = handoff_structure(text)
+    if problems:
+        raise IntegrationError("HANDOFF.md structure is malformed: " + "; ".join(problems))
+    if load_outstanding(repo):
+        raise IntegrationError("cannot write QA while an execution is outstanding or not terminal")
+    current = read_status(text)
+    keep_status = append and current in {"APPROVED", "CHANGES REQUESTED"}
+    if current != READY_FOR_QA and not keep_status:
+        raise IntegrationError(
+            f"handoff qa requires Status {READY_FOR_QA} (found {current!r}); "
+            "--append is allowed on APPROVED or CHANGES REQUESTED"
+        )
+    qa_path = Path(file).expanduser()
+    if not qa_path.is_file():
+        raise IntegrationError(f"no QA file: {qa_path}")
+    payload = qa_path.read_bytes().replace(b"\r\n", b"\n").decode("utf-8")
+    try:
+        updated = render_qa(text, payload, status=None if keep_status else status, append=append)
+    except HandoffStructureError as exc:
+        raise IntegrationError("HANDOFF.md structure is malformed: " + str(exc)) from exc
+    result_problems = handoff_structure(updated)
+    if result_problems:
+        raise IntegrationError("refusing to write QA that would damage HANDOFF.md: " + "; ".join(result_problems))
+    if _current_task_without_status(text) != _current_task_without_status(updated):
+        raise IntegrationError("refusing to write QA that would change Current Task bytes other than Status")
+    if approved_plan_hash(text) != approved_plan_hash(updated):
+        raise IntegrationError("refusing to write QA that would change the approved plan hash")
+    logs = repo / LOG_DIRNAME
+    logs.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    backup = logs / f"HANDOFF.pre-qa-{stamp}.md"
+    backup.write_bytes(raw)
+    out = updated.replace("\n", "\r\n").encode("utf-8") if crlf else updated.encode("utf-8")
+    mode = stat.S_IMODE(path.stat().st_mode)
+    temporary = path.with_name(f".{path.name}.{stamp}.tmp")
+    temporary.write_bytes(out)
+    os.chmod(temporary, mode)
+    os.replace(temporary, path)
+    written = read_status(updated)
+    changed = "appended QA Feedback" if append else "replaced QA Feedback"
+    changed += "; Status unchanged" if keep_status else f"; Status set to {written}"
+    if as_json:
+        print_json(
+            "qa",
+            {"repo": str(repo), "changed": changed, "backup": str(backup), "status": written},
+        )
+    else:
+        print(changed)
+        print(f"backup: {backup}")
+        print(f"status: {written}")
+    return 0
+
+
 def cmd_archive(repo: Path, *, superseded: bool) -> int:
     config = None
     try:
@@ -1428,6 +1523,11 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument("--interval", type=float, default=30.0)
     archive = sub.add_parser("archive")
     archive.add_argument("--superseded", action="store_true")
+    qa = sub.add_parser("qa")
+    qa.add_argument("--status", required=True)
+    qa.add_argument("--file", required=True)
+    qa.add_argument("--append", action="store_true")
+    qa.add_argument("--json", action="store_true")
     return parser
 
 
@@ -1452,6 +1552,14 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(cmd_watch_async(repo, args.interval))
         if args.command == "archive":
             return cmd_archive(repo, superseded=bool(args.superseded))
+        if args.command == "qa":
+            return cmd_qa(
+                repo,
+                status=args.status,
+                file=args.file,
+                append=bool(args.append),
+                as_json=bool(args.json),
+            )
     except (ConfigError, WorkflowError, IntegrationError, ClientError, WorkspaceBusy, WorkspaceError, SetupError) as exc:
         code = getattr(exc, "exit_code", 1)
         if isinstance(exc, UnresolvedExecution):

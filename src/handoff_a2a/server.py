@@ -963,6 +963,8 @@ class CodingAgentExecutor(AgentExecutor):
                 argv=tuple(argv),
             )
             after_git = self.workspace.snapshot()
+            delivered = self.workspace.read_handoff_bytes()
+            (runtime.evidence / "handoff-delivered.md").write_bytes(delivered)
             after_doc, transition_ok, transition_reason, boundary_note = self.workspace.evaluate_transition(
                 runtime.before_doc
             )

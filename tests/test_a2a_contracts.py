@@ -201,7 +201,7 @@ def test_skill_has_valid_metadata_and_existing_cli_intents() -> None:
 SKILL_DIR = Path("skills/handoff-cli")
 CLI_VERBS = {
     "init", "skill", "models", "server", "model", "mode", "planner", "permissions", "status", "approve",
-    "execute", "watch", "resume", "cancel", "runs", "archive", "preflight", "template",
+    "execute", "watch", "resume", "cancel", "runs", "archive", "preflight", "template", "qa",
 }
 
 
@@ -221,7 +221,7 @@ def test_skill_mentions_only_real_cli_verbs_and_links_its_reference() -> None:
     bin_text = Path("bin/handoff").read_text(encoding="utf-8")
     for verb in CLI_VERBS:
         assert re.search(rf"^\s+(\S+ \| )*{verb}( \|[^)]*)?\)", bin_text, re.MULTILINE), verb
-    warning = "There is no `handoff plan`, `handoff qa`, or `handoff drive` subcommand"
+    warning = "There is no `handoff plan` or `handoff drive` subcommand"
     assert warning in skill
     for text in (skill.replace(warning, ""), reference):
         used = set(re.findall(r"`handoff ([a-z-]+)", text))
@@ -263,6 +263,10 @@ def test_skill_is_mode_aware_and_keeps_the_safety_rules() -> None:
     assert "explicit chat approval" in run and "never self-approve" in run
     assert "**drive:**" in run and "**watch:** do not run `handoff execute`" in run
     assert "watcher.running" in run and 'handoff watch "<repo>"' in run
+    assert (
+        "start it as a background process only if your host supports long-lived background commands and the human agrees"
+        in run
+    )
     plan = _section(skill, "## Plan")
     assert "**DRAFT**" in plan and "Do not dispatch a DRAFT" in plan
     drive = _section(skill, "## Drive loop")
@@ -387,6 +391,11 @@ def test_skill_covers_planner_rules_removed_from_the_template() -> None:
     assert "gh pr list" in skill
     assert "actual git diff" in skill
     assert "file, problem, what fixed looks like" in skill
+    qa = _section(skill, '## QA: "QA the handoff"')
+    assert 'handoff qa "<repo>"' in qa
+    assert "plan_changed_since_approval: false" in qa
+    assert "match headings at the start of a line" in qa
+    assert "never with hand edits or scripts" in qa
     assert "nits" in skill
     assert "documentation remains" in skill
     assert "three launched executions" in skill

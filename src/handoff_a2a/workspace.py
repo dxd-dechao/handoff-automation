@@ -24,6 +24,7 @@ WORKFLOW_ROOT_FILES = frozenset({HANDOFF_NAME, ARCHIVE_NAME, CONFIG_NAME})
 _STATUS_RE = re.compile(r"^\*\*Status:\*\*\s*(.*?)\s*$", re.MULTILINE)
 _BRANCH_RE = re.compile(r"^\*\*Branch:\*\*\s*(.*?)\s*$", re.MULTILINE)
 _HEADING_RE = re.compile(r"^## .+$", re.MULTILINE)
+_STRUCTURE_HEADINGS = ("## Current Task", "## Execution Notes", "## QA Feedback")
 
 
 class WorkspaceError(Exception):
@@ -32,6 +33,14 @@ class WorkspaceError(Exception):
     def __init__(self, reason: str):
         super().__init__(reason)
         self.reason = reason
+
+
+class HandoffStructureError(WorkspaceError):
+    """The file does not have exactly one of each required heading, in order."""
+
+    def __init__(self, problems: list[str]):
+        self.problems = list(problems)
+        super().__init__("; ".join(self.problems))
 
 
 class WorkspaceBusy(WorkspaceError):
@@ -71,6 +80,62 @@ def read_declared_branch(text: str) -> str:
     return value
 
 
+def _heading_counts(text: str) -> dict[str, list[int]]:
+    """Line indexes of the three required headings. A heading counts only as a whole line."""
+    found: dict[str, list[int]] = {heading: [] for heading in _STRUCTURE_HEADINGS}
+    for index, line in enumerate(text.splitlines()):
+        if line in found:
+            found[line].append(index)
+    return found
+
+
+def handoff_structure(text: str) -> list[str]:
+    """Problems with the three required headings. An empty list means well-formed.
+
+    Each heading is a whole line, so a CRLF file matches its LF form and a
+    heading quoted mid-line does not count. Other ``## `` headings inside
+    Current Task are rejected; ``###`` and deeper are not headings.
+    """
+    found = _heading_counts(text)
+    problems: list[str] = []
+    for heading in _STRUCTURE_HEADINGS:
+        count = len(found[heading])
+        if count == 0:
+            problems.append(f"`{heading}` is missing")
+        elif count != 1:
+            problems.append(f"`{heading}` appears {count} times")
+    if problems:
+        return problems
+    positions = [found[heading][0] for heading in _STRUCTURE_HEADINGS]
+    if positions != sorted(positions):
+        for later in range(1, len(_STRUCTURE_HEADINGS)):
+            for earlier in range(later):
+                if positions[later] < positions[earlier]:
+                    problems.append(
+                        f"`{_STRUCTURE_HEADINGS[later]}` appears before `{_STRUCTURE_HEADINGS[earlier]}`"
+                    )
+        return problems
+    lines = text.splitlines()
+    start = positions[0] + 1
+    end = positions[1]
+    for line in lines[start:end]:
+        if line.startswith("## ") and not line.startswith("###"):
+            problems.append(f"`{line}` is inside Current Task; use ### or deeper")
+    return problems
+
+
+def _require_unambiguous(text: str) -> None:
+    """Raise when a hash would have to pick the first or last of several headings."""
+    found = _heading_counts(text)
+    problems: list[str] = []
+    for heading in ("## Current Task", "## QA Feedback"):
+        count = len(found[heading])
+        if count > 1:
+            problems.append(f"`{heading}` appears {count} times")
+    if problems:
+        raise HandoffStructureError(problems)
+
+
 def _section(text: str, heading: str) -> str:
     matches = list(_HEADING_RE.finditer(text))
     for index, match in enumerate(matches):
@@ -85,6 +150,7 @@ def execution_notes(text: str) -> str:
 
 
 def _current_task_without_status(text: str) -> str:
+    _require_unambiguous(text)
     matches = list(_HEADING_RE.finditer(text))
     for index, match in enumerate(matches):
         heading = match.group(0).strip()
@@ -96,6 +162,7 @@ def _current_task_without_status(text: str) -> str:
 
 def planner_fingerprint(text: str) -> str:
     """Planner-owned plan + QA text, excluding Status and Execution Notes."""
+    _require_unambiguous(text)
     matches = list(_HEADING_RE.finditer(text))
     qa = ""
     for index, match in enumerate(matches):
@@ -115,6 +182,42 @@ def replace_status(text: str, status: str) -> str:
     if _STATUS_RE.search(text):
         return _STATUS_RE.sub(f"**Status:** {status}", text, count=1)
     return text
+
+
+def render_qa(text: str, qa_body: str, *, status: str | None, append: bool) -> str:
+    """Replace or append the QA Feedback body. ``status`` None leaves Status unchanged."""
+    lines = text.splitlines(keepends=True)
+    indexes = [index for index, line in enumerate(lines) if line.rstrip("\r\n") == "## QA Feedback"]
+    if len(indexes) != 1:
+        raise HandoffStructureError(handoff_structure(text) or ["`## QA Feedback` is missing"])
+    head = "".join(lines[: indexes[0] + 1])
+    body = "".join(lines[indexes[0] + 1 :])
+    payload = qa_body
+    if payload and not payload.endswith("\n"):
+        payload += "\n"
+    if append:
+        if body.endswith("\n\n"):
+            new_body = body + payload
+        elif body.endswith("\n"):
+            new_body = body + "\n" + payload
+        else:
+            new_body = (body + "\n\n" if body else "\n") + payload
+    else:
+        new_body = payload
+    updated = head + new_body
+    if status is not None:
+        updated = replace_status(updated, status)
+    return updated
+
+
+def plan_changed_since_approval(markdown: str, approved: str | None) -> bool:
+    """Same comparison ``status`` prints. Unreadable structure is not a hash mismatch."""
+    if not approved:
+        return False
+    try:
+        return approved_plan_hash(markdown) != approved
+    except HandoffStructureError:
+        return False
 
 
 # Generated by `handoff skill install` / `handoff init --planner <host>` and by
@@ -197,12 +300,16 @@ def section_diff(before: str, after: str, limit: int = 20) -> str:
 
 
 def parse_handoff(text: str) -> HandoffDocument:
+    try:
+        fingerprint = planner_fingerprint(text)
+    except HandoffStructureError:
+        fingerprint = ""
     return HandoffDocument(
         text=text,
         status=read_status(text),
         branch=read_declared_branch(text),
         execution_notes=execution_notes(text),
-        planner_fingerprint=planner_fingerprint(text),
+        planner_fingerprint=fingerprint,
     )
 
 
@@ -509,7 +616,18 @@ class GitWorkspace:
         whitespace, blank lines, or `---` separators. `approved_plan_hash` is
         not involved.
         """
-        after = parse_handoff(self.read_handoff_text())
+        text = self.read_handoff_text()
+        problems = handoff_structure(text)
+        if problems:
+            broken = HandoffDocument(
+                text=text,
+                status=read_status(text),
+                branch=read_declared_branch(text),
+                execution_notes=execution_notes(text),
+                planner_fingerprint="",
+            )
+            return broken, False, "; ".join(problems), None
+        after = parse_handoff(text)
         note = _boundary_note(before.planner_fingerprint, after.planner_fingerprint)
         plan_intact = note is not None or after.planner_fingerprint == before.planner_fingerprint
         if after.status == "APPROVED":

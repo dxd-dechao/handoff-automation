@@ -83,6 +83,11 @@ def build_parser() -> argparse.ArgumentParser:
     cli_watch.add_argument("--interval", type=float, default=30.0)
     cli_archive = cli_sub.add_parser("archive")
     cli_archive.add_argument("--superseded", action="store_true")
+    cli_qa = cli_sub.add_parser("qa")
+    cli_qa.add_argument("--status", required=True)
+    cli_qa.add_argument("--file", required=True)
+    cli_qa.add_argument("--append", action="store_true")
+    cli_qa.add_argument("--json", action="store_true")
 
     execute_cmd = sub.add_parser(
         "execute",
@@ -177,7 +182,11 @@ def _main(raw: list[str]) -> int:
             argv.extend(["--interval", str(getattr(args, "interval", 30.0))])
         if args.cli_command == "archive" and getattr(args, "superseded", False):
             argv.append("--superseded")
-        if getattr(args, "json", False) and args.cli_command in {"status", "execute", "resume", "preflight"}:
+        if args.cli_command == "qa":
+            argv.extend(["--status", args.status, "--file", args.file])
+            if args.append:
+                argv.append("--append")
+        if getattr(args, "json", False) and args.cli_command in {"status", "execute", "resume", "preflight", "qa"}:
             argv.append("--json")
         return integration_main(argv)
     if args.command == "execute":

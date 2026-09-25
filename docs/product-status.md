@@ -2,6 +2,8 @@
 
 Reviewed: **2026-09-24**. Checkout: `codex/a2a-executor-mvp`, commit `1e09ec58f4f059c9d7f3e01fe875eb01b99ce588`.
 
+**A11 update (2026-09-25, Executor self-report; independent Planner QA pending).** A delivery with a duplicated, missing, or reordered `## Current Task`, `## Execution Notes`, or `## QA Feedback` heading is rejected. `handoff qa` is the A2A way to write QA Feedback. `archive` refuses a damaged or changed plan. Each run saves the HANDOFF bytes the server evaluated. See [the A11 report](qa-a11-handoff-integrity.md).
+
 **A10 update (2026-09-25, Executor self-report; independent Planner QA pending).** The HANDOFF preamble is a short Executor contract. `handoff template refresh` replaces only that preamble. A sandboxed status probe of an outstanding run is `UNKNOWN`, not `UNRESOLVED`. See [the A10 report](qa-a10-slim-handoff-template.md).
 
 **A9 update (2026-09-25, Executor self-report; independent Planner QA pending).** Untracked Python bytecode is left out of the code fingerprint and the dirty-path list. Re-approving a changed plan records the current workspace as the new baseline when one already exists. A baseline recorded before this change that included bytecode still mismatches; revise Current Task and re-approve to recover. See [the A9 report](qa-a9-fingerprint-rebaseline.md).
@@ -174,7 +176,6 @@ Execution policy throughout: human approval followed by manual Executor launch; 
 
 ## Known follow-ups
 
-- (A8) A delivery that adds or duplicates a Planner-owned heading is not rejected; `planner_fingerprint` hashes only the last `## QA Feedback` section.
 - (A8) A redundant branch in `processes.process_start_identity`.
 - (A9) `approve` now needs a git checkout to compute the snapshot.
 - (A9) `approve` prints "rebaselined" even when the new snapshot equals the old one.
@@ -182,4 +183,3 @@ Execution policy throughout: human approval followed by manual Executor launch; 
 - (A10) `init` on an existing repo calls `mktemp` only to compare preambles, so a locked-down temp directory makes `init` fail. The comparison could be done without temp files.
 - (A10) The bash `template refresh` matches `## Current Task` with `grep -x`, so a CRLF file is refused as "no Current Task", while the Python init hint strips `\r`. The two paths disagree on CRLF files.
 - (A10) A refreshed `HANDOFF.md` takes the temp file's mode (0600).
-- (A10) The delivered `HANDOFF.md` is not saved with the run; only the dispatched request is. A bad Planner edit to Execution Notes can only be rebuilt from that request and the chat, and happened once during A10 QA.
