@@ -31,6 +31,18 @@ __all__ = [
 # CURSOR_* covers a Cursor Planner session that started or restarted the server.
 _STRIP_PREFIXES = ("ANTHROPIC_", "CLAUDE", "CURSOR_")
 
+# The Executor must never run the Planner skill or the handoff CLI (recursive
+# dispatch). Denied per launch rather than in .claude/settings.local.json,
+# which a Claude Code Planner in the same repository also reads. Deny beats
+# allow. bin/handoff's legacy executor passes the same list.
+EXECUTOR_DISALLOWED_TOOLS = (
+    "Bash(handoff:*)",
+    "Bash(handoff-a2a:*)",
+    "Bash(*/handoff:*)",
+    "Bash(*/handoff-a2a:*)",
+    "Skill(handoff-cli)",
+)
+
 
 @dataclass(frozen=True)
 class ClaudeAdapterConfig:
@@ -126,6 +138,8 @@ class ClaudeAdapter:
             "acceptEdits",
             "--model",
             self.config.model,
+            "--disallowedTools",
+            ",".join(EXECUTOR_DISALLOWED_TOOLS),
             "--output-format",
             "json",
         ]

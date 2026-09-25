@@ -39,9 +39,11 @@ from handoff_a2a.contracts import CODING_TASK_PROFILE
 from handoff_a2a.processes import (
     identity_matches,
     owned_from_record,
+    process_start_identity,
     start_owned,
     stop_owned,
 )
+from handoff_a2a.reporting import print_json, print_json_error
 from handoff_a2a.setup import (
     ManagedPaths,
     SetupError,
@@ -54,6 +56,7 @@ from handoff_a2a.setup import (
 from handoff_a2a.workspace import submit_lock
 
 PROCESS_NAME = "process.json"
+WATCHER_NAME = "watcher.json"
 FAILURE_NAME = "last-failure.json"
 START_TIMEOUT_S = 30.0
 STOP_GRACE_S = 10.0
@@ -164,6 +167,70 @@ def record_alive(record: dict[str, Any] | None, paths: ManagedPaths) -> bool:
     if not record or not record.get("pid"):
         return False
     return identity_matches(owned(record, paths))
+
+
+# ── watcher record ──────────────────────────────────────────────────────────
+#
+# `handoff watch` (A2A) records itself so status and the Planner skill can tell
+# whether a watcher is running. Same rule as the service record: a bare PID is
+# never trusted; the start identity must match the live process.
+
+
+def watcher_path(repo: Path) -> Path:
+    return ManagedPaths(repo).service_dir / WATCHER_NAME
+
+
+def _load_watcher(repo: Path) -> dict[str, Any] | None:
+    path = watcher_path(repo)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _watcher_alive(record: dict[str, Any], repo: Path) -> bool:
+    if not record.get("pid"):
+        return False
+    return identity_matches(
+        owned_from_record(pid=int(record["pid"]), pgid=0, start_identity=str(record.get("start_identity") or ""), cwd=repo)
+    )
+
+
+def watcher_state(repo: Path) -> dict[str, Any]:
+    record = _load_watcher(repo)
+    if record is None:
+        return {"running": False, "stale": False, "pid": None, "started_at": None}
+    alive = _watcher_alive(record, repo)
+    return {"running": alive, "stale": not alive, "pid": record.get("pid"), "started_at": record.get("started_at")}
+
+
+def claim_watcher(repo: Path, interval: float) -> dict[str, Any]:
+    """Record this process as the repository's watcher; refuse a second live one."""
+    existing = _load_watcher(repo)
+    if existing and _watcher_alive(existing, repo) and int(existing["pid"]) != os.getpid():
+        raise ServiceError(
+            f"a handoff watch is already running for this repository (pid {existing['pid']} since "
+            f"{existing.get('started_at')}); stop it first or keep using it",
+            exit_code=2,
+        )
+    record = {
+        "pid": os.getpid(),
+        "start_identity": process_start_identity(os.getpid()),
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "interval_s": interval,
+    }
+    watcher_path(repo).parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(watcher_path(repo), record)
+    return record
+
+
+def release_watcher(repo: Path, record: dict[str, Any]) -> None:
+    current = _load_watcher(repo)
+    if current and current.get("pid") == record["pid"] and current.get("start_identity") == record["start_identity"]:
+        watcher_path(repo).unlink(missing_ok=True)
 
 
 # ── probes ──────────────────────────────────────────────────────────────────
@@ -425,7 +492,7 @@ def set_port(managed: Managed, port: int) -> Managed:
     return load_managed(managed.paths.repo)
 
 
-def cmd_start(repo: Path, port: int | None) -> int:
+def cmd_start(repo: Path, port: int | None, as_json: bool = False) -> int:
     managed = load_managed(repo)
     with holding(service_lock(managed.paths), "service"):
         if port is not None and port != managed.port:
@@ -433,24 +500,64 @@ def cmd_start(repo: Path, port: int | None) -> int:
                 raise ServiceError("stop the running service before changing its port")
             managed = set_port(managed, port)
         state = start_locked(managed)
-    print_state(managed, state)
+    if as_json:
+        print_json("server-status", state_payload(managed, state))
+    else:
+        print_state(managed, state)
     return 0
 
 
-def cmd_stop(repo: Path) -> int:
+def cmd_stop(repo: Path, as_json: bool = False) -> int:
     managed = load_managed(repo)
     with holding(service_lock(managed.paths), "service"):
         with holding(submit_lock(managed.paths.repo), "submission"):
             outcome = stop_locked(managed, holding_submit=True)
-    print(f"service: {outcome}")
+    if as_json:
+        print_json("server-stop", {"repo": str(managed.paths.repo), "outcome": outcome})
+    else:
+        print(f"service: {outcome}")
     return 0
 
 
-def cmd_status(repo: Path) -> int:
+def cmd_status(repo: Path, as_json: bool = False) -> int:
     managed = load_managed(repo)
     state = inspect(managed)
-    print_state(managed, state)
+    if as_json:
+        print_json("server-status", state_payload(managed, state))
+    else:
+        print_state(managed, state)
     return 0 if state.verified or not state.running else 2
+
+
+def state_payload(managed: Managed, state: ServiceState) -> dict[str, Any]:
+    """`handoff server status --json` (no token or credential contents)."""
+    running = state.running
+    failure = None
+    path = managed.paths.service_dir / FAILURE_NAME
+    if path.is_file() and not state.verified:
+        with contextlib.suppress(OSError, json.JSONDecodeError):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            failure = {k: data.get(k) for k in ("event", "at", "provider", "model", "log")}
+    return {
+        "repo": str(managed.paths.repo),
+        "service": "running" if running else "stopped",
+        "verified": state.verified,
+        "endpoint": card_url(managed.port),
+        "port": managed.port,
+        "selected": {"provider": state.provider, "model": state.model, "generation": managed.generation},
+        "active": None
+        if not (running and state.card)
+        else {
+            "provider": state.card.get("executor_provider"),
+            "model": state.card.get("executor_model"),
+            "generation": state.card.get("config_generation"),
+        },
+        "pid": (state.record or {}).get("pid") if running else None,
+        "started_at": (state.record or {}).get("started_at") if running else None,
+        "log": (state.record or {}).get("log") if running else None,
+        "notes": list(state.detail),
+        "last_failure": failure,
+    }
 
 
 def print_state(managed: Managed, state: ServiceState) -> None:
@@ -476,6 +583,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("action", choices=("start", "status", "stop"))
     parser.add_argument("repo", nargs="?", default=".")
     parser.add_argument("--port", type=int)
+    parser.add_argument("--json", action="store_true")
     return parser
 
 
@@ -484,12 +592,14 @@ def main(argv: list[str] | None = None) -> int:
     repo = Path(args.repo).expanduser().resolve()
     try:
         if args.action == "start":
-            return cmd_start(repo, args.port)
+            return cmd_start(repo, args.port, args.json)
         if args.action == "stop":
             if args.port is not None:
                 raise ServiceError("--port applies to start only")
-            return cmd_stop(repo)
-        return cmd_status(repo)
+            return cmd_stop(repo, args.json)
+        return cmd_status(repo, args.json)
     except SetupError as exc:
+        if args.json:
+            return print_json_error(f"server-{args.action}", str(exc), exc.exit_code)
         print(f"handoff: {exc}", file=sys.stderr)
         return exc.exit_code

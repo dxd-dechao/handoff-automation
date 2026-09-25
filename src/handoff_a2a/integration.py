@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import os
+import signal
 import sys
 import time
 import uuid
@@ -86,13 +87,17 @@ from handoff_a2a.workspace import (
 import httpx
 from google.protobuf.json_format import MessageToDict
 
+from handoff_a2a.reporting import print_json, print_json_error
 from handoff_a2a.selection import (
     SelectionError,
     apply_pending as apply_pending_selection,
+    describe as managed_describe,
     expected_card as managed_expected_card,
     is_managed,
+    run_mode,
     status_lines as managed_status_lines,
 )
+from handoff_a2a.service import claim_watcher, load_managed, release_watcher, watcher_state
 from handoff_a2a.setup import SetupError
 
 
@@ -791,7 +796,7 @@ async def cmd_cancel_async(repo: Path) -> int:
     return 1
 
 
-async def cmd_status_async(repo: Path) -> int:
+async def cmd_status_async(repo: Path, *, as_json: bool = False) -> int:
     markdown = (repo / HANDOFF_NAME).read_text(encoding="utf-8")
     document = parse_handoff(markdown)
     workflow = load_workflow(repo)
@@ -856,6 +861,35 @@ async def cmd_status_async(repo: Path) -> int:
         turn = "PLANNER"
     if execution in {"WORKING", "SUBMITTED", "UNRESOLVED", "RECOVERY"}:
         turn = "WAIT" if execution != "RECOVERY" else "RECOVERY"
+    transport, managed, mode = run_mode(repo)
+    watcher = watcher_state(repo)
+    next_action = _mode_next(
+        _next_action(markdown_status=document.status, execution=execution, workflow=workflow), mode, watcher, repo
+    )
+    code = 2 if execution in {"UNRESOLVED", "RECOVERY"} else 0
+    if as_json:
+        print_json(
+            "status",
+            {
+                "repo": str(repo),
+                "transport": transport,
+                "managed": managed,
+                "status": document.status,
+                "turn": turn,
+                "goal": _goal(markdown),
+                "execution": execution,
+                "workflow": _workflow_json(workflow, markdown),
+                "mode": mode,
+                "watcher": watcher,
+                "executor": _executor_json(repo) if managed else None,
+                "run": None
+                if not outstanding
+                else {"run_id": outstanding.get("run_id"), "task_id": outstanding.get("task_id")},
+                "reason": reason,
+                "next": next_action,
+            },
+        )
+        return code
     print(f"repo:   {repo}")
     print(f"status: {document.status}")
     print(f"turn:   {turn}")
@@ -879,6 +913,14 @@ async def cmd_status_async(repo: Path) -> int:
             print("plan:   changed since approval; re-approval required before execution")
         if workflow.get("parent_workflow_id"):
             print(f"parent: {workflow.get('parent_workflow_id')}")
+    if managed:
+        print(f"mode:   {mode or 'not set'}")
+        if watcher["running"]:
+            print(f"watcher: running, pid {watcher['pid']} since {watcher['started_at']}")
+        elif watcher["stale"]:
+            print("watcher: not running (stale watcher record ignored)")
+        elif mode == "watch":
+            print("watcher: not running")
     for line in managed_status_lines(repo):
         print(line)
     if outstanding:
@@ -886,10 +928,52 @@ async def cmd_status_async(repo: Path) -> int:
         print(f"task:   {outstanding.get('task_id') or '(ack unknown; resume to retransmit)'}")
     if reason:
         print(f"reason: {reason}")
-    print(f"next:   {_next_action(markdown_status=document.status, execution=execution, workflow=workflow)}")
-    if execution in {"UNRESOLVED", "RECOVERY", "WORKING"}:
-        return 2 if execution != "WORKING" else 0
-    return 0
+    print(f"next:   {next_action}")
+    return code
+
+
+def _mode_next(action: str, mode: str | None, watcher: dict[str, Any], repo: Path) -> str:
+    """Run-mode-aware guidance; unchanged when no mode is recorded."""
+    if mode == "drive" and action == "handoff execute":
+        return "handoff execute (drive: the Planner runs execute, then QA)"
+    if mode == "watch" and action == "handoff execute":
+        if watcher.get("running"):
+            return "handoff watch dispatches (watch mode); the Planner does QA"
+        return f'start the watcher: handoff watch "{repo}" (watch mode; the Planner does QA)'
+    if mode == "watch" and action == "Planner QA":
+        return "Planner QA (watch dispatches; the Planner does QA)"
+    if mode == "drive" and action == "Planner QA":
+        return "Planner QA (drive: the Planner runs execute, then QA)"
+    return action
+
+
+def _workflow_json(workflow: dict[str, Any] | None, markdown: str) -> dict[str, Any] | None:
+    if not workflow:
+        return None
+    last = workflow.get("last_outcome") or {}
+    return {
+        "workflow_id": workflow.get("workflow_id"),
+        "rounds_used": workflow.get("rounds_used"),
+        "max_rounds": workflow.get("max_rounds"),
+        "reserved_execution_id": workflow.get("reserved_execution_id"),
+        "dispatch_hold": bool(workflow.get("dispatch_hold")),
+        "last_outcome": {k: last.get(k) for k in ("outcome", "run_id", "reason", "executor_status_discarded")}
+        if last.get("outcome")
+        else None,
+        "plan_changed_since_approval": bool(
+            workflow.get("approved_plan_hash") and approved_plan_hash(markdown) != workflow.get("approved_plan_hash")
+        ),
+        "parent_workflow_id": workflow.get("parent_workflow_id"),
+    }
+
+
+def _executor_json(repo: Path) -> dict[str, Any] | None:
+    try:
+        described = managed_describe(load_managed(repo))
+    except (SetupError, OSError) as exc:
+        return {"error": str(exc)}
+    described.pop("repo", None)
+    return described
 
 
 # Refusals watch reports and keeps observing through (e.g. config switched mid-watch).
@@ -910,13 +994,41 @@ def _idle_selection_tick(repo: Path, last_message: str | None) -> str | None:
     return None
 
 
+def _drive_refusal(repo: Path) -> str:
+    return (
+        "run mode is drive: the Planner runs handoff execute and QA itself, so handoff watch does not start. "
+        f'To use a watcher instead: handoff mode "{repo}" watch'
+    )
+
+
+def _terminate(_signum: int, _frame: Any) -> None:
+    raise SystemExit(143)
+
+
 async def cmd_watch_async(repo: Path, interval: float) -> int:
+    if run_mode(repo)[2] == "drive":
+        raise IntegrationError(_drive_refusal(repo), exit_code=2)
+    record = claim_watcher(repo, interval)
+    previous = signal.signal(signal.SIGTERM, _terminate)
+    try:
+        return await _watch_loop(repo, interval)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+        release_watcher(repo, record)
+
+
+async def _watch_loop(repo: Path, interval: float) -> int:
     last_status = ""
     last_notified = None
     last_deferred: str | None = None
     print(f"watching {repo}/HANDOFF.md every {int(interval)}s (Ctrl-C to stop)")
     while True:
         outstanding = load_outstanding(repo)
+        if not outstanding and run_mode(repo)[2] == "drive":
+            # Poll boundary with nothing in flight: the switch takes effect
+            # here, after any run this watcher dispatched was reconciled.
+            print(f"run mode changed to drive; handoff watch stops (no run in flight). To resume watching: handoff mode \"{repo}\" watch")
+            return 0
         if not outstanding:
             last_deferred = _idle_selection_tick(repo, last_deferred) or last_deferred
         if outstanding:
@@ -1008,7 +1120,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("execute")
     sub.add_parser("resume")
     sub.add_parser("cancel")
-    sub.add_parser("status")
+    status = sub.add_parser("status")
+    status.add_argument("--json", action="store_true")
     watch = sub.add_parser("watch")
     watch.add_argument("--interval", type=float, default=30.0)
     archive = sub.add_parser("archive")
@@ -1030,7 +1143,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "cancel":
             return asyncio.run(cmd_cancel_async(repo))
         if args.command == "status":
-            return asyncio.run(cmd_status_async(repo))
+            return asyncio.run(cmd_status_async(repo, as_json=bool(args.json)))
         if args.command == "watch":
             return asyncio.run(cmd_watch_async(repo, args.interval))
         if args.command == "archive":
@@ -1039,6 +1152,8 @@ def main(argv: list[str] | None = None) -> int:
         code = getattr(exc, "exit_code", 1)
         if isinstance(exc, UnresolvedExecution):
             code = 2
+        if getattr(args, "json", False):
+            return print_json_error(args.command, str(exc), code)
         return _die(str(exc), code)
     except KeyboardInterrupt:
         return 130

@@ -1,178 +1,193 @@
 ---
 name: handoff-cli
 description: >
-  Invokes the existing handoff CLI for the two-agent HANDOFF.md workflow.
-  Use when the user asks to plan, execute, QA, drive, or check status of a
-  handoff; when they say "plan in the handoff", "execute the handoff",
-  "QA the handoff", "drive the handoff", or "handoff status"; and when they
-  explicitly select $handoff-cli or /handoff-cli. Covers handoff execute,
-  status, runs, watch, archive, init, models, model, server, planner,
-  permissions, approve, resume, and cancel. Works from Cursor, Codex, or
-  Claude as the Planner. Does not call Claude, Codex, Cursor, or A2A directly.
+  Runs the handoff CLI for the two-agent HANDOFF.md workflow on the human's
+  behalf, so they talk to their Planner instead of typing commands. Use when
+  the user asks to set up handoff in a repo, plan / approve / execute / QA /
+  drive a handoff, check handoff status, switch the Executor model or
+  provider, switch the run mode (drive or watch), cancel or resume a run; or
+  says "plan in the handoff", "QA the handoff", "drive the handoff",
+  "handoff status", $handoff-cli or /handoff-cli. Works from Cursor, Codex,
+  or Claude Code as the Planner. Never calls Claude, Codex, Cursor, or A2A
+  directly.
 ---
 
 # handoff-cli
 
-Instruction-only skill for an **external Planner**. It calls the existing
-`handoff` CLI. There is no `handoff plan`, `handoff qa`, or `handoff drive`
-subcommand — do not invent them.
+You are the **Planner**. You run the existing `handoff` CLI for the human and
+report back in chat; the human should not need to type handoff commands
+except provider logins and, in watch mode, one `handoff watch` terminal.
+There is no `handoff plan`, `handoff qa`, or `handoff drive` subcommand; do
+not invent them. Commands, flags, and `--json` fields are in
+[reference.md](reference.md). Read state with `--json` and parse it; do not
+scrape human text. Never hand-edit `.handoff-config.json`,
+`.handoff-logs/*.json`, or other generated files.
 
-These are skill intents, not extra CLI verbs: plan, execute, QA, drive, status.
+**Target:** the repository the user named, else the unambiguous current
+project (ask only if ambiguous; never this skill's own folder). Use `handoff`
+on `PATH` or `<checkout>/bin/handoff` the user named. Keep any `HANDOFF_*`
+environment already set. Quote paths.
 
-## Resolve the target
+## Setup: "set up handoff"
 
-1. Use the repository the user named. If they did not name one, use the
-   unambiguous current project. Ask only if the target is ambiguous.
-2. Do **not** treat this skill's install directory as the target repo.
-3. Do not hardcode a developer's home directory.
-4. Find the `handoff` executable on `PATH`, or use an explicit checkout the
-   user named (`<checkout>/bin/handoff`). Preserve any `HANDOFF_CLAUDE_BIN`,
-   `HANDOFF_CODEX_BIN`, `HANDOFF_CURSOR_BIN`, `HANDOFF_MODEL`,
-   `HANDOFF_POLL_INTERVAL`, or `HANDOFF_A2A_BIN` already configured in the
-   environment; do not override them unless the user asked.
-5. Quote paths that contain spaces.
+1. **Check what exists first:** `handoff status "<repo>" --json` (an `error`
+   saying there is no HANDOFF.md means not set up), then for managed repos
+   `handoff model "<repo>" --json`, and `handoff skill status "<repo>" --json`.
+   Ask only for what is missing. A managed repo with `mode: null` gets only
+   the run-mode question.
+2. **Discover options:** `handoff models "<repo>" --provider <p> --json` for
+   claude, codex, and cursor. Only an `error` means that CLI is missing or
+   not logged in (`models_listed: false` just means it cannot list models,
+   as for Claude); say which ones are ready.
+3. **Ask every open question in one round.** Use the host's structured
+   question tool (Cursor `AskQuestion`) when available, otherwise a short
+   numbered list:
+   - **Transport:** "Use managed A2A (recommended)? Yes/No", with Yes
+     preselected. One sentence: A2A allows a Claude/Codex/Cursor Executor,
+     model switching, a saved run mode, and resumable runs; it needs
+     Python/uv and a local service.
+   - **Executor provider:** claude, codex, or cursor.
+   - **Executor model:** the real IDs from `models --json`. Claude cannot
+     list models: ask for an explicit provider-native ID.
+   - **Reasoning effort:** only for codex, optional.
+   - **Run mode:** drive = you run execute and QA in this chat; watch = a
+     `handoff watch` terminal dispatches and you do QA. You may mark a
+     recommendation, but the human chooses.
+   - **Planner skill location:** only if `skill status` shows this host's
+     copy `absent` or `outdated` (project, or `--user` if they ask).
+   Never choose a transport, provider, model, or mode yourself. Silence or
+   an unrelated answer is not agreement; re-ask only the unanswered item.
+   **The questions end your turn.** If the question tool returns no answers
+   or is unavailable (for example a non-interactive session), write the
+   questions in your reply and stop. Run `init`, `mode`, or `server start`
+   only after a later human message answers them; never fill a gap with a
+   default or a "recommended" choice.
+4. **Echo one line** ("A2A, cursor / <model>, watch mode") and run:
+   - Fresh A2A: `handoff init "<repo>" --transport a2a --executor <p>
+     --model "<id>" --mode <drive|watch> [--reasoning-effort <e>]
+     [--planner <host>]`, then `handoff server start "<repo>"`, then
+     `handoff server status "<repo>" --json`.
+   - Managed, mode missing: `handoff mode "<repo>" <drive|watch>`, then
+     `server start` / `server status --json` as above.
+   - Human declined A2A: say in one line that legacy runs Claude Code
+     directly, supports only Claude as Executor, has no managed service,
+     model switching, or saved run mode, and takes its model from
+     `HANDOFF_MODEL`. Run `handoff init "<repo>" --transport legacy
+     [--planner <host>]`; no provider/model/effort questions, no
+     `server start`. Still ask drive or watch; follow it for this
+     conversation, say it is not saved, and give `handoff watch "<repo>"` for
+     watch.
+   - Existing legacy repo (`transport: legacy`) or unmanaged A2A endpoint
+     (`managed: false`): ask "Migrate to managed A2A (recommended)?". Yes:
+     the fresh A2A `init` above (the CLI refuses while a run is unresolved;
+     then report the reason and use Status and recovery). No: change nothing.
+5. **Not logged in:** stop and give the `login_command` from `models --json`
+   for the human to run in their own terminal. Logins are interactive and
+   theirs.
+6. **Blocked by your sandbox:** if `server start` fails on port binding,
+   process, or permission denial from your shell, say so, request the host
+   permission, or give the single command for their terminal. It is not a
+   product failure.
+7. **Report:** provider / model, run mode, service `verified`, and the next
+   thing to say ("plan <task> in the handoff"). In watch mode, if `watcher`
+   is not running, give `handoff watch "<repo>"` for a terminal they keep open.
 
-Read-only inspection: `handoff status "<repo>"`, `handoff runs "<repo>"`,
-`handoff model "<repo>"`, and `handoff server status "<repo>"`.
-After a timeout or unresolved execution, inspect `handoff status` / `handoff resume`
-before starting QA. Do not start QA from an early Markdown `READY FOR QA`
-while execution is still WAIT/WORKING.
+## Plan: "plan <task> in the handoff"
 
-## Setup and Executor selection
+Inspect the repository, open pull requests (`gh pr list`, including drafts),
+and `HANDOFF.md`. If a finished previous task is still there, run
+`handoff archive "<repo>"` first. Write a self-contained Current Task as
+**DRAFT** and stop for human review. Do not dispatch a DRAFT.
 
-Configuration is generated by the CLI; never hand-write or hand-edit
-`.handoff-config.json` or `.handoff-logs/server.json`.
+## Approve and run
 
-- First-time setup: `handoff init "<repo>"` asks on a terminal. From a
-  Planner shell, use the flags the human chose:
-  `handoff init "<repo>" --transport a2a --executor <claude|codex|cursor> --model "<id>" [--planner cursor]`.
-  List real IDs first with `handoff models "<repo>" --provider <name>`; never
-  guess a model ID or pick a paid model the human did not choose.
-- `handoff server start "<repo>"` starts the local Executor service;
-  `handoff server status` / `stop` inspect and stop it (stop refuses while a
-  run is unresolved).
-- `handoff model "<repo>"` shows the selected, active, and pending Executor.
-  Between executions, `handoff model "<repo>" --provider <name> --model "<id>"`
-  switches it (the service restarts and is verified). While a worker runs, add
-  `--after-current`: the change applies once before the next worker starts.
-  A switch keeps the workflow, approval, rounds, hold, and Git state; it is
-  not approval and does not move an in-progress run. To interrupt a run, use
-  `handoff cancel`, review, then execute again.
-- Planner and Executor are independent: the model you (the Planner) run on is
-  chosen in your own host and never changes the Executor selection.
+Only after explicit chat approval of this plan (honor approval already given
+in this conversation; never self-approve; `READY FOR EXECUTION` in the file
+is not approval): `handoff approve "<repo>"`. Then read `mode` from
+`handoff status "<repo>" --json`:
 
-## Plan
+- **drive:** follow the Drive loop.
+- **watch:** do not run `handoff execute`. If `watcher.running` is true, say
+  the watcher will dispatch and ask the human to return with "QA the
+  handoff" when it reports READY FOR QA (or poll `status --json` about once a
+  minute if your host allows). If not running, give `handoff watch "<repo>"`
+  for their terminal; start it as a background process only if your host
+  supports long-lived background commands and the human agrees.
+- **null** (older setup or legacy): ask drive or watch; set it with
+  `handoff mode` on managed repos.
 
-Inspect the target repository, open pull requests (`gh pr list`, including
-drafts), and the current `HANDOFF.md`. Draft a self-contained Current Task.
+## Drive loop
 
-- Write the task as **DRAFT** and stop for human review.
-- Do **not** dispatch an unapproved draft (`handoff execute` or watch).
-- If a finished previous task is still in the file, `handoff archive "<repo>"`
-  first, then write the new plan.
-- After explicit chat approval, run `handoff approve "<repo>"`. Honor approval
-  already given in this conversation; do not ask for the same approval again.
-  Editing DRAFT to READY FOR EXECUTION by hand is not an A2A approval receipt.
+1. `handoff execute "<repo>"`. If your shell times out, poll
+   `handoff status "<repo>" --json` about once a minute; use
+   `handoff resume "<repo>"` for an unresolved run. Never start a second one.
+2. QA (below) once `execution` is terminal. Never QA while it is WORKING,
+   SUBMITTED, or UNRESOLVED, or from an early Markdown READY FOR QA.
+3. On CHANGES REQUESTED, execute again.
+4. After three launched executions without approval, stop dispatching.
+   Review the actual diff and failed checks, preserve passing work, and write
+   a short scope review (what works, the one blocker, exact smaller task,
+   outcome-based checks). If code work remains, `handoff archive "<repo>"
+   --superseded` and draft the smaller successor as DRAFT for human approval.
+   Do not reset the workflow or lower the bar.
+5. On APPROVED, stop. Merge and push are the human's.
 
-## Execute
+## QA: "QA the handoff"
 
-Honor approval **already given** in this conversation for the current reviewed
-plan. Do not ask for the same approval again.
+Review the **actual git diff**, not Execution Notes. Run the checks the task
+lists (or the project's ordinary test/lint commands). Block on reproducible
+failures, materially wrong code, a broken legacy path, or a practical safety
+regression; not on naming, formatting, or doc wording. Write concrete
+CHANGES REQUESTED (file, problem, what fixed looks like) or APPROVED. Do not
+implement runtime, test, or behavior fixes as Planner. If only
+documentation remains, fix it yourself, verify it, record files and checks in
+QA Feedback, and approve without another Executor run.
 
-- `READY FOR EXECUTION` / `CHANGES REQUESTED` in the file is **not** evidence
-  of chat approval. Activate an eligible status only after that approval
-  exists for this plan (`handoff approve` in A2A mode).
-- Then invoke `handoff execute "<repo>"`.
-- If execute returns unresolved/timeout, use `handoff status` and
-  `handoff resume "<repo>"`. Do not start another execution.
-- `handoff cancel "<repo>"` requests cancellation of the outstanding run. A
-  canceled run is a failed delivery, not QA success.
-- An outstanding run stays tied to its saved endpoint and credential even if
-  `.handoff-config.json` is later switched or removed; `status`, `resume`, and
-  `cancel` still reach it. Never edit the config to "clear" a run.
-- Do not add extra prompt text. The CLI uses the fixed phrase
-  `execute the handoff`.
+## Change the Executor: "switch the Executor to <model>"
 
-## QA
+Use the human's exact provider and model ID (list with `models --json`; never
+pick one). Between runs: `handoff model "<repo>" --provider <p> --model
+"<id>" --json` (the service restarts and is verified). While a run is in
+flight: add `--after-current`. A switch keeps the workflow, approval, rounds,
+hold, and Git state; it is not approval. Your own Planner model is chosen in
+your host and never changes the Executor.
 
-Inspect **actual git changes**, not Execution Notes. Run the acceptance checks
-listed in the current handoff (or the project's ordinary test/lint commands).
+## Change the run mode: "switch to watch/drive mode"
 
-Practical bar: block on a reproducible failure in a supported workflow,
-materially incorrect code, a broken legacy path, or a practical safety
-regression. Do not block on naming, formatting, speculative edges, or exact
-documentation wording.
+`handoff mode "<repo>" <drive|watch> --json`. Nothing else changes. Switching
+to drive stops a running watcher after its current run. Switching to watch:
+give `handoff watch "<repo>"` unless `watcher.running`.
 
-Write concrete `CHANGES REQUESTED` (file, problem, what fixed looks like) or
-`APPROVED`. Do **not** implement runtime/test/behavior fixes as Planner unless
-the remaining work is documentation-only (see below). Merge/push remain a
-human gate.
+## Status and recovery
 
-If only documentation remains, edit those docs directly, verify factual and
-runnable accuracy, record the files and checks in QA Feedback, and approve if
-functional criteria already pass. Do not spend another Executor run on
-documentation cleanup. This does not cover disguising runtime, tests,
-permissions, or behavior-changing skill/template edits as documentation-only.
+`handoff status "<repo>" --json` (plus `handoff runs "<repo>"` for history).
+Treat Markdown `status` and `execution` separately; follow `next`. Do not
+launch a worker from a status request.
 
-## Drive
-
-Keep the same Planner for execution and QA. After the plan is approved in
-chat (starting drive does **not** silently approve a newly generated plan):
-
-1. `handoff approve "<repo>"` then `handoff execute "<repo>"` (or poll
-   `handoff status` / `handoff resume` if the shell times out)
-2. QA as above. Do not QA while status shows WAIT/WORKING.
-3. On `CHANGES REQUESTED`, execute again
-4. After three launched executions without approval, stop dispatching. Review
-   the actual diff and failed checks, preserve passing work, and write a short
-   scope review: what already works, the one important blocker, exact
-   files/behavior for a smaller task, and a small set of outcome-based checks.
-   If code work remains, `handoff archive "<repo>" --superseded` and draft the
-   constrained successor as DRAFT for human approval and manual Executor
-   launch. Do not reset the exhausted workflow or silently lower the bar.
-5. On `APPROVED`, stop. Merging is the human's
-
-## Status
-
-Use `handoff status "<repo>"` and, when relevant, `handoff runs "<repo>"`.
-Treat Markdown status and execution state separately. Do not launch a worker.
-Do not announce QA readiness from Markdown alone.
-
-After a failed or canceled A2A delivery, status shows a `last:` line and
-routes to Planner review, not QA. The Executor-written Status is discarded
-and the submitted one restored. Review the reason and the actual diff, then
-write a correction (and run `handoff execute` explicitly) or a scope review.
-Watch will not retry it.
+- Unresolved or timed-out run: `handoff resume "<repo>"`; to stop it,
+  `handoff cancel "<repo>"` on the human's request. A canceled run is a failed
+  delivery, not QA success.
+- After a failed or canceled delivery, `workflow.dispatch_hold` is true and
+  `turn` is PLANNER: review the reason and diff, then write a correction or a
+  scope review. With human approval, an explicit `handoff execute` is the only
+  way past the hold (also in watch mode); watch never retries it.
+- An outstanding run stays tied to its saved endpoint even if the config
+  changes; never edit files to "clear" it.
 
 ## Boundaries
 
-- Provider selection stays in CLI configuration. This skill never calls
-  Claude, Codex, Cursor, or A2A itself. Changing the Executor (for example,
-  Cursor to Codex) is `handoff model` on the human's instruction, never an
-  edit of generated JSON. The steps above do not change.
+- Approval is the human's, in chat. Merge, push, and PRs are the human's.
 - A headless Executor (Claude, Codex, or Cursor) that received `execute the
-  handoff` must implement its assigned HANDOFF directly. It must **not** run
-  this skill, Planner dispatch, or recursively invoke `handoff execute`,
+  handoff` must implement its HANDOFF directly. It must **not** run this
+  skill, Planner dispatch, or recursively invoke `handoff execute`,
   `handoff watch`, or any other agent.
-- Do not install this skill globally or change skillshare/agent configuration
-  unless the user asked.
+- The CLI sends the fixed phrase `execute the handoff`; add no prompt text.
+- Install this skill only where the human asked (`handoff skill install`;
+  `--user` only on request). Do not edit skillshare or other agent config.
 
 ## Cursor as Planner
 
-- Editor: choose the Planner model in the chat model picker, use Agent mode
-  (Plan/Ask modes are read-only and cannot write the DRAFT), and type
-  `/handoff-cli` followed by the request. Skill discovery is visible under
-  Customize > Skills.
-- CLI: `handoff planner "<repo>" --provider cursor --model "<id>"` opens an
-  interactive session in the repo; type `/handoff-cli` there. The launcher
-  never approves, dispatches, or changes the Executor.
-- Stay in the same session for QA when you can; the Executor never shares it.
-
-## Install (users)
-
-Keep this folder as the source. `handoff init "<repo>" --planner cursor`
-copies it into the project's `.cursor/skills/handoff-cli` (git-excluded; an
-unrelated skill of the same name is never overwritten). For other hosts, copy
-or symlink `skills/handoff-cli` into a Planner skill directory the host
-searches. Official skill discovery guidance: https://cursor.com/docs/skills
-and https://learn.chatgpt.com/docs/build-skills
+Editor: pick the Planner model in the chat model picker, use Agent mode (Plan
+and Ask modes cannot write the DRAFT), and type `/handoff-cli` with the
+request. CLI: `handoff planner "<repo>" --provider cursor --model "<id>"`
+opens an interactive session; type `/handoff-cli` there.

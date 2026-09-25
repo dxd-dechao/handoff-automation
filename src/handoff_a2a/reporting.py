@@ -78,3 +78,25 @@ def load_manifest(repo: Path, run_id: str) -> dict[str, Any] | None:
         return None
     data = json.loads(path.read_text(encoding="utf-8"))
     return data if isinstance(data, dict) else None
+
+
+# ── machine-readable CLI output (`--json`) ─────────────────────────────────
+#
+# One JSON object on stdout per command, for the Planner skill. Human text
+# output is separate and unchanged. Never put tokens, credential contents, or
+# provider auth output in these objects.
+
+CLI_OUTPUT_SCHEMA = "urn:handoff-automation:cli-output:v1"
+
+
+def cli_output(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return {"schema": CLI_OUTPUT_SCHEMA, "kind": kind, **payload}
+
+
+def print_json(kind: str, payload: dict[str, Any]) -> None:
+    print(json.dumps(cli_output(kind, payload), indent=2, default=str))
+
+
+def print_json_error(kind: str, message: str, exit_code: int = 1) -> int:
+    print(json.dumps(cli_output(kind, {"error": message}), indent=2))
+    return exit_code

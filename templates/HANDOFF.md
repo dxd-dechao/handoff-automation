@@ -56,9 +56,14 @@ The workflow is a loop over one task at a time:
 
 ### Drive mode (PLANNER runs the loop itself)
 
+The default entry point is the `handoff-cli` Planner skill: the human talks
+to PLANNER, and PLANNER runs the `handoff` CLI. The run mode (drive or watch)
+is recorded by the CLI (`handoff mode`) and shown by `handoff status`; in
+watch mode a `handoff watch` process dispatches and PLANNER does QA.
+
 When the human says **"drive the handoff"** (e.g. "plan X in the handoff and
-drive it"), PLANNER replaces the human courier by running the `handoff` CLI
-from its own shell tool:
+drive it"), or the run mode is drive, PLANNER replaces the human courier by
+running the `handoff` CLI from its own shell tool:
 
 1. If the file holds a finished previous task, run `handoff archive`. Write
    the plan as **DRAFT**, then **stop and ask the human for approval in chat**.

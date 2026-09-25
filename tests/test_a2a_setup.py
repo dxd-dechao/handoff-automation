@@ -259,7 +259,7 @@ def test_tty_guided_init_asks_only_real_choices(tmp_path: Path) -> None:
 
     proc = subprocess.run(
         [sys.executable, "-m", "handoff_a2a", "setup", str(repo), "--interactive"],
-        input="cursor\n2\ncursor\n",
+        input="cursor\n2\nwatch\ncursor\n",
         capture_output=True,
         text=True,
         env=env,
@@ -269,3 +269,5 @@ def test_tty_guided_init_asks_only_real_choices(tmp_path: Path) -> None:
     raw = json.loads((repo / ".handoff-logs" / "server.json").read_text())
     assert raw["cursor"]["model"] == "other-model"  # list entry 2, chosen explicitly
     assert (repo / ".cursor" / "skills" / "handoff-cli").is_dir()
+    assert "Run mode [drive/watch]" in proc.stdout
+    assert load_config(repo).managed.run_mode == "watch"

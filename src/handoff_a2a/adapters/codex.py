@@ -17,7 +17,9 @@ Verified against codex-cli 0.156.0 (`codex exec --help`, `codex sandbox`):
   `codex debug prompt-input`). `--ignore-user-config` does not cover them, and
   in the first live check an operator skill whose description matched
   "handoff" hijacked the ritual prompt. Target-repo skills (`.agents/skills`
-  in the workspace) and Codex's bundled system skills stay available.
+  in the workspace) and Codex's bundled system skills stay available, except
+  the handoff Planner skill (`.agents/skills/handoff-cli`, installed by
+  `handoff skill install --host codex`), which is disabled the same way.
 - HANDOFF.md is git-excluded by `handoff init`, so Codex's ignore-aware file
   search (`rg --files`) does not see it; in the live check Codex then guessed a
   task from the code. The validated handoff snapshot is therefore delivered as
@@ -77,6 +79,12 @@ def user_skill_files(env: Mapping[str, str] | None = None) -> list[Path]:
             if skill.is_file():
                 found.append(skill.resolve())
     return found
+
+
+def planner_skill_files(workspace: Path) -> list[Path]:
+    """The project-local handoff Planner skill; the Executor must not load it."""
+    skill = workspace / ".agents" / "skills" / "handoff-cli" / "SKILL.md"
+    return [skill.resolve()] if skill.is_file() else []
 
 
 def toml_string(text: str) -> str:
@@ -235,7 +243,7 @@ class CodexAdapter:
         ]
         if self.config.reasoning_effort:
             argv += ["-c", f'model_reasoning_effort="{self.config.reasoning_effort}"']
-        disable = disable_skills_override(user_skill_files())
+        disable = disable_skills_override(user_skill_files() + planner_skill_files(workspace))
         if disable:
             argv += ["-c", disable]
         return argv + [RITUAL_PROMPT]

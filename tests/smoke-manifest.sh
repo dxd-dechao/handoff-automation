@@ -67,6 +67,7 @@ mkdir -p "$REPO/.handoff-logs"
 STUB_SUCCESS="$TMPDIR_BASE/claude-stub-success"
 cat > "$STUB_SUCCESS" <<'STUB'
 #!/usr/bin/env bash
+[[ -n "${SMOKE_ARGV:-}" ]] && printf '%s\n' "$@" > "$SMOKE_ARGV"
 # Make a commit in the repo (cwd = repo)
 echo "hello" > hello.txt
 git add hello.txt
@@ -85,6 +86,7 @@ chmod +x "$STUB_SUCCESS"
 echo ""
 echo "=== Run 1: success path ==="
 export HANDOFF_CLAUDE_BIN="$STUB_SUCCESS"
+export SMOKE_ARGV="$TMPDIR_BASE/claude-argv.txt"
 RUN1_OUT="$TMPDIR_BASE/run1-stdout.txt"
 "$HANDOFF_BIN" execute "$REPO" > "$RUN1_OUT" 2>&1 || true
 
@@ -102,6 +104,8 @@ assert_eq ".claude.is_error == false" "false" "$(jq '.claude.is_error' "$MANIFES
 
 RUN1_ID="$(jq -r '.run_id' "$MANIFEST1")"
 assert "summary mentions run id" grep -q "$RUN1_ID" "$RUN1_OUT"
+assert "executor launch denies the handoff CLI and skill" \
+  grep -qxF 'Bash(handoff:*),Bash(handoff-a2a:*),Bash(*/handoff:*),Bash(*/handoff-a2a:*),Skill(handoff-cli)' "$SMOKE_ARGV"
 
 # ── Run 2: failure path ──────────────────────────────────────────────────────
 echo ""
@@ -144,6 +148,17 @@ RUNS_OUT="$TMPDIR_BASE/runs-stdout.txt"
 assert "runs output contains run1 id" grep -q "$RUN1_ID" "$RUNS_OUT"
 RUN2_ID="$(jq -r '.run_id' "$MANIFEST2")"
 assert "runs output contains run2 id" grep -q "$RUN2_ID" "$RUNS_OUT"
+
+# ── Legacy --json and run mode (Python-free) ────────────────────────────────
+echo ""
+echo "=== legacy status --json / mode refusal ==="
+STATUS_JSON="$(HANDOFF_A2A_BIN="$TMPDIR_BASE/no-a2a" "$HANDOFF_BIN" status "$REPO" --json)"
+assert_eq "status --json kind/transport/managed" "status legacy false urn:handoff-automation:cli-output:v1" \
+  "$(jq -r '[.kind, .transport, (.managed | tostring), .schema] | join(" ")' <<<"$STATUS_JSON")"
+MODE_RC=0
+HANDOFF_A2A_BIN="$TMPDIR_BASE/no-a2a" "$HANDOFF_BIN" mode "$REPO" drive > "$TMPDIR_BASE/mode.txt" 2>&1 || MODE_RC=$?
+assert_eq "legacy mode change refused (exit 2)" "2" "$MODE_RC"
+assert "refusal names the managed A2A migration" grep -q "requires managed A2A setup" "$TMPDIR_BASE/mode.txt"
 
 # ── Final report ─────────────────────────────────────────────────────────────
 echo ""

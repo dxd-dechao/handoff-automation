@@ -25,6 +25,7 @@ class A2ASettings:
 
 
 MANAGED_SCHEMA = "urn:handoff-automation:managed-service:v1"
+RUN_MODES = ("drive", "watch")
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,7 @@ class ManagedSettings:
 
     server_config: Path
     planner_host: str | None = None
+    run_mode: str | None = None  # "drive" | "watch"; None for A6-era configs (unchanged behavior)
 
 
 @dataclass(frozen=True)
@@ -139,7 +141,10 @@ def _managed(repo: Path, block: Any) -> ManagedSettings | None:
         server_path = repo / server_path
     planner = block.get("planner") if isinstance(block.get("planner"), dict) else {}
     host = planner.get("host") if isinstance(planner.get("host"), str) else None
-    return ManagedSettings(server_config=server_path.resolve(), planner_host=host)
+    run_mode = block.get("run_mode")
+    if run_mode is not None and run_mode not in RUN_MODES:
+        raise ConfigError(f"managed.run_mode must be one of {', '.join(RUN_MODES)}")
+    return ManagedSettings(server_config=server_path.resolve(), planner_host=host, run_mode=run_mode)
 
 
 @dataclass(frozen=True)
