@@ -113,7 +113,7 @@ Some Planner hosts block `handoff server start` because it launches a
 background service that listens on a local port. In drive mode they may also
 block `handoff execute`. If yours does, the Planner gives you the command to
 run in your own terminal. To allow it from then on,
-see [When the Planner's host blocks `server start`](docs/cli-setup-and-models.md#when-the-planners-host-blocks-server-start).
+see [When the Planner's host blocks local commands](docs/cli-setup-and-models.md#when-the-planners-host-blocks-local-commands).
 
 ### 5. Watch mode only: keep a watcher running
 
@@ -264,7 +264,7 @@ and manually configured A2A endpoints, see [Advanced setup](docs/advanced-setup.
 ## Validation and limitations
 
 The [A7 verification report](docs/qa-a7-skill-first-setup.md) records
-**192 Python tests and 21 legacy smoke checks passing** on 2026-09-25, and a
+**203 Python tests and 24 legacy smoke checks passing** on 2026-09-25, and a
 live Cursor CLI Planner that ran the setup interview, set up A2A with the
 answered provider, model, and watch mode, and stopped at a DRAFT. The
 [A6 report](docs/qa-a6-cli-usability.md) covers generated setup, Cursor Grok

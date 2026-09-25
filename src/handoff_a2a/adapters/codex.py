@@ -58,7 +58,12 @@ PERMISSION_PROFILE_TOML = (
     f'permissions.{PERMISSION_PROFILE}={{extends=":workspace", '
     'filesystem={":workspace_roots"={"."="write", ".git"="write"}}}'
 )
-HANDOFF_HEADER = "The following is the verbatim content of HANDOFF.md at the workspace root.\n\n"
+HANDOFF_HEADER = (
+    "The following is the verbatim content of HANDOFF.md at the workspace root. "
+    "Edit only the Status line and Execution Notes. Leave every other byte of "
+    "Current Task and QA Feedback unchanged, including headings, blank lines, "
+    "and --- separators.\n\n"
+)
 USAGE_PROVENANCE = "codex.turn.completed.usage (input_tokens includes cache_read_input_tokens)"
 
 

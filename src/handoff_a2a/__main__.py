@@ -70,8 +70,12 @@ def build_parser() -> argparse.ArgumentParser:
     cli_cmd.add_argument("--repo", required=True, type=Path)
     cli_sub = cli_cmd.add_subparsers(dest="cli_command", required=True)
     cli_sub.add_parser("approve")
-    cli_sub.add_parser("execute")
-    cli_sub.add_parser("resume")
+    cli_execute = cli_sub.add_parser("execute")
+    cli_execute.add_argument("--json", action="store_true")
+    cli_resume = cli_sub.add_parser("resume")
+    cli_resume.add_argument("--json", action="store_true")
+    cli_preflight = cli_sub.add_parser("preflight")
+    cli_preflight.add_argument("--json", action="store_true")
     cli_sub.add_parser("cancel")
     cli_status = cli_sub.add_parser("status")
     cli_status.add_argument("--json", action="store_true")
@@ -124,8 +128,35 @@ def _print_unresolved(exc: UnresolvedExecution) -> int:
     return 2
 
 
+def _oserror_message(exc: OSError) -> str:
+    import errno
+
+    path = exc.filename or getattr(exc, "filename2", None) or ""
+    err = exc.strerror or "OS error"
+    suffix = ""
+    if isinstance(exc, PermissionError) or exc.errno in (errno.EACCES, errno.EPERM):
+        suffix = " (permission denied; sandbox?)"
+    if path:
+        return f"{path}: {err}{suffix}"
+    return f"{err}{suffix}"
+
+
 def main(argv: list[str] | None = None) -> int:
     raw = sys.argv[1:] if argv is None else list(argv)
+    try:
+        return _main(raw)
+    except OSError as exc:
+        message = _oserror_message(exc)
+        kind = raw[0] if raw else "handoff"
+        if "--json" in raw:
+            from handoff_a2a.reporting import print_json_error
+
+            return print_json_error(kind, message)
+        print(f"handoff: {message}", file=sys.stderr)
+        return 1
+
+
+def _main(raw: list[str]) -> int:
     if raw and raw[0] in MANAGED_COMMANDS:
         # argparse REMAINDER cannot start with an option, so hand off directly.
         return MANAGED_COMMANDS[raw[0]]()(raw[1:])
@@ -146,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
             argv.extend(["--interval", str(getattr(args, "interval", 30.0))])
         if args.cli_command == "archive" and getattr(args, "superseded", False):
             argv.append("--superseded")
-        if args.cli_command == "status" and getattr(args, "json", False):
+        if getattr(args, "json", False) and args.cli_command in {"status", "execute", "resume", "preflight"}:
             argv.append("--json")
         return integration_main(argv)
     if args.command == "execute":

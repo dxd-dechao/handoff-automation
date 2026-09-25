@@ -963,7 +963,7 @@ class CodingAgentExecutor(AgentExecutor):
                 argv=tuple(argv),
             )
             after_git = self.workspace.snapshot()
-            after_doc, transition_ok, transition_reason = self.workspace.evaluate_transition(
+            after_doc, transition_ok, transition_reason, boundary_note = self.workspace.evaluate_transition(
                 runtime.before_doc
             )
             commits = tuple(
@@ -1021,9 +1021,10 @@ class CodingAgentExecutor(AgentExecutor):
                 usage_provenance=outcome.usage_provenance,
                 cost_provenance=outcome.cost_provenance,
                 evidence_dir=str(runtime.evidence),
-                plan_intact=after_doc.planner_fingerprint == runtime.before_doc.planner_fingerprint,
+                plan_intact=boundary_note is not None
+                or after_doc.planner_fingerprint == runtime.before_doc.planner_fingerprint,
                 worker_launched=runtime.worker_launched,
-                extra=self.identity(outcome),
+                extra={**self.identity(outcome), **({"boundary_note": boundary_note} if boundary_note else {})},
             )
             payload = result.to_dict()
             payload["worker_stopped"] = True

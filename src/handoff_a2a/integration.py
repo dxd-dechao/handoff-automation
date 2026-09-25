@@ -10,6 +10,7 @@ import signal
 import sys
 import time
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -97,7 +98,17 @@ from handoff_a2a.selection import (
     run_mode,
     status_lines as managed_status_lines,
 )
-from handoff_a2a.service import claim_watcher, load_managed, release_watcher, watcher_state
+from handoff_a2a.processes import permission_denied
+from handoff_a2a.service import (
+    PROBE_NOT_PERMITTED,
+    UNKNOWN_SERVICE,
+    ServiceError,
+    claim_watcher,
+    inspect as inspect_service,
+    load_managed,
+    release_watcher,
+    watcher_state,
+)
 from handoff_a2a.setup import SetupError
 
 
@@ -115,6 +126,263 @@ class DispatchDeferred(IntegrationError):
 
     Watch retries at its next poll instead of waiting for a status change.
     """
+
+
+@dataclass
+class Blocker:
+    code: str
+    message: str
+    fix: str
+
+
+@dataclass
+class Preflight:
+    ready: bool
+    branch: dict[str, Any]
+    baseline_clean: bool
+    dirty_paths: list[str] = field(default_factory=list)
+    blockers: list[Blocker] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    create_branch: bool = False
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "ready": self.ready,
+            "branch": self.branch,
+            "baseline_clean": self.baseline_clean,
+            "dirty_paths": list(self.dirty_paths),
+            "blockers": [{"code": item.code, "message": item.message, "fix": item.fix} for item in self.blockers],
+            "notes": list(self.notes),
+        }
+
+
+def _dirty_message(paths: list[str]) -> str:
+    shown = paths[:10]
+    extra = len(paths) - len(shown)
+    tail = f" (+{extra} more)" if extra else ""
+    return "initial A2A execution requires a clean code baseline: " + ", ".join(shown) + tail
+
+
+def _dirty_fix() -> str:
+    return (
+        "commit the changes or run git stash -u; "
+        "for a file that must stay untracked, add it to .git/info/exclude"
+    )
+
+
+SERVICE_BLOCKER_CODES = frozenset({"service_stopped", "service_unknown"})
+
+
+def format_blockers(preflight: Preflight) -> str:
+    lines = ["refusing to execute:"]
+    for item in preflight.blockers:
+        lines.append(f"- {item.message}")
+        lines.append(f"  fix: {item.fix}")
+    return "\n".join(lines)
+
+
+def raise_preflight(preflight: Preflight) -> None:
+    """Refuse dispatch. Service-only blockers defer so watch retries."""
+    if not preflight.blockers:
+        return
+    message = format_blockers(preflight)
+    if all(item.code in SERVICE_BLOCKER_CODES for item in preflight.blockers):
+        raise DispatchDeferred(message)
+    raise IntegrationError(message)
+
+
+def endpoint_unavailable(exc: BaseException) -> str:
+    if permission_denied(exc):
+        return "local service connection not permitted (sandbox?); run handoff outside the sandbox"
+    return f"Executor endpoint unavailable ({exc}); run handoff server start"
+
+
+def wait_timeout_payload(repo: Path, *, timeout_s: float, execution_id: str) -> dict[str, Any]:
+    return {
+        "unresolved": True,
+        "wait_timeout": True,
+        "timeout_s": timeout_s,
+        "execution_id": execution_id,
+        "run_still_in_progress": True,
+        "message": (
+            f"only this command stopped waiting after {timeout_s}s; the run is still in progress"
+        ),
+        "next": f'handoff resume "{repo}"',
+        "status_command": f'handoff status "{repo}" --json',
+    }
+
+
+def _report_unresolved(repo: Path, exc: UnresolvedExecution, *, as_json: bool) -> int:
+    if exc.details.get("wait_timeout"):
+        payload = wait_timeout_payload(
+            repo,
+            timeout_s=float(exc.details.get("timeout_s") or 0),
+            execution_id=exc.execution_id,
+        )
+        if as_json:
+            print_json("unresolved", payload)
+        else:
+            _print_wait_timeout(repo, exc)
+        return 2
+    if as_json:
+        return print_json_error("unresolved", str(exc), 2)
+    print(f"handoff: unresolved: {exc}", file=sys.stderr)
+    return 2
+
+
+def _print_wait_timeout(repo: Path, exc: UnresolvedExecution) -> None:
+    details = exc.details or {}
+    timeout_s = details.get("timeout_s")
+    execution_id = exc.execution_id
+    print(
+        "handoff: unresolved: wait timeout: only this command stopped waiting"
+        + (f" after {timeout_s}s" if timeout_s is not None else "")
+        + f"; the run is still in progress (execution {execution_id}). "
+        + f'Next: handoff resume "{repo}" or handoff status "{repo}" --json',
+        file=sys.stderr,
+    )
+
+
+def collect_preflight(repo: Path, config: HandoffConfig, settings: Any) -> Preflight:
+    """Every dispatch precondition. Does not stop at the first blocker."""
+    markdown = (repo / HANDOFF_NAME).read_text(encoding="utf-8")
+    document = parse_handoff(markdown)
+    workflow = require_workflow(repo)
+    blockers: list[Blocker] = []
+    notes: list[str] = []
+    q = f'"{repo}"'
+    if document.status not in ELIGIBLE_HANDOFF_STATUSES:
+        blockers.append(
+            Blocker(
+                "status",
+                f"Status is {document.status!r} (need READY FOR EXECUTION or CHANGES REQUESTED)",
+                "set Status to READY FOR EXECUTION or CHANGES REQUESTED",
+            )
+        )
+    if approved_plan_hash(markdown) != workflow.get("approved_plan_hash"):
+        blockers.append(
+            Blocker(
+                "plan_hash",
+                "HANDOFF plan does not match the approval receipt",
+                f"handoff approve {q}",
+            )
+        )
+    if workflow.get("workspace_id") != settings.workspace_id:
+        blockers.append(
+            Blocker(
+                "workspace_id",
+                "configured workspace_id does not match the approval receipt",
+                f"handoff approve {q} after confirming the workspace",
+            )
+        )
+    expected = str(document.branch or workflow.get("branch") or "")
+    actual = ""
+    exists = False
+    dirty: list[str] = []
+    baseline_clean = False
+    create_branch = False
+    git = GitWorkspace(settings.workspace_id, repo)
+    try:
+        git.require_git_checkout()
+    except WorkspaceError as exc:
+        blockers.append(Blocker("git_checkout", str(exc), "run handoff inside the git working tree"))
+    else:
+        actual = git.current_branch()
+        exists = bool(expected) and git.local_branch_exists(expected)
+        dirty = git.dirty_code_paths()
+        fingerprint = git.code_fingerprint()
+        baseline = workflow.get("post_run_fingerprint")
+        first = not (workflow.get("consumed_execution_ids") or []) and not baseline
+        if not baseline:
+            baseline_clean = not dirty
+            if dirty:
+                blockers.append(Blocker("baseline", _dirty_message(dirty), _dirty_fix()))
+        elif fingerprint != baseline:
+            baseline_clean = False
+            blockers.append(
+                Blocker(
+                    "fingerprint",
+                    "workspace code does not match the last recorded post-run snapshot",
+                    "restore the recorded snapshot or re-approve a new plan",
+                )
+            )
+        else:
+            baseline_clean = True
+        approved = str(workflow.get("branch") or "")
+        if actual == expected and actual == approved and actual:
+            pass
+        elif first and not exists and baseline_clean and not dirty:
+            create_branch = True
+            notes.append(f"execute will create branch {expected} from the current HEAD")
+        elif first and not exists:
+            notes.append(f"execute will create branch {expected} from HEAD once the code baseline is clean")
+        elif exists and actual != expected:
+            blockers.append(
+                Blocker(
+                    "branch",
+                    f"checked-out branch {actual or '(detached)'} does not match approved branch {expected}",
+                    f"git switch {expected}",
+                )
+            )
+        elif not exists:
+            blockers.append(
+                Blocker(
+                    "branch",
+                    f"approved branch {expected} does not exist locally",
+                    "create it only by hand if this is not the first execution; a later execution will not",
+                )
+            )
+        else:
+            blockers.append(
+                Blocker(
+                    "branch",
+                    f"checked-out branch {actual or '(detached)'} does not match approved branch {expected}",
+                    f"git switch {expected}",
+                )
+            )
+    if load_outstanding(repo):
+        blockers.append(
+            Blocker(
+                "outstanding",
+                "outstanding A2A run exists",
+                f"handoff resume {q} or handoff cancel {q}",
+            )
+        )
+    if rounds_available(workflow) < 1:
+        blockers.append(
+            Blocker(
+                "rounds",
+                "execution round limit reached",
+                "Planner must review remaining scope",
+            )
+        )
+    if is_managed(repo):
+        try:
+            state = inspect_service(load_managed(repo))
+        except ServiceError as exc:
+            blockers.append(Blocker("service_stopped", str(exc), f"handoff server start {q}"))
+        else:
+            if state.probe == PROBE_NOT_PERMITTED:
+                blockers.append(
+                    Blocker("service_unknown", UNKNOWN_SERVICE, "run handoff outside the sandbox")
+                )
+            elif not state.running:
+                blockers.append(
+                    Blocker(
+                        "service_stopped",
+                        "managed service is stopped",
+                        f"handoff server start {q}",
+                    )
+                )
+    return Preflight(
+        ready=not blockers,
+        branch={"expected": expected, "actual": actual, "exists": exists},
+        baseline_clean=baseline_clean,
+        dirty_paths=dirty,
+        blockers=blockers,
+        notes=notes,
+        create_branch=create_branch,
+    )
 
 
 def _die(message: str, code: int = 1) -> int:
@@ -345,42 +613,19 @@ def _prepare_request(
     markdown = (repo / HANDOFF_NAME).read_text(encoding="utf-8")
     document = parse_handoff(markdown)
     workflow = require_workflow(repo)
-    if document.status not in ELIGIBLE_HANDOFF_STATUSES:
-        raise IntegrationError(
-            f"refusing to execute: Status is {document.status!r} "
-            "(need READY FOR EXECUTION or CHANGES REQUESTED)"
-        )
-    if approved_plan_hash(markdown) != workflow.get("approved_plan_hash"):
-        raise IntegrationError("HANDOFF plan does not match the approval receipt; re-approve the new scope")
-    if workflow.get("workspace_id") != settings.workspace_id:
-        raise IntegrationError("configured workspace_id does not match the approval receipt")
+    preflight = collect_preflight(repo, config, settings)
+    raise_preflight(preflight)
     git = GitWorkspace(settings.workspace_id, repo)
-    git.require_git_checkout()
-    branch = git.current_branch()
-    if branch != document.branch or branch != workflow.get("branch"):
-        raise IntegrationError("checked-out branch does not match the approved workflow branch")
-    if load_outstanding(repo):
-        raise IntegrationError("outstanding A2A run exists; resume or cancel it instead of starting another")
+    created = None
+    if preflight.create_branch and not check_only:
+        git.create_branch_from_head(str(preflight.branch["expected"]))
+        created = preflight.branch["expected"]
     if workflow.get("dispatch_hold") and not check_only:
         workflow = set_dispatch_hold(repo, workflow, False)
-    if rounds_available(workflow) < 1:
-        raise IntegrationError(
-            "execution round limit reached; Planner must review remaining scope"
-        )
-    fingerprint = git.code_fingerprint()
-    baseline = workflow.get("post_run_fingerprint")
-    if not baseline:
-        if not git.code_is_clean():
-            raise IntegrationError(
-                "initial A2A execution requires a clean code baseline "
-                "(HANDOFF/workflow files excluded)"
-            )
-    elif fingerprint != baseline:
-        raise IntegrationError(
-            "workspace code does not match the last recorded post-run snapshot"
-        )
     if check_only:
         return {}, workflow, None
+    branch = git.current_branch()
+    fingerprint = git.code_fingerprint()
     execution_id = str(uuid.uuid4())
     iteration = len(workflow.get("consumed_execution_ids") or []) + 1
     run_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"
@@ -422,6 +667,7 @@ def _prepare_request(
             "agent_card_url": record["agent_card_url"],
             "credential_file": str(settings.credential_file),
             "created_at": utc_now(),
+            **({"branch_created": created} if created else {}),
         },
     )
     append_event(repo, run_id, "submitted", {"execution_id": execution_id})
@@ -524,6 +770,8 @@ def _reconcile(
             "finished_at": utc_now() if stopped and not unresolved else None,
             "outcome": outcome,
             "reason": reason or (result or {}).get("reason"),
+            "branch_created": outstanding.get("branch_created"),
+            "boundary_note": (result or {}).get("boundary_note"),
             "status_after": parse_handoff((repo / HANDOFF_NAME).read_text(encoding="utf-8")).status,
             "git": {
                 "branch": None if snap is None else snap.branch,
@@ -620,14 +868,12 @@ def dispatch_gate(repo: Path) -> None:
         raise DispatchDeferred("a queued Executor change is waiting for the service to be idle")
 
 
-async def cmd_execute_async(repo: Path, *, from_watch: bool = False) -> int:
+async def cmd_execute_async(repo: Path, *, from_watch: bool = False, as_json: bool = False) -> int:
     require_a2a_config(repo)
     if from_watch:
         workflow = load_workflow(repo)
         if workflow and workflow.get("dispatch_hold"):
             raise IntegrationError("watch will not clear a dispatch hold; use explicit execute")
-    if load_outstanding(repo):
-        raise IntegrationError("outstanding A2A run exists; resume or cancel it")
     dispatch_gate(repo)
     try:
         lock = submit_lock(repo)
@@ -639,13 +885,12 @@ async def cmd_execute_async(repo: Path, *, from_watch: bool = False) -> int:
         # Snapshot the effective configuration under the lock that a model
         # switch also takes, and verify the endpoint before anything is saved.
         config, settings = require_a2a_config(repo)
-        if load_outstanding(repo):
-            raise IntegrationError("outstanding A2A run exists; resume or cancel it")
         _prepare_request(repo, config, settings, check_only=True)
         try:
             client = await _connect(settings)
         except (httpx.HTTPError, OSError) as exc:
-            raise DispatchDeferred(f"Executor endpoint unavailable ({exc}); run handoff server start") from exc
+            # A denied connect and a stopped service both defer: watch retries.
+            raise DispatchDeferred(endpoint_unavailable(exc)) from exc
         verify_managed_card(repo, client._card)
         record, _workflow, request = _prepare_request(repo, config, settings)
     except BaseException:
@@ -678,9 +923,10 @@ async def cmd_execute_async(repo: Path, *, from_watch: bool = False) -> int:
             terminal = await _wait_task(client, task_id, settings)
         except TimeoutError as exc:
             raise UnresolvedExecution(
-                f"wait timeout: {exc}",
+                "wait timeout",
                 task_id=task_id,
                 execution_id=request.execution_id,
+                details={"wait_timeout": True, "timeout_s": settings.wait_timeout_s},
             ) from exc
         result = coding_result_from_task(terminal)
         record = _update_record_from_task(record, terminal)
@@ -693,7 +939,11 @@ async def cmd_execute_async(repo: Path, *, from_watch: bool = False) -> int:
             unresolved=False,
             reason=task_reason(terminal),
         )
-        print(json.dumps({"run_id": request.run_id, "outcome": manifest.get("outcome"), "task_id": task_id}, indent=2))
+        payload = {"run_id": request.run_id, "outcome": manifest.get("outcome"), "task_id": task_id}
+        if outstanding.get("branch_created"):
+            payload["branch_created"] = outstanding["branch_created"]
+            print(f"created branch {outstanding['branch_created']} from HEAD")
+        print(json.dumps(payload, indent=2))
         return execute_exit_code((terminal.get("status") or {}).get("state"))
     except UnresolvedExecution as exc:
         _reconcile(
@@ -704,8 +954,7 @@ async def cmd_execute_async(repo: Path, *, from_watch: bool = False) -> int:
             unresolved=True,
             reason=str(exc),
         )
-        print(f"handoff: unresolved: {exc}", file=sys.stderr)
-        return 2
+        return _report_unresolved(repo, exc, as_json=as_json)
     finally:
         await client.close()
 
@@ -734,7 +983,7 @@ def _saved_credential(outstanding: dict[str, Any]) -> Path:
     return path
 
 
-async def cmd_resume_async(repo: Path) -> int:
+async def cmd_resume_async(repo: Path, *, as_json: bool = False) -> int:
     outstanding = load_outstanding(repo)
     if outstanding is None:
         # Without an outstanding run, resume is only meaningful for A2A repos.
@@ -750,8 +999,7 @@ async def cmd_resume_async(repo: Path) -> int:
         )
     except UnresolvedExecution as exc:
         _reconcile(repo, outstanding=outstanding, task=None, result=None, unresolved=True, reason=str(exc))
-        print(f"handoff: unresolved: {exc}", file=sys.stderr)
-        return 2
+        return _report_unresolved(repo, exc, as_json=as_json)
     task = payload.get("task") or {}
     result = payload.get("result")
     manifest = _reconcile(
@@ -848,7 +1096,10 @@ async def cmd_status_async(repo: Path, *, as_json: bool = False) -> int:
                 execution = "WORKING"
             reason = payload.get("reason")
         except Exception as exc:  # noqa: BLE001 — status must stay honest when the endpoint is down
-            reason = f"saved endpoint or credential unavailable: {exc}"
+            if permission_denied(exc):
+                reason = "local service connection not permitted (sandbox?); run handoff outside the sandbox"
+            else:
+                reason = f"saved endpoint or credential unavailable: {exc}"
             execution = "UNRESOLVED"
     turn = _turn(document.status)
     last = (workflow or {}).get("last_outcome") or {}
@@ -887,6 +1138,7 @@ async def cmd_status_async(repo: Path, *, as_json: bool = False) -> int:
                 else {"run_id": outstanding.get("run_id"), "task_id": outstanding.get("task_id")},
                 "reason": reason,
                 "next": next_action,
+                "preflight": _status_preflight(repo),
             },
         )
         return code
@@ -928,8 +1180,24 @@ async def cmd_status_async(repo: Path, *, as_json: bool = False) -> int:
         print(f"task:   {outstanding.get('task_id') or '(ack unknown; resume to retransmit)'}")
     if reason:
         print(f"reason: {reason}")
+    preflight = _status_preflight(repo)
+    if isinstance(preflight, dict) and not preflight.get("ready"):
+        print("preflight: blocked")
+        for item in preflight.get("blockers") or []:
+            print(f"  - {item['message']}")
+            print(f"    fix: {item['fix']}")
     print(f"next:   {next_action}")
     return code
+
+
+def _status_preflight(repo: Path) -> dict[str, Any] | None:
+    if load_workflow(repo) is None:
+        return None
+    try:
+        _config, settings = require_a2a_config(repo)
+        return collect_preflight(repo, _config, settings).to_json()
+    except (ConfigError, WorkflowError, WorkspaceError, OSError):
+        return None
 
 
 def _mode_next(action: str, mode: str | None, watcher: dict[str, Any], repo: Path) -> str:
@@ -1091,6 +1359,23 @@ async def _watch_loop(repo: Path, interval: float) -> int:
         time.sleep(interval)
 
 
+def cmd_preflight(repo: Path, *, as_json: bool) -> int:
+    config, settings = require_a2a_config(repo)
+    if config.transport != "a2a":
+        raise IntegrationError("preflight needs managed A2A")
+    preflight = collect_preflight(repo, config, settings)
+    if as_json:
+        print_json("preflight", preflight.to_json())
+    else:
+        if preflight.ready:
+            print("preflight: ready")
+            for note in preflight.notes:
+                print(f"note: {note}")
+        else:
+            print(format_blockers(preflight))
+    return 0 if preflight.ready else 1
+
+
 def cmd_archive(repo: Path, *, superseded: bool) -> int:
     config = None
     try:
@@ -1117,8 +1402,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo", required=True, type=str)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("approve")
-    sub.add_parser("execute")
-    sub.add_parser("resume")
+    execute = sub.add_parser("execute")
+    execute.add_argument("--json", action="store_true")
+    resume = sub.add_parser("resume")
+    resume.add_argument("--json", action="store_true")
+    preflight = sub.add_parser("preflight")
+    preflight.add_argument("--json", action="store_true")
     sub.add_parser("cancel")
     status = sub.add_parser("status")
     status.add_argument("--json", action="store_true")
@@ -1137,9 +1426,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "approve":
             return cmd_approve(repo)
         if args.command == "execute":
-            return asyncio.run(cmd_execute_async(repo))
+            return asyncio.run(cmd_execute_async(repo, as_json=bool(getattr(args, "json", False))))
         if args.command == "resume":
-            return asyncio.run(cmd_resume_async(repo))
+            return asyncio.run(cmd_resume_async(repo, as_json=bool(getattr(args, "json", False))))
+        if args.command == "preflight":
+            return cmd_preflight(repo, as_json=bool(getattr(args, "json", False)))
         if args.command == "cancel":
             return asyncio.run(cmd_cancel_async(repo))
         if args.command == "status":

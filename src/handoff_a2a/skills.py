@@ -166,6 +166,74 @@ def read_marker(path: Path) -> dict[str, Any] | None | bool:
     return data
 
 
+def _frontmatter_name(skill_md: Path) -> str | None:
+    try:
+        text = skill_md.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not text.startswith("---"):
+        return None
+    end = text.find("\n---", 3)
+    if end < 0:
+        return None
+    for line in text[3:end].splitlines():
+        if line.startswith("name:"):
+            return line.split(":", 1)[1].strip().strip("\"'")
+    return None
+
+
+def elsewhere_copy(loc: Location) -> dict[str, Any] | None:
+    """A handoff-cli skill under another folder name in this host's skill root."""
+    root = loc.path.parent
+    if not root.is_dir():
+        return None
+    for child in sorted(root.iterdir()):
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        try:
+            if child.resolve() == loc.path.resolve():
+                continue
+        except OSError:
+            continue
+        skill_md = child / "SKILL.md"
+        if not skill_md.is_file() or _frontmatter_name(skill_md) != SKILL_NAME:
+            continue
+        try:
+            current = tree_digest(child) == source_digest()
+        except OSError:
+            current = False
+        return {"path": str(child), "current_content": current}
+    return None
+
+
+def skill_available(repo: Path | None, host: str, env: Mapping[str, str] | None = None) -> str | None:
+    """Path of a current, outdated, or elsewhere copy for this host, if any."""
+    locations: list[Location] = []
+    if repo is not None:
+        locations.append(project_location(repo, host))
+    try:
+        locations.append(user_location(host, env))
+    except SkillError:
+        pass
+    for loc in locations:
+        state, _detail = skill_state(loc)
+        if state in {"current", "outdated"}:
+            return str(loc.path)
+        if state == "absent":
+            found = elsewhere_copy(loc)
+            if found:
+                return str(found["path"])
+    return None
+
+
+def any_skill_available(repo: Path, env: Mapping[str, str] | None = None) -> str | None:
+    for host in HOSTS:
+        found = skill_available(repo, host, env)
+        if found:
+            return found
+    return None
+
+
 def skill_state(loc: Location) -> tuple[str, str]:
     """(state, detail) for one location; see the module docstring."""
     path = loc.path
@@ -312,6 +380,14 @@ def resolve_repo(path: Path) -> Path:
 def _entry(loc: Location) -> dict[str, Any]:
     state, detail = skill_state(loc)
     entry: dict[str, Any] = {"host": loc.host, "scope": loc.scope, "path": str(loc.path), "state": state, "detail": detail}
+    if state == "absent":
+        found = elsewhere_copy(loc)
+        if found:
+            entry["state"] = "elsewhere"
+            entry["found_path"] = found["path"]
+            entry["current_content"] = found["current_content"]
+            entry["detail"] = found["path"]
+            return entry
     if state in {"absent", "outdated"}:
         entry["install_command"] = install_command(loc)
     return entry

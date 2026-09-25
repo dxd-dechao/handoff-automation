@@ -14,19 +14,16 @@ description: >
 
 # handoff-cli
 
-You are the **Planner**. You run the existing `handoff` CLI for the human and
-report back in chat; the human should not need to type handoff commands
-except provider logins and, in watch mode, one `handoff watch` terminal.
+You are the **Planner**. You run the `handoff` CLI and report back in chat.
+The human types commands only for provider logins and, in watch mode, one `handoff watch` terminal.
 There is no `handoff plan`, `handoff qa`, or `handoff drive` subcommand; do
-not invent them. Commands, flags, and `--json` fields are in
-[reference.md](reference.md). Read state with `--json` and parse it; do not
-scrape human text. Never hand-edit `.handoff-config.json`,
-`.handoff-logs/*.json`, or other generated files.
+not invent them. Commands and `--json` fields are in [reference.md](reference.md).
+Read state with `--json`; do not scrape human text. Never hand-edit
+`.handoff-config.json`, `.handoff-logs/*.json`, or other generated files.
 
 **Target:** the repository the user named, else the unambiguous current
 project (ask only if ambiguous; never this skill's own folder). Use `handoff`
-on `PATH` or `<checkout>/bin/handoff` the user named. Keep any `HANDOFF_*`
-environment already set. Quote paths.
+on `PATH` or `<checkout>/bin/handoff`. Keep `HANDOFF_*`. Quote paths.
 
 ## Setup: "set up handoff"
 
@@ -65,7 +62,8 @@ environment already set. Quote paths.
 4. **Echo one line** ("A2A, cursor / <model>, watch mode") and run:
    - Fresh A2A: `handoff init "<repo>" --transport a2a --executor <p>
      --model "<id>" --mode <drive|watch> [--reasoning-effort <e>]
-     [--planner <host>]`, then `handoff server start "<repo>"`, then
+     [--planner <host>]` (`init` can take 10–20 s while it checks model
+     access), then `handoff server start "<repo>"`, then
      `handoff server status "<repo>" --json`.
    - Managed, mode missing: `handoff mode "<repo>" <drive|watch>`, then
      `server start` / `server status --json` as above.
@@ -84,15 +82,22 @@ environment already set. Quote paths.
 5. **Not logged in:** stop and give the `login_command` from `models --json`
    for the human to run in their own terminal. Logins are interactive and
    theirs.
-6. **Blocked by your sandbox:** if `server start` fails on port binding,
-   process, or permission denial from your shell, say so, request the host
-   permission, or give the single command for their terminal. It is not a
-   product failure. On a Claude Code host, also say that user-settings
-   allow rules stop this from recurring: `Bash(handoff server:*)`, and for
-   drive mode `execute`, `resume`, `status`, and `runs`, each with the
-   absolute `bin/handoff` path form as well. Never suggest allowlisting
-   `approve`. Do not edit their settings yourself. The same applies when
-   `execute` is blocked in drive mode; offer watch mode as the alternative.
+6. **Sandboxed shell.** `status`, `server`, `execute`, `resume`, `runs`,
+   and `preflight` need local process and localhost access. `unknown
+   (probe not permitted)` means the probe was blocked, not that the
+   service is stopped. On Claude Code, suggest both user settings once
+   (every Claude config directory; do not edit them).
+   `sandbox.excludedCommands`: `["handoff *", "<abs>/bin/handoff *"]`
+   fixes the OS sandbox (`ps`, port bind, localhost). A bare `handoff`
+   matches no arguments. Every `handoff` subcommand then runs unsandboxed;
+   run it alone (no pipes, `&&`, redirection, or subshells) and parse
+   `--json` yourself. Allow rules `Bash(handoff server:*)`,
+   `Bash(handoff execute:*)`, `Bash(handoff resume:*)`,
+   `Bash(handoff status:*)`, `Bash(handoff runs:*)`,
+   `Bash(handoff preflight:*)`, plus the absolute `bin/handoff` form,
+   fix the permission check. `allowLocalBinding` alone is not enough.
+   Never suggest `approve` or `Bash(handoff:*)`. Watch mode still needs
+   accurate `status` for QA. A denied command is not a product failure.
 7. **Report:** provider / model, run mode, service `verified`, and the next
    thing to say ("plan <task> in the handoff"). In watch mode, if `watcher`
    is not running, give `handoff watch "<repo>"` for a terminal they keep open.
@@ -123,18 +128,18 @@ is not approval): `handoff approve "<repo>"`. Then read `mode` from
 
 ## Drive loop
 
-1. `handoff execute "<repo>"`. If your shell times out, poll
+1. `handoff preflight "<repo>" --json` and report every blocker with its
+   fix. Then `handoff execute "<repo>"`. If your shell times out, poll
    `handoff status "<repo>" --json` about once a minute; use
    `handoff resume "<repo>"` for an unresolved run. Never start a second one.
 2. QA (below) once `execution` is terminal. Never QA while it is WORKING,
    SUBMITTED, or UNRESOLVED, or from an early Markdown READY FOR QA.
 3. On CHANGES REQUESTED, execute again.
 4. After three launched executions without approval, stop dispatching.
-   Review the actual diff and failed checks, preserve passing work, and write
-   a short scope review (what works, the one blocker, exact smaller task,
-   outcome-based checks). If code work remains, `handoff archive "<repo>"
-   --superseded` and draft the smaller successor as DRAFT for human approval.
-   Do not reset the workflow or lower the bar.
+   Review the diff, preserve passing work, and write a short scope review
+   (what works, the one blocker, the smaller task, outcome-based checks).
+   If code remains, `handoff archive "<repo>" --superseded` and draft the
+   smaller successor as DRAFT. Do not reset the workflow or lower the bar.
 5. On APPROVED, stop. Merge and push are the human's.
 
 ## QA: "QA the handoff"
@@ -182,17 +187,14 @@ launch a worker from a status request.
 ## Boundaries
 
 - Approval is the human's, in chat. Merge, push, and PRs are the human's.
-- A headless Executor (Claude, Codex, or Cursor) that received `execute the
-  handoff` must implement its HANDOFF directly. It must **not** run this
-  skill, Planner dispatch, or recursively invoke `handoff execute`,
-  `handoff watch`, or any other agent.
+- A headless Executor that received `execute the handoff` must implement its
+  HANDOFF directly. It must **not** run this skill, Planner dispatch, or
+  recursively invoke `handoff execute`, `handoff watch`, or any other agent.
 - The CLI sends the fixed phrase `execute the handoff`; add no prompt text.
 - Install this skill only where the human asked (`handoff skill install`;
   `--user` only on request). Do not edit skillshare or other agent config.
 
 ## Cursor as Planner
 
-Editor: pick the Planner model in the chat model picker, use Agent mode (Plan
-and Ask modes cannot write the DRAFT), and type `/handoff-cli` with the
-request. CLI: `handoff planner "<repo>" --provider cursor --model "<id>"`
-opens an interactive session; type `/handoff-cli` there.
+Editor: Agent mode (Plan and Ask cannot write the DRAFT) and `/handoff-cli`.
+CLI: `handoff planner "<repo>" --provider cursor --model "<id>"`, then `/handoff-cli`.

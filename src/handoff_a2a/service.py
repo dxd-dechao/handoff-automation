@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import json
 import os
 import socket
@@ -37,12 +38,20 @@ from handoff_a2a.client import write_json_atomic
 from handoff_a2a.config import ConfigError, HandoffConfig, load_config
 from handoff_a2a.contracts import CODING_TASK_PROFILE
 from handoff_a2a.processes import (
-    identity_matches,
+    LIVENESS_ALIVE,
+    LIVENESS_DEAD,
+    LIVENESS_UNKNOWN,
     owned_from_record,
+    permission_denied,
+    process_liveness,
     process_start_identity,
     start_owned,
     stop_owned,
 )
+
+PROBE_OK = "ok"
+PROBE_NOT_PERMITTED = "not_permitted"
+UNKNOWN_SERVICE = "unknown (probe not permitted; run outside the sandbox)"
 from handoff_a2a.reporting import print_json, print_json_error
 from handoff_a2a.setup import (
     ManagedPaths,
@@ -78,6 +87,8 @@ class ServiceState:
     card: dict[str, Any] | None = None
     record: dict[str, Any] | None = None
     detail: list[str] = field(default_factory=list)
+    liveness: str = LIVENESS_DEAD
+    probe: str = PROBE_OK
 
     @property
     def active_identity(self) -> str:
@@ -162,11 +173,16 @@ def owned(record: dict[str, Any], paths: ManagedPaths):
     )
 
 
+def record_liveness(record: dict[str, Any] | None, paths: ManagedPaths) -> str:
+    """alive, dead, or unknown. Unknown means the probe was not permitted."""
+    if not record or not record.get("pid"):
+        return LIVENESS_DEAD
+    return process_liveness(int(record["pid"]), str(record.get("start_identity") or ""))
+
+
 def record_alive(record: dict[str, Any] | None, paths: ManagedPaths) -> bool:
     """True only for the exact process we started (PID + start identity)."""
-    if not record or not record.get("pid"):
-        return False
-    return identity_matches(owned(record, paths))
+    return record_liveness(record, paths) == LIVENESS_ALIVE
 
 
 # ── watcher record ──────────────────────────────────────────────────────────
@@ -191,25 +207,38 @@ def _load_watcher(repo: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else {}
 
 
-def _watcher_alive(record: dict[str, Any], repo: Path) -> bool:
+def _watcher_liveness(record: dict[str, Any]) -> str:
     if not record.get("pid"):
-        return False
-    return identity_matches(
-        owned_from_record(pid=int(record["pid"]), pgid=0, start_identity=str(record.get("start_identity") or ""), cwd=repo)
-    )
+        return LIVENESS_DEAD
+    return process_liveness(int(record["pid"]), str(record.get("start_identity") or ""))
+
+
+def _watcher_alive(record: dict[str, Any], repo: Path) -> bool:
+    return _watcher_liveness(record) == LIVENESS_ALIVE
 
 
 def watcher_state(repo: Path) -> dict[str, Any]:
     record = _load_watcher(repo)
     if record is None:
         return {"running": False, "stale": False, "pid": None, "started_at": None}
-    alive = _watcher_alive(record, repo)
-    return {"running": alive, "stale": not alive, "pid": record.get("pid"), "started_at": record.get("started_at")}
+    live = _watcher_liveness(record)
+    payload = {
+        "running": live == LIVENESS_ALIVE,
+        "stale": live == LIVENESS_DEAD,
+        "pid": record.get("pid"),
+        "started_at": record.get("started_at"),
+    }
+    if live == LIVENESS_UNKNOWN:
+        payload["probe"] = PROBE_NOT_PERMITTED
+        payload["stale"] = False
+    return payload
 
 
 def claim_watcher(repo: Path, interval: float) -> dict[str, Any]:
     """Record this process as the repository's watcher; refuse a second live one."""
     existing = _load_watcher(repo)
+    if existing and _watcher_liveness(existing) == LIVENESS_UNKNOWN and int(existing.get("pid") or 0) != os.getpid():
+        raise ServiceError(f"refusing to start another watcher: {UNKNOWN_SERVICE}", exit_code=2)
     if existing and _watcher_alive(existing, repo) and int(existing["pid"]) != os.getpid():
         raise ServiceError(
             f"a handoff watch is already running for this repository (pid {existing['pid']} since "
@@ -236,11 +265,21 @@ def release_watcher(repo: Path, record: dict[str, Any]) -> None:
 # ── probes ──────────────────────────────────────────────────────────────────
 
 
-def port_listening(port: int, timeout: float = 0.5) -> bool:
-    with contextlib.suppress(OSError):
+def port_probe(port: int, timeout: float = 0.5) -> str:
+    """listening, closed, or not_permitted. A denied connect is never "closed"."""
+    try:
         with socket.create_connection(("127.0.0.1", port), timeout=timeout):
-            return True
-    return False
+            return "listening"
+    except PermissionError:
+        return PROBE_NOT_PERMITTED
+    except OSError as exc:
+        if permission_denied(exc) or exc.errno in (errno.EPERM, errno.EACCES):
+            return PROBE_NOT_PERMITTED
+        return "closed"
+
+
+def port_listening(port: int, timeout: float = 0.5) -> bool:
+    return port_probe(port, timeout) == "listening"
 
 
 def probe_card(port: int, timeout: float = 2.0) -> dict[str, Any] | None:
@@ -307,9 +346,15 @@ def identity_mismatches(card: dict[str, Any] | None, expected: dict[str, Any]) -
 def inspect(managed: Managed) -> ServiceState:
     paths = managed.paths
     record = load_process(paths)
-    alive = record_alive(record, paths)
+    liveness = record_liveness(record, paths)
+    listen = port_probe(managed.port)
+    probe = PROBE_NOT_PERMITTED if liveness == LIVENESS_UNKNOWN or listen == PROBE_NOT_PERMITTED else PROBE_OK
+    # A positively dead PID stays dead even when the port probe is denied.
+    if liveness == LIVENESS_DEAD and listen == PROBE_NOT_PERMITTED and record:
+        probe = PROBE_OK
+    alive = liveness == LIVENESS_ALIVE and probe == PROBE_OK
     expected = expected_identity(managed)
-    card = probe_card(managed.port) if port_listening(managed.port) else None
+    card = probe_card(managed.port) if listen == "listening" else None
     state = ServiceState(
         running=alive,
         verified=False,
@@ -319,8 +364,13 @@ def inspect(managed: Managed) -> ServiceState:
         model=expected["executor_model"],
         card=card,
         record=record,
+        liveness=LIVENESS_UNKNOWN if probe == PROBE_NOT_PERMITTED else liveness,
+        probe=probe,
     )
-    if record and not alive:
+    if probe == PROBE_NOT_PERMITTED:
+        state.detail.append(UNKNOWN_SERVICE)
+        return state
+    if record and liveness == LIVENESS_DEAD:
         state.detail.append("process record is stale (that process is gone or its PID was reused)")
     if alive and record and int(record.get("port") or 0) != managed.port:
         state.detail.append(f"owned server listens on {record.get('port')}, configuration names {managed.port}")
@@ -396,6 +446,10 @@ def start_locked(managed: Managed, *, timeout_s: float = START_TIMEOUT_S) -> Ser
     """Start (or confirm) the managed server. Caller holds service.lock."""
     paths = managed.paths
     state = inspect(managed)
+    if state.probe == PROBE_NOT_PERMITTED:
+        raise ServiceError(
+            f"refusing to start another server: {UNKNOWN_SERVICE}",
+        )
     if state.verified:
         state.detail.insert(0, "already running")
         return state
@@ -404,6 +458,8 @@ def start_locked(managed: Managed, *, timeout_s: float = START_TIMEOUT_S) -> Ser
             "the owned server is running but does not match the configuration "
             f"({'; '.join(state.detail)}); run handoff server stop first"
         )
+    if port_probe(managed.port) == PROBE_NOT_PERMITTED:
+        raise ServiceError(f"refusing to start another server: {UNKNOWN_SERVICE}")
     if port_listening(managed.port):
         raise ServiceError(
             f"port {managed.port} is in use by a process this CLI did not start; nothing was stopped. "
@@ -458,6 +514,9 @@ def stop_locked(managed: Managed, *, holding_submit: bool) -> str:
     if reason:
         raise ServiceError(f"refusing to stop the service: {reason}; {refusal_guidance(paths.repo)}", exit_code=2)
     record = load_process(paths)
+    if record_liveness(record, paths) == LIVENESS_UNKNOWN or port_probe(managed.port) == PROBE_NOT_PERMITTED:
+        if record_liveness(record, paths) != LIVENESS_DEAD:
+            raise ServiceError(f"refusing to signal the server: {UNKNOWN_SERVICE}")
     if not record_alive(record, paths):
         if record is not None:
             process_path(paths).unlink(missing_ok=True)
@@ -496,6 +555,8 @@ def cmd_start(repo: Path, port: int | None, as_json: bool = False) -> int:
     managed = load_managed(repo)
     with holding(service_lock(managed.paths), "service"):
         if port is not None and port != managed.port:
+            if record_liveness(load_process(managed.paths), managed.paths) == LIVENESS_UNKNOWN:
+                raise ServiceError(f"refusing to start another server: {UNKNOWN_SERVICE}")
             if record_alive(load_process(managed.paths), managed.paths):
                 raise ServiceError("stop the running service before changing its port")
             managed = set_port(managed, port)
@@ -526,12 +587,23 @@ def cmd_status(repo: Path, as_json: bool = False) -> int:
         print_json("server-status", state_payload(managed, state))
     else:
         print_state(managed, state)
+    if state.probe == PROBE_NOT_PERMITTED:
+        return 2
     return 0 if state.verified or not state.running else 2
 
 
 def state_payload(managed: Managed, state: ServiceState) -> dict[str, Any]:
     """`handoff server status --json` (no token or credential contents)."""
     running = state.running
+    unknown = state.probe == PROBE_NOT_PERMITTED
+    if state.verified:
+        label = "verified"
+    elif unknown:
+        label = "unknown"
+    elif running:
+        label = "running"
+    else:
+        label = "stopped"
     failure = None
     path = managed.paths.service_dir / FAILURE_NAME
     if path.is_file() and not state.verified:
@@ -540,7 +612,9 @@ def state_payload(managed: Managed, state: ServiceState) -> dict[str, Any]:
             failure = {k: data.get(k) for k in ("event", "at", "provider", "model", "log")}
     return {
         "repo": str(managed.paths.repo),
-        "service": "running" if running else "stopped",
+        "service": "unknown" if unknown else ("running" if running else "stopped"),
+        "state": label,
+        "probe": state.probe,
         "verified": state.verified,
         "endpoint": card_url(managed.port),
         "port": managed.port,
@@ -552,16 +626,23 @@ def state_payload(managed: Managed, state: ServiceState) -> dict[str, Any]:
             "model": state.card.get("executor_model"),
             "generation": state.card.get("config_generation"),
         },
-        "pid": (state.record or {}).get("pid") if running else None,
-        "started_at": (state.record or {}).get("started_at") if running else None,
-        "log": (state.record or {}).get("log") if running else None,
+        "pid": (state.record or {}).get("pid") if running or unknown else None,
+        "started_at": (state.record or {}).get("started_at") if running or unknown else None,
+        "log": (state.record or {}).get("log") if running or unknown else None,
         "notes": list(state.detail),
         "last_failure": failure,
     }
 
 
 def print_state(managed: Managed, state: ServiceState) -> None:
-    label = "running (verified)" if state.verified else ("running (UNVERIFIED)" if state.running else "stopped")
+    if state.probe == PROBE_NOT_PERMITTED:
+        label = UNKNOWN_SERVICE
+    elif state.verified:
+        label = "running (verified)"
+    elif state.running:
+        label = "running (UNVERIFIED)"
+    else:
+        label = "stopped"
     print(f"service:  {label}")
     print(f"endpoint: {card_url(managed.port)}")
     print(f"selected: {state.provider} / {state.model} (generation {managed.generation})")

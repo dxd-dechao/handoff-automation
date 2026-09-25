@@ -113,9 +113,16 @@ drive mode changes who types the ritual phrase, not the channel.
 
 ### Rules for EXECUTOR (implement)
 
-- **Work on a branch** named in `Current Task` (create it if it doesn't
-  exist). Commit as you go with clear messages; do not push or open PRs
-  unless the human asks.
+- **Work on the branch you are given.** Under managed A2A the CLI creates
+  the approved branch from HEAD on the first execution when it does not
+  exist yet and the tree is clean, or refuses with `git switch <branch>`
+  when that branch already exists. The Executor does not create or switch
+  branches. Legacy direct-Claude runs still create the named branch if it
+  does not exist. Commit as you go with clear messages; do not push or open
+  PRs unless the human asks.
+- **Edit only the Status line and Execution Notes.** Leave every other byte
+  of Current Task and QA Feedback unchanged, including headings, blank
+  lines, and `---` separators.
 - **Implement directly.** A headless EXECUTOR (Claude, Codex, or Cursor) must
   not invoke the `handoff-cli` skill, the `handoff` CLI, or another agent;
   those are the PLANNER's and the human's tools.

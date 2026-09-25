@@ -201,7 +201,7 @@ def test_skill_has_valid_metadata_and_existing_cli_intents() -> None:
 SKILL_DIR = Path("skills/handoff-cli")
 CLI_VERBS = {
     "init", "skill", "models", "server", "model", "mode", "planner", "permissions", "status", "approve",
-    "execute", "watch", "resume", "cancel", "runs", "archive",
+    "execute", "watch", "resume", "cancel", "runs", "archive", "preflight",
 }
 
 
@@ -271,6 +271,18 @@ def test_skill_is_mode_aware_and_keeps_the_safety_rules() -> None:
     assert "Never hand-edit" in skill
     recovery = _section(skill, "## Status and recovery")
     assert "(also in watch mode)" in recovery
+    setup = _section(skill, "## Setup")
+    assert "sandboxed" in setup.lower() or "Sandboxed shell" in setup
+    for command in ("status", "server", "execute", "resume", "runs", "preflight"):
+        assert command in setup
+    assert "sandbox.excludedCommands" in setup and "allowLocalBinding" in setup
+    assert "OS sandbox" in setup and "permission" in setup
+    assert "unsandboxed" in setup
+    assert "Never suggest `approve` or `Bash(handoff:*)`" in setup
+    assert "probe not permitted" in setup
+    assert "10–20 s" in setup
+    drive = _section(skill, "## Drive loop")
+    assert "handoff preflight" in drive and drive.index("preflight") < drive.index("handoff execute")
 
 
 def test_installed_copies_of_every_host_are_workflow_paths() -> None:

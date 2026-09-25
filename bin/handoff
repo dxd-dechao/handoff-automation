@@ -60,6 +60,7 @@ setup
 
 workflow
   status    Markdown status, execution state, whose turn, run mode, and the Goal [--json]
+  preflight list every execute blocker and its fix (managed A2A) [--json]
   approve   record plan approval (A2A receipt) or activate a legacy DRAFT
   execute   run the executor (only when it's the executor's turn)
   watch     poll Status; auto-execute on executor turns (refuses in drive mode)
@@ -279,7 +280,7 @@ cmd_status() {
       '{schema: $schema, kind: "status", repo: $repo, transport: "legacy", managed: false,
         status: (if $status == "" then null else $status end), turn: $turn, goal: $goal,
         execution: null, workflow: null, mode: null, watcher: null, executor: null, run: null,
-        reason: null, next: (if $next == "" then null else $next end)}'
+        reason: null, next: (if $next == "" then null else $next end), preflight: null}'
     return
   fi
   echo "repo:   $repo"
@@ -291,14 +292,59 @@ cmd_status() {
   fi
 }
 
+cmd_preflight() {
+  local repo_arg="" json=0 a
+  for a in "$@"; do
+    case "$a" in
+      --json) json=1 ;;
+      -*) die "unknown preflight option: $a (try --help)" ;;
+      *) repo_arg="$a" ;;
+    esac
+  done
+  local repo
+  if [[ $json -eq 1 ]]; then
+    command -v jq >/dev/null || die "jq is required for --json (brew install jq)"
+    repo="$(cd "${repo_arg:-$PWD}" 2>/dev/null && pwd)" || json_die preflight "no such directory: ${repo_arg:-$PWD}"
+    [[ -f "$repo/HANDOFF.md" ]] || json_die preflight "no HANDOFF.md in $repo"
+  else
+    repo="$(resolve_repo "$repo_arg")"
+  fi
+  if is_a2a "$repo"; then
+    if [[ $json -eq 1 ]]; then
+      a2a_cli "$repo" preflight --json
+    else
+      a2a_cli "$repo" preflight
+    fi
+    return
+  fi
+  if [[ $json -eq 1 ]]; then
+    json_die preflight "preflight needs managed A2A"
+  fi
+  die "preflight needs managed A2A"
+}
+
 cmd_execute() {
   command -v jq >/dev/null || die "jq is required (brew install jq)"
-
+  local repo_arg="" json=0 a
+  for a in "$@"; do
+    case "$a" in
+      --json) json=1 ;;
+      -*) die "unknown execute option: $a (try --help)" ;;
+      *) repo_arg="$a" ;;
+    esac
+  done
   local repo
-  repo="$(resolve_repo "${1:-}")"
+  repo="$(resolve_repo "$repo_arg")"
   if is_a2a "$repo"; then
-    a2a_cli "$repo" execute
+    if [[ $json -eq 1 ]]; then
+      a2a_cli "$repo" execute --json
+    else
+      a2a_cli "$repo" execute
+    fi
     return
+  fi
+  if [[ $json -eq 1 ]]; then
+    die "execute --json needs managed A2A"
   fi
   cmd_execute_legacy "$repo"
 }
@@ -724,10 +770,22 @@ cmd_approve() {
 # resume/cancel act on the saved run (endpoint, request, credential reference),
 # not on whatever transport is configured now.
 cmd_resume() {
+  local repo_arg="" json=0 a
+  for a in "$@"; do
+    case "$a" in
+      --json) json=1 ;;
+      -*) die "unknown resume option: $a (try --help)" ;;
+      *) repo_arg="$a" ;;
+    esac
+  done
   local repo
-  repo="$(resolve_repo "${1:-}")"
+  repo="$(resolve_repo "$repo_arg")"
   has_outstanding "$repo" || is_a2a "$repo" || die "resume requires an outstanding A2A run or A2A configuration"
-  a2a_cli "$repo" resume
+  if [[ $json -eq 1 ]]; then
+    a2a_cli "$repo" resume --json
+  else
+    a2a_cli "$repo" resume
+  fi
 }
 
 cmd_cancel() {
@@ -1056,10 +1114,14 @@ cmd_init_legacy() {
 command="${1:-}"
 shift || true
 case "$command" in
-  execute | runs | watch | permissions | approve | resume | cancel)
+  execute | resume)
+    "cmd_$command" "$@"
+    ;;
+  runs | watch | permissions | approve | cancel)
     "cmd_$command" "${1:-}"
     ;;
   status) cmd_status "$@" ;;
+  preflight) cmd_preflight "$@" ;;
   mode) cmd_mode "$@" ;;
   skill) cmd_skill "$@" ;;
   init) cmd_init "$@" ;;

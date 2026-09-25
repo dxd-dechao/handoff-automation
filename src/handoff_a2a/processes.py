@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import signal
 import subprocess
@@ -9,6 +10,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
+
+# alive: identity matches a live process. dead: ProcessLookupError or a
+# positively different start identity. unknown: the probe itself was denied.
+LIVENESS_ALIVE = "alive"
+LIVENESS_DEAD = "dead"
+LIVENESS_UNKNOWN = "unknown"
 
 
 @dataclass
@@ -59,14 +66,44 @@ def start_owned(
     )
 
 
-def process_start_identity(pid: int) -> str:
-    """Stable-enough identity so we never kill a recycled PID."""
+def permission_denied(exc: BaseException | None) -> bool:
+    """True when this exception, or a cause of it, is EPERM/EACCES."""
+    seen: set[int] = set()
+    stack: list[BaseException] = [exc] if exc is not None else []
+    while stack:
+        current = stack.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, PermissionError):
+            return True
+        if isinstance(current, OSError) and current.errno in (errno.EPERM, errno.EACCES):
+            return True
+        if current.__cause__ is not None:
+            stack.append(current.__cause__)
+        if current.__context__ is not None and not current.__suppress_context__:
+            stack.append(current.__context__)
+        nested = getattr(current, "exceptions", None)
+        if nested:
+            stack.extend(nested)
+    return False
+
+
+def _ps_denied(result: subprocess.CompletedProcess[str]) -> bool:
+    text = f"{result.stderr or ''} {result.stdout or ''}"
+    lowered = text.lower()
+    return "operation not permitted" in lowered or "not permitted" in lowered
+
+
+def read_start_identity(pid: int) -> tuple[str | None, bool]:
+    """(identity, permitted). permitted is False when ps//proc could not be used."""
     try:
         stat = os.stat(f"/proc/{pid}")
         ctime = getattr(stat, "st_ctime_ns", int(stat.st_ctime * 1_000_000_000))
-        return f"{pid}:{ctime}"
-    except OSError:
-        pass
+        return f"{pid}:{ctime}", True
+    except OSError as exc:
+        if permission_denied(exc):
+            return None, False
     try:
         result = subprocess.run(
             ["ps", "-p", str(pid), "-o", "lstart="],
@@ -74,12 +111,66 @@ def process_start_identity(pid: int) -> str:
             capture_output=True,
             text=True,
         )
-        stamp = result.stdout.strip()
-        if result.returncode == 0 and stamp:
-            return f"{pid}:{stamp}"
     except OSError:
-        pass
+        return None, False
+    if result.returncode == 0 and result.stdout.strip():
+        return f"{pid}:{result.stdout.strip()}", True
+    if _ps_denied(result):
+        return None, False
+    # ps ran and did not identify the process (gone, or no stamp).
+    return None, True
+
+
+def process_start_identity(pid: int) -> str:
+    """Stable-enough identity so we never kill a recycled PID.
+
+    A denied probe returns `{pid}:unknown` only as a placeholder for the
+    caller that just spawned the process; liveness checks use
+    `process_liveness` and never treat that placeholder as a mismatch.
+    """
+    identity, permitted = read_start_identity(pid)
+    if identity:
+        return identity
+    if not permitted:
+        return f"{pid}:unknown"
     return f"{pid}:unknown"
+
+
+def process_liveness(pid: int, expected_identity: str) -> str:
+    """alive, dead, or unknown. Unknown is never stale and never a mismatch."""
+    if pid <= 0:
+        return LIVENESS_DEAD
+    kill_denied = False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return LIVENESS_DEAD
+    except OSError as exc:
+        if permission_denied(exc):
+            kill_denied = True
+        elif exc.errno == errno.ESRCH:
+            return LIVENESS_DEAD
+        else:
+            return LIVENESS_UNKNOWN
+    identity, permitted = read_start_identity(pid)
+    if not permitted or identity is None:
+        if kill_denied or not permitted:
+            return LIVENESS_UNKNOWN
+        # ps ran, process exists (kill succeeded), but no start stamp.
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return LIVENESS_DEAD
+        except OSError:
+            return LIVENESS_UNKNOWN
+        return LIVENESS_UNKNOWN
+    if identity.endswith(":unknown"):
+        return LIVENESS_UNKNOWN
+    if identity != expected_identity:
+        return LIVENESS_DEAD
+    if _is_zombie(pid):
+        return LIVENESS_DEAD
+    return LIVENESS_ALIVE
 
 
 def owned_from_record(*, pid: int, pgid: int, start_identity: str, cwd: Path) -> OwnedProcess:
@@ -120,9 +211,7 @@ def _is_zombie(pid: int) -> bool:
 
 
 def identity_matches(owned: OwnedProcess) -> bool:
-    if not pid_exists(owned.pid):
-        return False
-    return process_start_identity(owned.pid) == owned.start_identity
+    return process_liveness(owned.pid, owned.start_identity) == LIVENESS_ALIVE
 
 
 def group_pids(pgid: int) -> frozenset[int]:

@@ -48,8 +48,50 @@ _INVISIBLE = re.compile("[\u200b-\u200f\u2060\ufeff]")
 _ENVIRONMENTS = {"claude": claude_environment, "codex": codex_environment, "cursor": cursor_environment}
 
 
+_NETWORK_MARKERS = (
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "ETIMEDOUT",
+    "ENOTFOUND",
+    "EAI_AGAIN",
+    "getaddrinfo",
+    "fetch failed",
+    "network",
+)
+
+
 class ProviderError(Exception):
     """Actionable discovery/validation failure; nothing was configured."""
+
+    def __init__(self, message: str, *, kind: str = "other"):
+        super().__init__(message)
+        self.kind = kind
+
+
+def failure_kind(text: str) -> str:
+    """network, auth, or other. Network is never reported as a login problem."""
+    lowered = text.lower()
+    if any(marker.lower() in lowered for marker in _NETWORK_MARKERS):
+        return "network"
+    if "authentication required" in lowered or "not logged in" in lowered:
+        return "auth"
+    return "other"
+
+
+def _cursor_failure(text: str, *, fallback: str) -> ProviderError:
+    kind = failure_kind(text)
+    first = text.splitlines()[0] if text.splitlines() else fallback
+    if kind == "network":
+        return ProviderError(
+            f"could not reach Cursor ({first}); check network or sandbox; this is not a login problem",
+            kind="network",
+        )
+    if kind == "auth":
+        return ProviderError(
+            f"{fallback} ({first}); run `{LOGIN_COMMANDS['cursor']}`",
+            kind="auth",
+        )
+    return ProviderError(f"{fallback} ({first})", kind="other")
 
 
 @dataclass(frozen=True)
@@ -153,9 +195,7 @@ def cursor_auth(binary: str) -> str:
     result = _run("cursor", [binary, "status"])
     text = _INVISIBLE.sub("", (result.stdout + result.stderr)).strip()
     if result.returncode != 0 or "logged in" not in text.lower() or "not logged in" in text.lower():
-        raise ProviderError(
-            f"Cursor CLI is not logged in for the Executor ({text or 'no status'}); run `{LOGIN_COMMANDS['cursor']}`"
-        )
+        raise _cursor_failure(text or "no status", fallback="Cursor CLI is not logged in for the Executor")
     return text.splitlines()[0]
 
 
@@ -179,9 +219,9 @@ def list_models(provider: str, binary: str | None = None) -> ModelList:
         result = _run(provider, [binary, "models"])
         text = (result.stdout + "\n" + result.stderr).strip()
         if result.returncode != 0 or "authentication required" in text.lower():
-            raise ProviderError(
-                f"cursor-agent models failed ({text.splitlines()[0] if text else result.returncode}); "
-                f"run `{LOGIN_COMMANDS['cursor']}` for the Executor account"
+            raise _cursor_failure(
+                text or str(result.returncode),
+                fallback="cursor-agent models failed",
             )
         models = parse_cursor_models(result.stdout)
         if not models:
@@ -290,7 +330,11 @@ def main(argv: list[str] | None = None) -> int:
         listing = list_models(args.provider)
     except ProviderError as exc:
         if args.json:
-            return print_json_error("models", str(exc))
+            payload: dict[str, object] = {"error": str(exc), "error_kind": exc.kind}
+            if exc.kind == "auth":
+                payload["login_command"] = LOGIN_COMMANDS[args.provider]
+            print_json("models", payload)
+            return 1
         print(f"handoff: {exc}", file=sys.stderr)
         return 1
     if args.json:

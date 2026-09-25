@@ -262,6 +262,18 @@ if mode == "early_ready":
     time.sleep(extra)
     result_json()
     sys.exit(0)
+if mode == "edit_goal":
+    set_value(1)
+    changed = text.replace("Set app.py value according to the current round.", "secret planner edit")
+    write_handoff(set_notes(set_status(changed, "READY FOR QA"), "edited a Planner-owned line"))
+    result_json()
+    sys.exit(0)
+if mode == "strip_separator":
+    set_value(1)
+    stripped = text.replace("\n---\n\n## Execution Notes", "\n## Execution Notes", 1)
+    write_handoff(set_notes(set_status(stripped, "READY FOR QA"), "dropped a trailing separator"))
+    result_json()
+    sys.exit(0)
 
 set_value(1)
 (root / "scratch.txt").write_text("uncommitted executor file\n", encoding="utf-8")
@@ -519,6 +531,10 @@ def managed_env(root: Path, extra: dict[str, str] | None = None) -> dict[str, st
     for provider in PROVIDERS:
         env[f"HANDOFF_{provider.upper()}_BIN"] = str(make_fake_claude(root, provider))
     env["PYTHONUNBUFFERED"] = "1"
+    if not extra or "HOME" not in extra:
+        home = root / "home"
+        home.mkdir(exist_ok=True)
+        env["HOME"] = str(home)
     if extra:
         env.update(extra)
     return env

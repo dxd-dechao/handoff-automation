@@ -159,6 +159,11 @@ MODE_RC=0
 HANDOFF_A2A_BIN="$TMPDIR_BASE/no-a2a" "$HANDOFF_BIN" mode "$REPO" drive > "$TMPDIR_BASE/mode.txt" 2>&1 || MODE_RC=$?
 assert_eq "legacy mode change refused (exit 2)" "2" "$MODE_RC"
 assert "refusal names the managed A2A migration" grep -q "requires managed A2A setup" "$TMPDIR_BASE/mode.txt"
+assert_eq "legacy status preflight is null" "null" "$(jq -r '.preflight' <<<"$STATUS_JSON")"
+PRE_RC=0
+HANDOFF_A2A_BIN="$TMPDIR_BASE/no-a2a" "$HANDOFF_BIN" preflight "$REPO" > "$TMPDIR_BASE/preflight.txt" 2>&1 || PRE_RC=$?
+assert_eq "legacy preflight refuses without Python" "1" "$PRE_RC"
+assert "legacy preflight names managed A2A" grep -q "preflight needs managed A2A" "$TMPDIR_BASE/preflight.txt"
 
 # ── Final report ─────────────────────────────────────────────────────────────
 echo ""

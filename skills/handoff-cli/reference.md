@@ -25,7 +25,8 @@ explicit ID, which is recorded as unverified.
 
 | Command | Purpose |
 | --- | --- |
-| `handoff status "<repo>" [--json]` | Markdown status, execution, turn, mode, watcher, Executor, next action (`kind: status`). |
+| `handoff status "<repo>" [--json]` | Markdown status, execution, turn, mode, watcher, Executor, next action (`kind: status`). A2A repos with a workflow include `preflight`. |
+| `handoff preflight "<repo>" [--json]` | Every execute blocker and its fix (`kind: preflight`). Exit 0 when ready, 1 when blocked. Legacy repos refuse: preflight needs managed A2A. |
 | `handoff approve "<repo>"` | Record the human's chat approval of the current plan. |
 | `handoff execute "<repo>"` | Dispatch one execution and wait (drive mode; also clears a reviewed dispatch hold). |
 | `handoff watch "<repo>"` | Poll and dispatch (watch mode; refuses in drive mode). The human keeps it running. |
@@ -51,17 +52,23 @@ explicit ID, which is recorded as unverified.
   `pid`, `started_at`), `workflow` (`workflow_id`, `rounds_used`,
   `max_rounds`, `dispatch_hold`, `last_outcome`,
   `plan_changed_since_approval`), `executor` (as `model`), `run`, `reason`,
-  `next`.
+  `next`, `preflight` (`ready`, `branch.expected`, `branch.actual`,
+  `branch.exists`, `baseline_clean`, `dirty_paths`, `blockers[]` with
+  `code`, `message`, `fix`; `null` with no approved workflow or on legacy).
 - `models`: `provider`, `models_listed`, `models` (`id`, `name`), `note`,
   `reasoning_effort_supported`, `login_command`. `models_listed: false`
   only means the CLI cannot list models (always for Claude: ask for an
-  explicit ID); it says nothing about login. Only an `error` object means
-  the CLI is missing or not logged in.
+  explicit ID); it says nothing about login. An `error` object has
+  `error_kind` (`network`, `auth`, or `other`). `login_command` is present
+  only for `auth`. `network` is not a login problem.
 - `model`: `selected` (`provider`, `model`, `reasoning_effort`,
   `generation`, `validation`), `active` (`state`:
   `verified`|`unverified`|`stopped`), `current_run`, `pending`.
-- `server-status`: `service` (`running`|`stopped`), `verified`, `endpoint`,
-  `selected`, `active`, `pid`, `notes`, `last_failure`.
+- `server-status`: `service` (`running`|`stopped`|`unknown`), `state`
+  (`verified`|`running`|`stopped`|`unknown`), `probe` (`ok`|`not_permitted`),
+  `verified`, `endpoint`, `selected`, `active`, `pid`, `notes`,
+  `last_failure`. `unknown` / `not_permitted` means the probe was blocked;
+  the process record is kept.
 - `mode`: `mode`, `transport`, `managed`, `changed`, `previous`, `watcher`
   (managed) or `hint` (not managed).
 - `skill-status`: `locations[]` with `host`, `scope` (`project`|`user`),
@@ -70,10 +77,12 @@ explicit ID, which is recorded as unverified.
 ## Skill copy states
 
 `absent`; `current`; `outdated` (an unmodified older copy; `skill install` or
-re-init upgrades it); `foreign` (user-modified, unrelated, symlinked, or
+re-init upgrades it); `elsewhere` (another folder in that host's skill root
+whose `SKILL.md` names `handoff-cli`; `found_path` and `current_content`;
+never modified); `foreign` (user-modified, unrelated, symlinked, or
 tracked; never overwritten, so tell the human to keep it or move it aside);
 `unsupported` (a `--user` location that cannot be verified, for example
-Claude with a relocated `CLAUDE_CONFIG_DIR`).
+Claude with a relocated `CLAUDE_CONFIG_DIR`). `elsewhere` counts as available.
 
 ## Environment
 
