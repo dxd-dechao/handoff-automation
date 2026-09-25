@@ -205,9 +205,14 @@ def test_collisions_refuse_and_roll_back(tmp_path: Path) -> None:
     foreign.mkdir(parents=True)
     (foreign / "SKILL.md").write_text("---\nname: handoff-cli\ndescription: someone else's\n---\n", encoding="utf-8")
     result = handoff(env, "init", str(repo), "--transport", "a2a", "--executor", "cursor", "--model", "fake-model", "--planner", "cursor")
-    assert result.returncode == 1 and "not overwriting" in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "warning:" in result.stdout and "not overwritten" in result.stdout
+    assert "handoff skill install" in result.stdout
     assert (foreign / "SKILL.md").read_text().endswith("someone else's\n---\n")
-    assert not _generated(repo)
+    assert _generated(repo)
+    import shutil
+    shutil.rmtree(repo / ".handoff-logs")
+    (repo / ".handoff-config.json").unlink()
     (repo / "elsewhere").mkdir()
     os.symlink(repo / "elsewhere", repo / ".handoff-logs")
     linked = handoff(env, "init", str(repo), "--transport", "a2a", "--executor", "cursor", "--model", "fake-model")

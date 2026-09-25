@@ -359,10 +359,31 @@ def ensure_excludes(journal: Journal, repo: Path, patterns: list[str]) -> list[s
 
 
 def install_planner_skill(journal: Journal, paths: ManagedPaths, host: str) -> str:
+    """Install the project skill, or skip when a copy is already available.
+
+    A SkillError or OSError becomes a warning string. Only the skill's own
+    writes are rolled back; the caller keeps the rest of init.
+    """
+    from handoff_a2a.skills import skill_available
+
+    project = project_location(paths.repo, host)
+    project_state, _detail = skill_state(project)
+    found = skill_available(paths.repo, host)
+    # An outdated copy at the project path is still upgraded. Skip only when
+    # a current copy, or a copy under another folder, is already available.
+    if project_state != "outdated" and found:
+        return f"already available at {found}"
+    nested = Journal()
     try:
-        return install_skill(project_location(paths.repo, host), journal=journal)
-    except SkillError as exc:
-        raise SetupError(str(exc), exit_code=exc.exit_code) from exc
+        outcome = install_skill(project_location(paths.repo, host), journal=nested)
+    except (SkillError, OSError) as exc:
+        nested.rollback()
+        command = f'handoff skill install "{paths.repo}" --host {host}'
+        return f"warning: planner skill was not installed ({exc}). Install later: {command}"
+    journal.created.extend(nested.created)
+    journal.created_dirs.extend(nested.created_dirs)
+    journal.modified.update(nested.modified)
+    return outcome
 
 
 def check_collisions(paths: ManagedPaths) -> None:
@@ -533,14 +554,6 @@ def _fresh(
         if reason:
             raise SetupError(f"refusing to migrate to managed A2A: {reason}")
     validation = _validate(opts)
-    if planner is not None:
-        location = project_location(paths.repo, planner)
-        state, detail = skill_state(location)
-        if state == "foreign":
-            raise SetupError(
-                f"{location.display} already exists and is not an unmodified handoff install ({detail}); "
-                "not overwriting it. Move it aside, or re-run without --planner"
-            )
     if paths.server_config.exists():
         raise SetupError(f"{paths.server_config} already exists without a managed {CONFIG_NAME}; move it aside first")
     workspace_id = workspace_id_for(paths.repo)
@@ -656,8 +669,13 @@ def _common_files(paths: ManagedPaths, opts: SetupOptions, planner: str | None, 
         report.created.append(str(handoff))
     if planner:
         outcome = install_planner_skill(journal, paths, planner)
-        target = report.created if outcome in {"installed", "upgraded"} else report.kept
-        target.append(f"{project_location(paths.repo, planner).path} ({outcome})")
+        if outcome.startswith("warning:"):
+            report.notes.append(outcome)
+        elif outcome.startswith("already available"):
+            report.kept.append(outcome)
+        else:
+            target = report.created if outcome in {"installed", "upgraded"} else report.kept
+            target.append(f"{project_location(paths.repo, planner).path} ({outcome})")
 
 
 def _record_history(paths: ManagedPaths, journal: Journal, event: dict[str, Any]) -> None:
@@ -688,10 +706,19 @@ def _next_steps(paths: ManagedPaths, provider: str, planner: str | None, report:
             "(the skill writes a DRAFT, waits for your approval, then runs the CLI)"
         )
     else:
-        report.next_steps.append(
-            f"make the Planner skill available: handoff skill install {q} --host <cursor|codex|claude>, "
-            "then in the Planner chat: /handoff-cli plan <task> in the handoff"
-        )
+        from handoff_a2a.skills import any_skill_available
+
+        found = any_skill_available(paths.repo)
+        if found:
+            report.next_steps.append(
+                f"Planner skill is available at {found}; in the Planner chat: "
+                "/handoff-cli plan <task> in the handoff"
+            )
+        else:
+            report.next_steps.append(
+                f"make the Planner skill available: handoff skill install {q} --host <cursor|codex|claude>, "
+                "then in the Planner chat: /handoff-cli plan <task> in the handoff"
+            )
 
 
 def print_report(report: SetupReport) -> None:

@@ -158,48 +158,47 @@ with the token succeeds. A matching port alone is never enough.
 
 `init` never starts the service, and `watch` never starts it for you.
 
-### When the Planner's host blocks `server start`
+### When the Planner's host blocks local commands
 
-`server start` launches a long-lived background process that listens on a
-local port. In drive mode, `execute` starts an Executor run outside the
-Planner's own sandbox. Both are the kind of command a Planner host's
-permission check or shell sandbox often stops, so the Planner reports them
-as blocked. This is not a handoff failure. You have two options:
+`status`, `server`, `execute`, `resume`, `runs`, and `preflight` read local
+process state or connect to the loopback service. A sandboxed Planner shell
+can block `ps`, port binding, and localhost connects. A blocked probe is
+`unknown (probe not permitted; run outside the sandbox)`, never "stopped" or
+"stale", and the process record is kept. `server start` will not launch a
+second server, `server stop` will not signal, and `execute` lists that
+blocker instead of telling you to start the server.
 
-- **One-off:** run the command the Planner gives you in your own terminal.
-  Once the service is verified, `execute`, `status`, and QA work from the
-  Planner as normal.
-- **Permanent, Claude Code Planner:** add allow rules to your user
-  settings (`~/.claude/settings.json`, and every other Claude config
-  directory you use). Each rule needs both forms, the bare `handoff` and
-  the absolute path:
+`handoff server start` starts the service in its own session, so it outlives
+the shell that ran it. A host that kills the whole sandbox or process group
+can still stop it. `handoff server status` shows the truth.
 
-  ```json
-  { "permissions": { "allow": [
-      "Bash(handoff server:*)",
-      "Bash(/absolute/path/to/handoff-automation/bin/handoff server:*)"
-  ] } }
-  ```
+Claude Code needs both of these user settings, in every Claude config
+directory you use. Neither one alone makes drive mode reliable.
+`allowLocalBinding` is not enough: it does not let `ps` or a localhost
+client through, and a bare `"handoff"` allow or exclude matches only the
+command with no arguments.
 
-  `server` covers `start|status|stop`. For drive mode, also add `execute`,
-  `resume`, `status`, and `runs` the same way. Never allowlist `approve`:
-  it is the human plan-approval step, and `execute` only dispatches a plan
-  that step has approved. With these rules the Planner can start Executor
-  runs on approved plans without asking you each time. If you want to decide
-  each dispatch yourself, use watch mode instead.
+1. **OS sandbox** — `sandbox.excludedCommands`: `["handoff *",
+   "/absolute/path/to/bin/handoff *"]`. Every `handoff` subcommand then runs
+   outside the OS sandbox. The Planner must run `handoff` on its own: no
+   pipes, `&&`, redirection, or subshells. It parses `--json` itself.
+2. **Permission check** — allow rules for `server`, `execute`, `resume`,
+   `status`, `runs`, and `preflight`, in bare and absolute `bin/handoff`
+   forms (`Bash(handoff server:*)` and
+   `Bash(/absolute/path/to/bin/handoff server:*)`, and the same for the
+   other verbs). `approve` stays off the list, so it still asks each time.
+   Do not add `Bash(handoff:*)`.
 
-  None of this reaches the Executor: every Claude Executor launch denies
-  `Bash(handoff:*)` and `Bash(*/handoff:*)`, and a deny beats an allow.
+The exclusion is the trade-off: every `handoff` subcommand runs unsandboxed.
+Watch mode does not remove the need; QA still needs an accurate `status`.
+The skill suggests these settings and does not edit them. Codex or Cursor
+Planners approve the command when prompted, or use that host's allowlist.
 
-  If `start` then fails with `EPERM` on its port, the Bash sandbox is
-  blocking local binding. Either run `start` yourself as above, or set
-  `"sandbox": { "network": { "allowLocalBinding": true } }`. That lets
-  every sandboxed command listen on a port, not just handoff, so turn it on
-  deliberately. The handoff service itself binds loopback only and requires
-  its bearer token.
-
-For Codex or Cursor Planners, approve the command when prompted, or use the
-host's own allowlist for `handoff server`.
+`handoff preflight "<repo>"` prints every execute blocker and a fix before
+dispatch. `status --json` includes the same `preflight` object when an
+approved workflow exists. A connect refused by permission says to run
+`handoff` outside the sandbox. A real connection refusal still says to run
+`handoff server start`.
 
 ## Run mode: drive or watch
 
@@ -327,7 +326,9 @@ the same history rules.
 | `queued Executor change ... failed` | `handoff model ... --after-current` (replace) or `--cancel-pending` |
 | `cannot switch now: an A2A run is outstanding` | `handoff status` / `resume` / `cancel`, or `--after-current` |
 | `port N is in use by a process this CLI did not start` | `handoff server start "<repo>" --port <free>` |
-| Planner says `server start` or `execute` was blocked by its permission check or sandbox | run it in your own terminal, or allowlist it ([§4](#when-the-planners-host-blocks-server-start)) |
+| Planner says `server start` or `execute` was blocked, or status says `probe not permitted` | run `handoff` outside the sandbox ([§4](#when-the-planners-host-blocks-local-commands)) |
+| `connection not permitted (sandbox?)` | run `handoff` outside the sandbox; do not start another server |
+| `preflight: blocked` | apply each listed fix, then `handoff preflight` again |
 | `Cursor CLI is not logged in for the Executor` | `cursor-agent login` (Executor account), then retry |
 | `this repository has no CLI-managed A2A service` | `handoff init "<repo>" --transport a2a --executor ... --model ...` (explicit migration) |
 | `run mode is drive: ... handoff watch does not start` | `handoff mode "<repo>" watch`, or let the Planner drive |

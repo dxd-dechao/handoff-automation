@@ -1,5 +1,7 @@
 # A2A Executor implementation plan
 
+**A8-PREFLIGHT-SANDBOX (2026-09-25): executed; READY FOR QA.** Dispatch preflight, three-state liveness, sandboxed connect/skill/init errors, and section-boundary diagnostics. Evidence: [qa-a8-preflight-sandbox.md](qa-a8-preflight-sandbox.md).
+
 **A7-SKILL-FIRST-SETUP (2026-09-25): executed; READY FOR QA.** Skill-first setup and use: `handoff skill install|status` (one installer, three hosts, safe upgrades), the Setup interview with A2A as the agreed default, a saved run mode (`init --mode`, `handoff mode`, status, watch enforcement, watcher record), `--json` output for the skill, and Executor isolation from the skill. On `codex/a7-skill-first-setup`. Evidence and limits: [qa-a7-skill-first-setup.md](qa-a7-skill-first-setup.md).
 
 **A6-CLI-USABILITY-CURSOR (2026-09-24): executed; READY FOR QA.** Generated setup (`init`/`models`), managed service (`server`), Executor model selection within a workflow (`model`, `--after-current`), Cursor Executor adapter, and Cursor CLI/editor Planner integration, on `codex/a6-cli-setup-cursor-model-switch`. Evidence and limits: [qa-a6-cli-usability.md](qa-a6-cli-usability.md). The earlier status below remains the record for A1–A5.

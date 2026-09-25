@@ -2,6 +2,8 @@
 
 Reviewed: **2026-09-24**. Checkout: `codex/a2a-executor-mvp`, commit `1e09ec58f4f059c9d7f3e01fe875eb01b99ce588`.
 
+**A8 update (2026-09-25, Executor self-report; independent Planner QA pending).** `handoff preflight` lists every execute blocker and its fix. A sandboxed probe is `unknown`, not stopped. `init --planner` keeps setup when the skill install fails. See [the A8 report](qa-a8-preflight-sandbox.md).
+
 **A7 update (2026-09-25, Executor self-report; independent Planner QA pending).** Branch `codex/a7-skill-first-setup` from `2a5bf25`. The `handoff-cli` Planner skill is now the default entry point. After `handoff skill install` (Cursor, Codex, or Claude Code; project or explicit `--user`), the human asks the Planner to "set up handoff". The skill checks existing state with `--json`, proposes managed A2A for explicit agreement, asks provider, model, Codex effort, and run mode, then runs `init` and `server start`. The run mode (drive or watch) is saved by the CLI (`handoff mode`), shown in status, and enforced by watch. A Cursor CLI Planner passed the bounded live check after one failed turn led to a skill fix. Cursor Editor discovery remains a manual pending step. See [the A7 report](qa-a7-skill-first-setup.md).
 
 **A6 update (2026-09-24, Executor self-report; independent Planner QA pending).** Branch `codex/a6-cli-setup-cursor-model-switch` from `7ee6d78`. The three user requirements are implemented through public commands:

@@ -37,7 +37,10 @@ from handoff_a2a.contracts import (
     request_canonical_hash,
     snapshot_sha256,
 )
+from handoff_a2a.processes import permission_denied
 from handoff_a2a.workspace import HANDOFF_NAME, LOG_DIRNAME, parse_handoff
+
+SANDBOX_CONNECT = "local service connection not permitted (sandbox?); run handoff outside the sandbox"
 
 AGENT_CARD_PATH = "/.well-known/agent-card.json"
 RUN_RECORD_SCHEMA = "urn:handoff-automation:coding-task:v1#run-record"
@@ -50,10 +53,18 @@ class ClientError(Exception):
 
 
 class UnresolvedExecution(ClientError):
-    def __init__(self, message: str, *, task_id: str | None, execution_id: str):
+    def __init__(
+        self,
+        message: str,
+        *,
+        task_id: str | None,
+        execution_id: str,
+        details: dict[str, Any] | None = None,
+    ):
         super().__init__(message)
         self.task_id = task_id
         self.execution_id = execution_id
+        self.details = details or {}
 
 
 def _origin(url: str) -> tuple[str, str | None, int | None]:
@@ -526,10 +537,12 @@ async def status_from_record(*, record_path: Path, credential_file: Path, timeou
             "task": task,
         }
     except Exception as exc:
+        detail = SANDBOX_CONNECT if permission_denied(exc) else f"status unresolved: {exc}"
         raise UnresolvedExecution(
-            f"status unresolved: {exc}",
+            detail,
             task_id=str(task_id),
             execution_id=str(record.get("execution_id") or ""),
+            details={"sandbox": permission_denied(exc)},
         ) from exc
     finally:
         await client.close()
@@ -582,11 +595,20 @@ async def resume_from_record(*, record_path: Path, credential_file: Path, timeou
         raise
     except ClientError:
         raise
-    except Exception as exc:
+    except TimeoutError as exc:
         raise UnresolvedExecution(
-            f"resume unresolved: {exc}",
+            "wait timeout",
             task_id=record.get("task_id") if isinstance(record.get("task_id"), str) else None,
             execution_id=request.execution_id,
+            details={"wait_timeout": True, "timeout_s": timeout},
+        ) from exc
+    except Exception as exc:
+        detail = SANDBOX_CONNECT if permission_denied(exc) else f"resume unresolved: {exc}"
+        raise UnresolvedExecution(
+            detail,
+            task_id=record.get("task_id") if isinstance(record.get("task_id"), str) else None,
+            execution_id=request.execution_id,
+            details={"sandbox": permission_denied(exc)},
         ) from exc
     finally:
         await client.close()

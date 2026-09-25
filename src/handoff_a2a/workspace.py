@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 import re
 import subprocess
@@ -137,6 +138,49 @@ def is_workflow_path(rel: str) -> bool:
     if _DELIVERY_RULE_RE.match(normalized):
         return True
     return normalized == LOG_DIRNAME or normalized.startswith(f"{LOG_DIRNAME}/")
+
+
+def _normalize_owned(text: str) -> str:
+    """Drop trailing whitespace, blank lines, and `---` separator lines."""
+    kept = []
+    for line in text.splitlines():
+        stripped = line.rstrip()
+        if stripped == "" or stripped == "---":
+            continue
+        kept.append(stripped)
+    return "\n".join(kept)
+
+
+def _boundary_note(before: str, after: str) -> str | None:
+    if before == after:
+        return None
+    if _normalize_owned(before) == _normalize_owned(after):
+        return "ignored trailing whitespace, blank lines, or --- separators at section boundaries"
+    return None
+
+
+def section_diff(before: str, after: str, limit: int = 20) -> str:
+    """Short unified diff of Planner-owned text. Section headings are kept."""
+    diff = list(
+        difflib.unified_diff(
+            before.splitlines(),
+            after.splitlines(),
+            fromfile="approved",
+            tofile="delivery",
+            lineterm="",
+        )
+    )
+    if len(diff) <= limit:
+        return "\n".join(diff)
+    kept: list[str] = []
+    for line in diff:
+        body = line[1:] if line[:1] in "+-" else line
+        heading = line.startswith(("---", "+++", "@@")) or body.startswith("## ")
+        if heading or len(kept) < limit:
+            kept.append(line)
+    if len(kept) < len(diff):
+        kept.append(f"... {len(diff) - len(kept)} more diff lines")
+    return "\n".join(kept)
 
 
 def parse_handoff(text: str) -> HandoffDocument:
@@ -333,8 +377,10 @@ class GitWorkspace:
         encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
         return snapshot_sha256(encoded)
 
-    def code_is_clean(self) -> bool:
+    def dirty_code_paths(self) -> list[str]:
+        """Non-workflow paths that keep the code baseline dirty."""
         porcelain = self.git("status", "--porcelain", "-uall")
+        found: list[str] = []
         for line in porcelain.splitlines():
             if len(line) < 4:
                 continue
@@ -343,9 +389,31 @@ class GitWorkspace:
                 path = path.split(" -> ", 1)[1]
             if path.startswith('"') and path.endswith('"'):
                 path = path[1:-1]
+            path = path.replace("\\", "/")
             if not is_workflow_path(path):
-                return False
-        return True
+                found.append(path)
+        return found
+
+    def code_is_clean(self) -> bool:
+        return not self.dirty_code_paths()
+
+    def local_branch_exists(self, name: str) -> bool:
+        if not name or any(ch in name for ch in (" ", "\n", "\t")):
+            return False
+        result = subprocess.run(
+            ["git", "-C", str(self.path), "show-ref", "--verify", "--quiet", f"refs/heads/{name}"],
+            check=False,
+            capture_output=True,
+        )
+        return result.returncode == 0
+
+    def create_branch_from_head(self, name: str) -> None:
+        """Create and check out `name` from the current HEAD. Never switches an existing branch."""
+        if self.local_branch_exists(name):
+            raise WorkspaceError(f"branch {name} already exists")
+        if not self.code_is_clean():
+            raise WorkspaceError("refusing to create a branch with uncommitted code changes")
+        self.git("switch", "-c", name)
 
     def verify_code_fingerprint(self, expected: str) -> None:
         actual = self.code_fingerprint()
@@ -418,17 +486,29 @@ class GitWorkspace:
             self.verify_code_fingerprint(expected_code_fingerprint)
         return document
 
-    def evaluate_transition(self, before: HandoffDocument) -> tuple[HandoffDocument, bool, str | None]:
+    def evaluate_transition(self, before: HandoffDocument) -> tuple[HandoffDocument, bool, str | None, str | None]:
+        """Return (document, accepted, reason, note).
+
+        The note is set when the only Planner-owned differences are trailing
+        whitespace, blank lines, or `---` separators. `approved_plan_hash` is
+        not involved.
+        """
         after = parse_handoff(self.read_handoff_text())
-        plan_intact = after.planner_fingerprint == before.planner_fingerprint
+        note = _boundary_note(before.planner_fingerprint, after.planner_fingerprint)
+        plan_intact = note is not None or after.planner_fingerprint == before.planner_fingerprint
         if after.status == "APPROVED":
-            return after, False, "executor must not set Status to APPROVED"
+            return after, False, "executor must not set Status to APPROVED", None
         if not plan_intact:
-            return after, False, "executor changed Planner-owned plan or QA sections"
+            diff = section_diff(before.planner_fingerprint, after.planner_fingerprint)
+            reason = "executor changed Planner-owned plan or QA sections"
+            if diff:
+                reason = f"{reason}\n{diff}"
+            return after, False, reason, None
         if after.status != READY_FOR_QA:
             return (
                 after,
                 False,
                 f"expected Status {READY_FOR_QA}, found {after.status!r}",
+                None,
             )
-        return after, True, None
+        return after, True, None, note

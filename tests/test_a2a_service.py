@@ -159,6 +159,17 @@ def test_failed_start_leaves_no_record_and_blocks_dispatch(tmp_path: Path, clean
     assert not (repo / ".handoff-logs" / "outstanding.json").exists()
 
 
+def test_started_server_outlives_the_launching_shell(tmp_path: Path, cleanup) -> None:
+    repo, env = managed_repo(tmp_path)
+    cleanup(repo)
+    launched = handoff(env, "server", "start", str(repo))
+    assert launched.returncode == 0, launched.stderr
+    status = handoff(env, "server", "status", str(repo), "--json")
+    body = json.loads(status.stdout)
+    assert body["verified"] is True and body["state"] == "verified" and body["probe"] == "ok"
+    assert _alive(body["pid"])
+
+
 def test_public_flow_delivers_cursor_run_with_skill_and_repo_guidance(tmp_path: Path, cleanup) -> None:
     repo, env = managed_repo(tmp_path, planner="cursor")
     cleanup(repo)

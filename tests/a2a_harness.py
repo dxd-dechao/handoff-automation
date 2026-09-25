@@ -519,6 +519,10 @@ def managed_env(root: Path, extra: dict[str, str] | None = None) -> dict[str, st
     for provider in PROVIDERS:
         env[f"HANDOFF_{provider.upper()}_BIN"] = str(make_fake_claude(root, provider))
     env["PYTHONUNBUFFERED"] = "1"
+    if not extra or "HOME" not in extra:
+        home = root / "home"
+        home.mkdir(exist_ok=True)
+        env["HOME"] = str(home)
     if extra:
         env.update(extra)
     return env
