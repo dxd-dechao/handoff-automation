@@ -262,6 +262,18 @@ if mode == "early_ready":
     time.sleep(extra)
     result_json()
     sys.exit(0)
+if mode == "edit_goal":
+    set_value(1)
+    changed = text.replace("Set app.py value according to the current round.", "secret planner edit")
+    write_handoff(set_notes(set_status(changed, "READY FOR QA"), "edited a Planner-owned line"))
+    result_json()
+    sys.exit(0)
+if mode == "strip_separator":
+    set_value(1)
+    stripped = text.replace("\n---\n\n## Execution Notes", "\n## Execution Notes", 1)
+    write_handoff(set_notes(set_status(stripped, "READY FOR QA"), "dropped a trailing separator"))
+    result_json()
+    sys.exit(0)
 
 set_value(1)
 (root / "scratch.txt").write_text("uncommitted executor file\n", encoding="utf-8")

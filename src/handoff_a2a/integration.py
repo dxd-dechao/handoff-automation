@@ -170,12 +170,25 @@ def _dirty_fix() -> str:
     )
 
 
+SERVICE_BLOCKER_CODES = frozenset({"service_stopped", "service_unknown"})
+
+
 def format_blockers(preflight: Preflight) -> str:
     lines = ["refusing to execute:"]
     for item in preflight.blockers:
         lines.append(f"- {item.message}")
         lines.append(f"  fix: {item.fix}")
     return "\n".join(lines)
+
+
+def raise_preflight(preflight: Preflight) -> None:
+    """Refuse dispatch. Service-only blockers defer so watch retries."""
+    if not preflight.blockers:
+        return
+    message = format_blockers(preflight)
+    if all(item.code in SERVICE_BLOCKER_CODES for item in preflight.blockers):
+        raise DispatchDeferred(message)
+    raise IntegrationError(message)
 
 
 def endpoint_unavailable(exc: BaseException) -> str:
@@ -601,8 +614,7 @@ def _prepare_request(
     document = parse_handoff(markdown)
     workflow = require_workflow(repo)
     preflight = collect_preflight(repo, config, settings)
-    if preflight.blockers:
-        raise IntegrationError(format_blockers(preflight))
+    raise_preflight(preflight)
     git = GitWorkspace(settings.workspace_id, repo)
     created = None
     if preflight.create_branch and not check_only:
@@ -877,10 +889,8 @@ async def cmd_execute_async(repo: Path, *, from_watch: bool = False, as_json: bo
         try:
             client = await _connect(settings)
         except (httpx.HTTPError, OSError) as exc:
-            message = endpoint_unavailable(exc)
-            if permission_denied(exc):
-                raise IntegrationError(message) from exc
-            raise DispatchDeferred(message) from exc
+            # A denied connect and a stopped service both defer: watch retries.
+            raise DispatchDeferred(endpoint_unavailable(exc)) from exc
         verify_managed_card(repo, client._card)
         record, _workflow, request = _prepare_request(repo, config, settings)
     except BaseException:

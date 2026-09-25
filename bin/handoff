@@ -325,12 +325,26 @@ cmd_preflight() {
 
 cmd_execute() {
   command -v jq >/dev/null || die "jq is required (brew install jq)"
-
+  local repo_arg="" json=0 a
+  for a in "$@"; do
+    case "$a" in
+      --json) json=1 ;;
+      -*) die "unknown execute option: $a (try --help)" ;;
+      *) repo_arg="$a" ;;
+    esac
+  done
   local repo
-  repo="$(resolve_repo "${1:-}")"
+  repo="$(resolve_repo "$repo_arg")"
   if is_a2a "$repo"; then
-    a2a_cli "$repo" execute
+    if [[ $json -eq 1 ]]; then
+      a2a_cli "$repo" execute --json
+    else
+      a2a_cli "$repo" execute
+    fi
     return
+  fi
+  if [[ $json -eq 1 ]]; then
+    die "execute --json needs managed A2A"
   fi
   cmd_execute_legacy "$repo"
 }
@@ -756,10 +770,22 @@ cmd_approve() {
 # resume/cancel act on the saved run (endpoint, request, credential reference),
 # not on whatever transport is configured now.
 cmd_resume() {
+  local repo_arg="" json=0 a
+  for a in "$@"; do
+    case "$a" in
+      --json) json=1 ;;
+      -*) die "unknown resume option: $a (try --help)" ;;
+      *) repo_arg="$a" ;;
+    esac
+  done
   local repo
-  repo="$(resolve_repo "${1:-}")"
+  repo="$(resolve_repo "$repo_arg")"
   has_outstanding "$repo" || is_a2a "$repo" || die "resume requires an outstanding A2A run or A2A configuration"
-  a2a_cli "$repo" resume
+  if [[ $json -eq 1 ]]; then
+    a2a_cli "$repo" resume --json
+  else
+    a2a_cli "$repo" resume
+  fi
 }
 
 cmd_cancel() {
@@ -1088,7 +1114,10 @@ cmd_init_legacy() {
 command="${1:-}"
 shift || true
 case "$command" in
-  execute | runs | watch | permissions | approve | resume | cancel)
+  execute | resume)
+    "cmd_$command" "$@"
+    ;;
+  runs | watch | permissions | approve | cancel)
     "cmd_$command" "${1:-}"
     ;;
   status) cmd_status "$@" ;;
