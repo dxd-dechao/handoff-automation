@@ -128,11 +128,9 @@ def process_start_identity(pid: int) -> str:
     caller that just spawned the process; liveness checks use
     `process_liveness` and never treat that placeholder as a mismatch.
     """
-    identity, permitted = read_start_identity(pid)
+    identity, _permitted = read_start_identity(pid)
     if identity:
         return identity
-    if not permitted:
-        return f"{pid}:unknown"
     return f"{pid}:unknown"
 
 

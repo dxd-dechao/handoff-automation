@@ -17,6 +17,8 @@ import pytest
 from a2a_harness import HANDOFF_BIN, field, git, handoff, managed_repo, stop_managed, write_handoff
 from handoff_a2a.workspace import approved_plan_hash, parse_handoff
 
+pytestmark = pytest.mark.server
+
 
 @pytest.fixture
 def cleanup():

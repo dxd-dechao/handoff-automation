@@ -184,6 +184,33 @@ def test_rebaseline_on_changed_plan_only(tmp_path: Path) -> None:
     assert load_workflow(repo)["post_run_fingerprint"] == "c" * 64
 
 
+def test_rebaseline_skipped_when_fingerprint_is_unchanged(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    write_handoff(repo, status="DRAFT")
+    first = approve(repo, workspace_id="fixture", max_rounds=3)
+    recorded = "d" * 64
+    first["post_run_fingerprint"] = recorded
+    first["post_run_branch"] = "main"
+    first["rounds_used"] = 1
+    save_workflow(repo, first)
+    text = (repo / "HANDOFF.md").read_text(encoding="utf-8")
+    (repo / "HANDOFF.md").write_text(
+        text.replace("Set app.py value according to the current round.", "Same tree, new plan."),
+        encoding="utf-8",
+    )
+    again = approve(
+        repo,
+        workspace_id="fixture",
+        max_rounds=3,
+        current_fingerprint=recorded,
+        current_branch="main",
+        dirty_code_paths=[],
+    )
+    assert "rebaselined_at" not in again
+    assert "previous_post_run_fingerprint" not in again
+    assert again["post_run_fingerprint"] == recorded
+
+
 def test_optional_fingerprint_is_additive() -> None:
     markdown = "# hi\n"
     base = {

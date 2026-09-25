@@ -72,8 +72,10 @@ def build_parser() -> argparse.ArgumentParser:
     cli_sub.add_parser("approve")
     cli_execute = cli_sub.add_parser("execute")
     cli_execute.add_argument("--json", action="store_true")
+    cli_execute.add_argument("--wait", default=None)
     cli_resume = cli_sub.add_parser("resume")
     cli_resume.add_argument("--json", action="store_true")
+    cli_resume.add_argument("--wait", default=None)
     cli_preflight = cli_sub.add_parser("preflight")
     cli_preflight.add_argument("--json", action="store_true")
     cli_sub.add_parser("cancel")
@@ -188,6 +190,8 @@ def _main(raw: list[str]) -> int:
                 argv.append("--append")
         if getattr(args, "json", False) and args.cli_command in {"status", "execute", "resume", "preflight", "qa"}:
             argv.append("--json")
+        if args.cli_command in {"execute", "resume"} and getattr(args, "wait", None) is not None:
+            argv.extend(["--wait", str(args.wait)])
         return integration_main(argv)
     if args.command == "execute":
         try:

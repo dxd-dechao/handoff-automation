@@ -28,3 +28,6 @@ python_files = ["test_a2a_*.py"]
 pythonpath = ["tests", "."]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+markers = [
+  "server: needs process probes (ps, kill 0 on foreign PIDs), localhost bind/connect, or a started service",
+]

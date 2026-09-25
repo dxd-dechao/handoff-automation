@@ -122,6 +122,7 @@ def test_codex_failures_are_reported(tmp_path: Path, lines: list[str], invalid: 
 
 
 @pytest.mark.parametrize("provider", PROVIDERS)
+@pytest.mark.server
 def test_agent_card_reports_actual_executor_identity(tmp_path: Path, provider: str) -> None:
     repo = make_repo(tmp_path)
     fake = make_fake_claude(tmp_path, provider)
@@ -139,6 +140,7 @@ def test_agent_card_reports_actual_executor_identity(tmp_path: Path, provider: s
     assert isinstance(adapter, {"claude": ClaudeAdapter, "codex": CodexAdapter, "cursor": CursorAdapter}[provider])
 
 
+@pytest.mark.server
 def test_server_config_requires_exactly_one_adapter(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
     config, _token, _evidence = make_server_config(tmp_path, repo, make_fake_claude(tmp_path))
@@ -306,6 +308,7 @@ def test_codex_disables_the_project_planner_skill(tmp_path: Path, monkeypatch: p
 
 
 @pytest.mark.parametrize("provider", PROVIDERS)
+@pytest.mark.server
 def test_executor_runs_cannot_use_the_planner_skill_in_any_location(tmp_path: Path, provider: str) -> None:
     """Skill installed in every project folder and the user folders; one fake Executor run."""
     from a2a_harness import handoff, managed_repo, stop_managed, write_handoff

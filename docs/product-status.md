@@ -2,6 +2,8 @@
 
 Reviewed: **2026-09-24**. Checkout: `codex/a2a-executor-mvp`, commit `1e09ec58f4f059c9d7f3e01fe875eb01b99ce588`.
 
+**A12 update (2026-09-25, Executor self-report; independent Planner QA pending).** Init compares preambles without a temp file, refresh keeps the file mode and each file's line endings, `handoff qa` edits only the QA body and Status and refuses a plan that already changed, rebaseline is recorded only when the snapshot changes, and `execute`/`resume` take `--wait`. The `server` pytest marker is the suite that needs process probes, localhost, or a started service. See [the A12 report](qa-a12-polish-sandbox-tests.md).
+
 **A11 update (2026-09-25, Executor self-report; independent Planner QA pending).** A delivery with a duplicated, missing, or reordered `## Current Task`, `## Execution Notes`, or `## QA Feedback` heading is rejected. `handoff qa` is the A2A way to write QA Feedback. `archive` refuses a damaged or changed plan. Each run saves the HANDOFF bytes the server evaluated. See [the A11 report](qa-a11-handoff-integrity.md).
 
 **A10 update (2026-09-25, Executor self-report; independent Planner QA pending).** The HANDOFF preamble is a short Executor contract. `handoff template refresh` replaces only that preamble. A sandboxed status probe of an outstanding run is `UNKNOWN`, not `UNRESOLVED`. See [the A10 report](qa-a10-slim-handoff-template.md).
@@ -176,12 +178,4 @@ Execution policy throughout: human approval followed by manual Executor launch; 
 
 ## Known follow-ups
 
-- (A8) A redundant branch in `processes.process_start_identity`.
-- (A9) `approve` now needs a git checkout to compute the snapshot.
-- (A9) `approve` prints "rebaselined" even when the new snapshot equals the old one.
-- (A10) This repository's own `HANDOFF.md` preamble is out of date; the Planner refreshes it with `handoff template refresh` after A10 merges.
-- (A10) `init` on an existing repo calls `mktemp` only to compare preambles, so a locked-down temp directory makes `init` fail. The comparison could be done without temp files.
-- (A10) The bash `template refresh` matches `## Current Task` with `grep -x`, so a CRLF file is refused as "no Current Task", while the Python init hint strips `\r`. The two paths disagree on CRLF files.
-- (A10) A refreshed `HANDOFF.md` takes the temp file's mode (0600).
-- (A11) `handoff qa` converts every LF to CRLF when the file contains any CRLF, so a file with mixed line endings changes outside QA Feedback.
-- (A11) `handoff qa` checks that its own write keeps `approved_plan_hash`, but does not refuse when the plan already differs from the approval receipt. `archive` still catches that case.
+None open.

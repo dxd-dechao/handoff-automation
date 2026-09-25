@@ -63,6 +63,7 @@ def test_preflight_lists_every_blocker(tmp_path: Path) -> None:
     assert "outstanding" in refused.stderr
 
 
+@pytest.mark.server
 def test_first_execute_creates_a_missing_branch(tmp_path: Path) -> None:
     repo, env = managed_repo(tmp_path)
     write_handoff(repo, status="DRAFT", branch="feature")
@@ -80,6 +81,7 @@ def test_first_execute_creates_a_missing_branch(tmp_path: Path) -> None:
     assert manifests and json.loads(manifests[0].read_text())["branch_created"] == "feature"
 
 
+@pytest.mark.server
 def test_bytecode_baseline_and_reapprove_rebaseline(tmp_path: Path) -> None:
     repo, env = managed_repo(tmp_path)
     empty = tmp_path / "empty-exclude"
@@ -576,6 +578,7 @@ def test_refused_connection_still_suggests_server_start(
     assert "connection not permitted" not in err
 
 
+@pytest.mark.server
 def test_wait_timeout_names_the_run(tmp_path: Path) -> None:
     def once(root: Path, *, as_json: bool) -> subprocess.CompletedProcess[str]:
         root.mkdir()
@@ -605,6 +608,7 @@ def test_wait_timeout_names_the_run(tmp_path: Path) -> None:
     assert body["next"].startswith("handoff resume")
 
 
+@pytest.mark.server
 def test_executor_boundary_diff_is_in_the_manifest(tmp_path: Path) -> None:
     def run(root: Path, mode: str) -> tuple[subprocess.CompletedProcess[str], dict]:
         root.mkdir()
@@ -679,10 +683,97 @@ def test_handoff_qa_writes_only_the_qa_section(tmp_path: Path) -> None:
     assert path.read_text(encoding="utf-8") == broken
 
 
+def test_qa_on_mixed_endings_changes_only_the_body_and_status(tmp_path: Path) -> None:
+    repo, env = managed_repo(tmp_path)
+    write_handoff(repo, status="READY FOR QA", branch="main")
+    path = repo / "HANDOFF.md"
+    text = path.read_text(encoding="utf-8")
+    status_at = text.index("**Status:**")
+    line_end = text.index("\n", status_at)
+    mixed = text[: line_end + 1].encode() + text[line_end + 1 :].replace("\n", "\r\n").encode()
+    path.write_bytes(mixed)
+    path.chmod(0o644)
+    qa = tmp_path / "qa.md"
+    qa.write_text("Checked.\n", encoding="utf-8")
+    result = handoff(env, "qa", str(repo), "--status", "APPROVED", "--file", str(qa))
+    assert result.returncode == 0, result.stdout + result.stderr
+    written = path.read_bytes()
+    assert stat_mode(path) == 0o644
+
+    def outside(data: bytes) -> bytes:
+        prefix, heading, _body = data.partition(b"## QA Feedback")
+        prefix = prefix.replace(b"**Status:** READY FOR QA", b"**Status:**")
+        prefix = prefix.replace(b"**Status:** APPROVED", b"**Status:**")
+        return prefix + heading
+
+    assert outside(written) == outside(mixed)
+    assert b"Checked.\r\n" in written
+    assert b"**Status:** APPROVED\n" in written
+
+
+def test_qa_refuses_when_the_plan_already_changed(tmp_path: Path) -> None:
+    repo, env = managed_repo(tmp_path)
+    write_handoff(repo, status="DRAFT", branch="main")
+    assert handoff(env, "approve", str(repo)).returncode == 0
+    path = repo / "HANDOFF.md"
+    text = path.read_text(encoding="utf-8")
+    edited = text.replace(
+        "Set app.py value according to the current round.", "Edited after approval."
+    ).replace("**Status:** READY FOR EXECUTION", "**Status:** READY FOR QA")
+    path.write_text(edited, encoding="utf-8")
+    before = path.read_bytes()
+    qa = tmp_path / "qa.md"
+    qa.write_text("nope\n", encoding="utf-8")
+    refused = handoff(env, "qa", str(repo), "--status", "APPROVED", "--file", str(qa))
+    assert refused.returncode != 0, refused.stdout
+    assert "delivered copy" in refused.stderr and "re-approve" in refused.stderr
+    assert path.read_bytes() == before
+    assert not list((repo / ".handoff-logs").glob("HANDOFF.pre-qa-*"))
+
+
+def test_wait_flag_rejects_bad_values(tmp_path: Path) -> None:
+    repo, env = managed_repo(tmp_path)
+    for value in ("0", "-5", "abc", "1801"):
+        for command in ("execute", "resume"):
+            result = handoff(env, command, "--wait", value, str(repo))
+            assert result.returncode == 1, (command, value, result.stderr)
+            assert "positive number up to 1800" in result.stderr
+
+
+@pytest.mark.server
+def test_wait_flag_reports_the_value_used(tmp_path: Path) -> None:
+    repo, env = managed_repo(tmp_path)
+    write_handoff(repo, status="DRAFT", branch="main")
+    (repo / ".fake-sleep").write_text("80\n", encoding="utf-8")
+    config = json.loads((repo / ".handoff-config.json").read_text(encoding="utf-8"))
+    config["a2a"]["wait_timeout_s"] = 5
+    (repo / ".handoff-config.json").write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    assert handoff(env, "approve", str(repo)).returncode == 0
+    assert handoff(env, "server", "start", str(repo)).returncode == 0
+    try:
+        started = time.monotonic()
+        execute = handoff(env, "execute", str(repo), "--wait", "30", "--json", timeout=45)
+        elapsed = time.monotonic() - started
+        assert execute.returncode == 2, execute.stdout + execute.stderr
+        body = _json(execute)
+        assert body["timeout_s"] == 30 and body["wait_timeout"] is True
+        assert 25 <= elapsed <= 40
+        started = time.monotonic()
+        resume = handoff(env, "resume", str(repo), "--wait", "30", "--json", timeout=45)
+        elapsed = time.monotonic() - started
+        assert resume.returncode == 2, resume.stdout + resume.stderr
+        body = _json(resume)
+        assert body["timeout_s"] == 30
+        assert 25 <= elapsed <= 40
+    finally:
+        stop_managed(repo)
+
+
 def stat_mode(path: Path) -> int:
     return path.stat().st_mode & 0o777
 
 
+@pytest.mark.server
 def test_bad_headings_are_rejected_and_the_delivery_is_saved(tmp_path: Path) -> None:
     def run(root: Path, mode: str) -> tuple[subprocess.CompletedProcess[str], dict, Path]:
         root.mkdir()

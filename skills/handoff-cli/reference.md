@@ -28,9 +28,9 @@ explicit ID, which is recorded as unverified.
 | `handoff status "<repo>" [--json]` | Markdown status, execution, turn, mode, watcher, Executor, next action (`kind: status`). A2A repos with a workflow include `preflight`. |
 | `handoff preflight "<repo>" [--json]` | Every execute blocker and its fix (`kind: preflight`). Exit 0 when ready, 1 when blocked. Legacy repos refuse: preflight needs managed A2A. |
 | `handoff approve "<repo>"` | Record the human's chat approval of the current plan. |
-| `handoff execute "<repo>"` | Dispatch one execution and wait (drive mode; also clears a reviewed dispatch hold). A wait timeout (exit 2, "only this command stopped waiting") means the run is still going; re-run a plain `handoff resume "<repo>"` to reattach. |
-| `handoff watch "<repo>"` | Poll and dispatch (watch mode; refuses in drive mode). The human keeps it running. |
-| `handoff resume "<repo>"` / `handoff cancel "<repo>"` | Reconnect to / cancel an outstanding run. |
+| `handoff execute "<repo>" [--wait <seconds>]` | Dispatch one execution and wait (drive mode; also clears a reviewed dispatch hold). `--wait` overrides the configured timeout for this call only (a positive number up to 1800). A wait timeout (exit 2, "only this command stopped waiting") means the run is still going; re-run a plain `handoff resume "<repo>"` to reattach. |
+| `handoff watch "<repo>"` | Poll and dispatch (watch mode; refuses in drive mode). The human keeps it running. Status checks only; no `--wait`. |
+| `handoff resume "<repo>" [--wait <seconds>]` / `handoff cancel "<repo>"` | Reconnect to / cancel an outstanding run. `--wait` is the same override as on `execute`. |
 | `handoff runs "<repo>"` | Past runs from manifests. |
 | `handoff archive "<repo>" [--superseded]` | Move the finished task to HANDOFF-ARCHIVE.md; `--superseded` closes an exhausted workflow. Refuses a damaged heading structure or a plan that changed since approval. |
 | `handoff qa "<repo>" --status <APPROVED\|CHANGES REQUESTED> --file <path> [--append] [--json]` | A2A only (`kind: qa`). Replaces QA Feedback and sets Status. `--append` on APPROVED or CHANGES REQUESTED adds a note and leaves Status unchanged. Refuses while a run is outstanding, on a bad structure, or if Current Task would change. |

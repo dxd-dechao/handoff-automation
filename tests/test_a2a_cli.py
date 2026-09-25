@@ -154,6 +154,7 @@ def test_invalid_a2a_config_does_not_fall_back(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("provider", PROVIDERS)
+@pytest.mark.server
 def test_approve_execute_correction_and_dirty_refusals(tmp_path: Path, provider: str) -> None:
     repo = make_repo(tmp_path)
     _ignore_probes(repo)
@@ -202,6 +203,7 @@ def test_approve_execute_correction_and_dirty_refusals(tmp_path: Path, provider:
     assert (repo / "AUTH_PROBE").read_text() == ""
 
 
+@pytest.mark.server
 def test_unapproved_dirty_and_server_fingerprint_reject(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
     _ignore_probes(repo)
@@ -245,6 +247,7 @@ def test_unapproved_dirty_and_server_fingerprint_reject(tmp_path: Path) -> None:
         assert _workflow(repo)["rounds_used"] == 0
 
 
+@pytest.mark.server
 def test_duplicate_dispatch_and_legacy_switch(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
     _ignore_probes(repo)
@@ -300,6 +303,7 @@ def test_duplicate_dispatch_and_legacy_switch(tmp_path: Path) -> None:
         assert "no outstanding" in resume.stderr
 
 
+@pytest.mark.server
 def test_early_ready_stays_wait_and_timeout_is_resumable(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
     _ignore_probes(repo)
@@ -328,6 +332,7 @@ def test_early_ready_stays_wait_and_timeout_is_resumable(tmp_path: Path) -> None
         assert _workflow(repo)["rounds_used"] == 1
 
 
+@pytest.mark.server
 def test_round_limit_mixed_runs_and_successor(tmp_path: Path) -> None:
     space_root = tmp_path / "work space"
     space_root.mkdir()
@@ -417,6 +422,7 @@ def _field(output: str, name: str) -> str:
     return ""
 
 
+@pytest.mark.server
 def test_config_switch_to_legacy_keeps_outstanding_run_authoritative(tmp_path: Path) -> None:
     repo, config, token_path, env, card = _start_early_ready_run(tmp_path, sleep_s=8)
     lock = repo / ".handoff-logs" / "execute.lock"
@@ -461,6 +467,7 @@ def test_config_switch_to_legacy_keeps_outstanding_run_authoritative(tmp_path: P
 
 
 @pytest.mark.parametrize("provider", PROVIDERS)
+@pytest.mark.server
 def test_config_removed_cancel_uses_saved_run_and_releases_once(tmp_path: Path, provider: str) -> None:
     repo, config, token_path, env, card = _start_early_ready_run(tmp_path, sleep_s=25, provider=provider)
     lock = repo / ".handoff-logs" / "execute.lock"
@@ -559,6 +566,7 @@ def _launches(repo: Path) -> int:
         ("mangle_plan", "READY FOR QA", "claude"),
     ],
 )
+@pytest.mark.server
 def test_failed_delivery_is_not_routed_to_qa_and_watch_holds(
     tmp_path: Path, mode: str, written: str, provider: str
 ) -> None:
@@ -585,6 +593,7 @@ def test_failed_delivery_is_not_routed_to_qa_and_watch_holds(
         assert _workflow(repo)["rounds_used"] == 1
 
 
+@pytest.mark.server
 def test_watch_after_wait_timeout_reconciles_once_and_notifies(tmp_path: Path) -> None:
     repo, config, env = _setup_mode(tmp_path, "early_ready", sleep_s=4, wait=1.0)
     outstanding = repo / ".handoff-logs" / "outstanding.json"
@@ -600,6 +609,7 @@ def test_watch_after_wait_timeout_reconciles_once_and_notifies(tmp_path: Path) -
         assert parse_handoff((repo / "HANDOFF.md").read_text()).status == "READY FOR QA"
 
 
+@pytest.mark.server
 def test_watch_after_cancel_does_not_redispatch(tmp_path: Path) -> None:
     repo, config, env = _setup_mode(tmp_path, "early_ready", sleep_s=25, wait=1.0)
     with RunningServer(config):
@@ -616,6 +626,7 @@ def test_watch_after_cancel_does_not_redispatch(tmp_path: Path) -> None:
         assert not (repo / ".handoff-logs" / "outstanding.json").exists()
 
 
+@pytest.mark.server
 def test_constrained_successor_executes_on_inherited_uncommitted_work(tmp_path: Path) -> None:
     repo, config, env = _setup_mode(tmp_path, "success")
     with RunningServer(config):
@@ -677,6 +688,7 @@ def _legacy_launches(marker: Path) -> int:
     ("switch", "ending"),
     [("legacy", "cancel"), ("removed", "cancel"), ("legacy", "fail"), ("removed", "fail"), ("legacy", "complete")],
 )
+@pytest.mark.server
 def test_watch_after_transport_switch_keeps_dispatch_hold(tmp_path: Path, switch: str, ending: str) -> None:
     import signal
 
@@ -735,6 +747,7 @@ def test_watch_after_transport_switch_keeps_dispatch_hold(tmp_path: Path, switch
         assert _workflow(repo)["dispatch_hold"] is False
 
 
+@pytest.mark.server
 def test_plain_legacy_watch_dispatches_without_python(tmp_path: Path) -> None:
     import signal
 
@@ -761,6 +774,7 @@ def test_plain_legacy_watch_dispatches_without_python(tmp_path: Path) -> None:
 # ── --json contract (A7): one object, schema + kind, errors on stdout ────────
 
 
+@pytest.mark.server
 def test_json_outputs_for_models_model_and_server(tmp_path: Path) -> None:
     from a2a_harness import handoff, managed_env, managed_repo, stop_managed
 

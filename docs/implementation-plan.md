@@ -153,6 +153,10 @@ The installed `templates/HANDOFF.md` preamble stays at or under 3 KB: opt-in ban
 
 A HANDOFF file is well-formed only with exactly one `## Current Task`, one `## Execution Notes`, and one `## QA Feedback`, in that order, each as a whole line. A bad delivery is rejected and the bytes the server evaluated are kept. On A2A, `handoff qa` writes QA Feedback and Status. `archive` refuses a malformed file or a plan that changed since approval. Legacy archive checks the same headings and stays Python-free; `handoff qa` is A2A only.
 
+### A12 — Polish and sandbox tests
+
+`init` compares preambles in memory, so a read-only temp directory does not fail it. `template refresh` keeps the previous file mode and the file's own line ending, and accepts a CRLF `## Current Task`. `handoff qa` leaves every byte outside the QA body and the Status value unchanged, and refuses when the plan already differs from the approval receipt. Re-approval records a new baseline only when the workspace fingerprint changed. `execute` and `resume` take `--wait` (a positive number up to 1800) for that call only. Tests that need process probes, localhost, or a started service are marked `server`.
+
 ## Final completion bar
 
 The feature is complete when the actual handoff CLI can switch Claude/Codex endpoints, run the existing Planner/QA loop against real git changes, and handle ordinary duplicate/disconnection/cancellation cases without losing workspace control. Human plan approval and final merge authority remain explicit. Keep A2A opt-in until these checks pass.

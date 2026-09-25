@@ -207,6 +207,8 @@ def _maybe_rebaseline(
             "refusing to rebaseline onto a dirty tree: "
             f"{shown}{tail}; commit or discard them first"
         )
+    if current_fingerprint == existing.get("post_run_fingerprint"):
+        return
     existing["previous_post_run_fingerprint"] = existing.get("post_run_fingerprint")
     existing["rebaselined_at"] = utc_now()
     existing["post_run_fingerprint"] = current_fingerprint
