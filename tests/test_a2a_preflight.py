@@ -244,6 +244,40 @@ def test_section_boundary_note_and_diff(tmp_path: Path) -> None:
     assert not ok and note is None and "### Goal" in (reason or "") and "secret change" in (reason or "")
 
 
+def test_transition_rejects_bad_headings(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    text = write_handoff(repo, status="READY FOR EXECUTION")
+    before = parse_handoff(text)
+    gitws = GitWorkspace("local", repo)
+
+    def deliver(updated: str) -> str:
+        (repo / "HANDOFF.md").write_text(updated, encoding="utf-8")
+        _after, ok, reason, _note = gitws.evaluate_transition(before)
+        assert not ok
+        return reason or ""
+
+    assert "2 times" in deliver(text + "\n## QA Feedback\n\nextra\n") and "QA Feedback" in deliver(
+        text + "\n## QA Feedback\n\nextra\n"
+    )
+    assert "Current Task" in deliver(text.replace("## Execution Notes", "## Current Task\n\nextra\n\n## Execution Notes", 1))
+    assert "Execution Notes" in deliver(text.replace("## Execution Notes\n\nNot started.\n\n---\n\n", ""))
+    swapped = text.replace(
+        "## Execution Notes\n\nNot started.\n\n---\n\n## QA Feedback\n\nNot run.\n",
+        "## QA Feedback\n\nNot run.\n\n## Execution Notes\n\nNot started.\n",
+    )
+    assert "before" in deliver(swapped)
+    quoted = text.replace("### Goal\n", "### Goal\n\nQuoted `## QA Feedback` stays inline.\n")
+    (repo / "HANDOFF.md").write_text(quoted, encoding="utf-8")
+    before = parse_handoff(quoted)
+    ready = quoted.replace("**Status:** READY FOR EXECUTION", "**Status:** READY FOR QA")
+    (repo / "HANDOFF.md").write_text(ready, encoding="utf-8")
+    _after, ok, reason, _note = gitws.evaluate_transition(before)
+    assert ok and reason is None
+    (repo / "HANDOFF.md").write_bytes(ready.replace("\n", "\r\n").encode("utf-8"))
+    _after, ok, reason, _note = gitws.evaluate_transition(before)
+    assert ok and reason is None
+
+
 def test_approved_plan_hash_pin() -> None:
     text = "## Current Task\n\n**Status:** READY\n\nplan body\n"
     # Pinned so boundary normalization cannot change the approval hash.
@@ -591,3 +625,111 @@ def test_executor_boundary_diff_is_in_the_manifest(tmp_path: Path) -> None:
     accepted, good = run(tmp_path / "strip", "strip_separator")
     assert accepted.returncode == 0, accepted.stdout + accepted.stderr
     assert good.get("boundary_note")
+
+
+def test_handoff_qa_writes_only_the_qa_section(tmp_path: Path) -> None:
+    repo, env = managed_repo(tmp_path)
+    write_handoff(repo, status="READY FOR QA", branch="main")
+    path = repo / "HANDOFF.md"
+    text = path.read_text(encoding="utf-8").replace(
+        "### Goal\n", "### Goal\n\nThe real section is not this `## QA Feedback` quote.\n"
+    )
+    path.write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
+    path.chmod(0o640)
+    before = path.read_bytes()
+    before_hash = approved_plan_hash(text)
+    qa = tmp_path / "qa.md"
+    qa.write_text("Approved after review.\n", encoding="utf-8")
+    result = handoff(env, "qa", str(repo), "--status", "APPROVED", "--file", str(qa), "--json")
+    assert result.returncode == 0, result.stdout + result.stderr
+    body = _json(result)
+    assert body["kind"] == "qa" and body["schema"] == "urn:handoff-automation:cli-output:v1"
+    assert body["status"] == "APPROVED"
+    assert Path(body["backup"]).is_file()
+    written = path.read_bytes()
+    assert written.startswith(b"##") or b"\r\n" in written
+    assert b"\r\n" in written
+    assert stat_mode(path) == 0o640
+    assert approved_plan_hash(path.read_text(encoding="utf-8")) == before_hash
+    assert b"Approved after review." in written
+    assert written.count(b"\n## QA Feedback") == 1
+    assert before != written
+    appended = handoff(env, "qa", str(repo), "--status", "CHANGES REQUESTED", "--file", str(qa), "--append")
+    assert appended.returncode == 0, appended.stdout + appended.stderr
+    assert "Status unchanged" in appended.stdout
+    assert parse_handoff(path.read_text(encoding="utf-8")).status == "APPROVED"
+    unchanged = path.read_bytes()
+    (repo / ".handoff-logs" / "outstanding.json").write_text('{"run_id":"r"}\n', encoding="utf-8")
+    refused = handoff(env, "qa", str(repo), "--status", "APPROVED", "--file", str(qa))
+    assert refused.returncode != 0 and path.read_bytes() == unchanged
+    (repo / ".handoff-logs" / "outstanding.json").unlink()
+    draft_text = text.replace("**Status:** READY FOR QA", "**Status:** DRAFT")
+    path.write_text(draft_text, encoding="utf-8")
+    draft = handoff(env, "qa", str(repo), "--status", "APPROVED", "--file", str(qa))
+    assert draft.returncode != 0 and "READY FOR QA" in draft.stderr
+    assert path.read_text(encoding="utf-8") == draft_text
+    execution = text.replace("**Status:** READY FOR QA", "**Status:** READY FOR EXECUTION")
+    path.write_text(execution, encoding="utf-8")
+    executing = handoff(env, "qa", str(repo), "--status", "APPROVED", "--file", str(qa))
+    assert executing.returncode != 0 and path.read_text(encoding="utf-8") == execution
+    broken = text + "\n## QA Feedback\n\nextra\n"
+    path.write_text(broken, encoding="utf-8")
+    malformed = handoff(env, "qa", str(repo), "--status", "APPROVED", "--file", str(qa))
+    assert malformed.returncode != 0 and "QA Feedback" in malformed.stderr
+    assert path.read_text(encoding="utf-8") == broken
+
+
+def stat_mode(path: Path) -> int:
+    return path.stat().st_mode & 0o777
+
+
+def test_bad_headings_are_rejected_and_the_delivery_is_saved(tmp_path: Path) -> None:
+    def run(root: Path, mode: str) -> tuple[subprocess.CompletedProcess[str], dict, Path]:
+        root.mkdir()
+        repo, env = managed_repo(root)
+        write_handoff(repo, status="DRAFT", branch="main")
+        (repo / ".fake-mode").write_text(mode + "\n", encoding="utf-8")
+        assert handoff(env, "approve", str(repo)).returncode == 0
+        assert handoff(env, "server", "start", str(repo)).returncode == 0
+        try:
+            result = handoff(env, "execute", str(repo))
+        finally:
+            stop_managed(repo)
+        return result, _manifest(repo), repo
+
+    for mode, needle in (
+        ("duplicate_heading", "QA Feedback"),
+        ("second_current_task", "Current Task"),
+        ("drop_execution_notes", "Execution Notes"),
+        ("reorder_sections", "before"),
+    ):
+        result, manifest, repo = run(tmp_path / mode, mode)
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert needle in (manifest.get("reason") or "")
+        delivered = Path(str(manifest["delivered_handoff"]))
+        assert delivered.is_file()
+        assert manifest["delivered_handoff_sha256"]
+        evidence = Path(str((manifest.get("evidence") or {}).get("evidence_dir") or ""))
+        if evidence.is_dir():
+            saved = evidence / "handoff-delivered.md"
+            if saved.is_file():
+                assert saved.read_bytes() == delivered.read_bytes()
+
+    ok, manifest, repo = run(tmp_path / "ok", "success")
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    delivered = Path(str(manifest["delivered_handoff"]))
+    data = delivered.read_bytes()
+    assert manifest["delivered_handoff_sha256"] == __import__(
+        "handoff_a2a.contracts", fromlist=["snapshot_sha256"]
+    ).snapshot_sha256(data)
+    from handoff_a2a.integration import _reconcile
+
+    recorded = _reconcile(
+        repo,
+        outstanding={"run_id": "missing-copy", "execution_id": "missing-copy"},
+        task={"status": {"state": "TASK_STATE_FAILED"}},
+        result={"evidence_dir": str(tmp_path / "no-evidence"), "worker_launched": False},
+        unresolved=False,
+        reason="older server",
+    )
+    assert recorded["delivered_handoff"] is None

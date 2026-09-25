@@ -15,8 +15,15 @@ from handoff_a2a.workspace import (
     HANDOFF_NAME,
     LOG_DIRNAME,
     approved_plan_hash,
+    handoff_structure,
     parse_handoff,
+    plan_changed_since_approval,
     replace_status,
+)
+
+ARCHIVE_RECOVERY = (
+    "restore from .handoff-logs/<run_id>-delivered.md or the newest "
+    "HANDOFF.pre-qa-*.md, or revise Current Task and re-approve"
 )
 
 WORKFLOW_SCHEMA = "urn:handoff-automation:coding-task:v1#workflow"
@@ -276,6 +283,13 @@ def archive_current(
     if outstanding:
         raise WorkflowError("cannot archive while execution is outstanding; resume or cancel first")
     markdown = (repo / HANDOFF_NAME).read_text(encoding="utf-8")
+    problems = handoff_structure(markdown)
+    if problems:
+        raise WorkflowError(
+            "refusing to archive a damaged HANDOFF.md: " + "; ".join(problems) + ". " + ARCHIVE_RECOVERY
+        )
+    if workflow is not None and plan_changed_since_approval(markdown, workflow.get("approved_plan_hash")):
+        raise WorkflowError("refusing to archive because the plan changed since approval. " + ARCHIVE_RECOVERY)
     document = parse_handoff(markdown)
     archive = repo / ARCHIVE_NAME
     if superseded:

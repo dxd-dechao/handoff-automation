@@ -184,6 +184,45 @@ assert "preamble backup exists" test -n "$(find "$REFRESH_REPO/.handoff-logs" -n
 assert "second refresh is already current" grep -q "already current" "$TMPDIR_BASE/refresh-again.txt"
 export PATH="$OLD_PATH"
 
+# ── Legacy qa refusal and archive structure check ────────────────────────────
+echo ""
+echo "=== legacy qa and archive structure ==="
+printf 'approved\n' > "$TMPDIR_BASE/qa.txt"
+QA_RC=0
+HANDOFF_A2A_BIN="$TMPDIR_BASE/no-a2a" "$HANDOFF_BIN" qa "$REPO" --status APPROVED --file "$TMPDIR_BASE/qa.txt" \
+  > "$TMPDIR_BASE/qa.txt.out" 2>&1 || QA_RC=$?
+assert_eq "legacy qa refuses" "1" "$QA_RC"
+assert "legacy qa names the hand edit" grep -q "handoff qa is A2A only; on legacy, edit Status and QA Feedback in HANDOFF.md by hand" "$TMPDIR_BASE/qa.txt.out"
+STRUCT="$TMPDIR_BASE/struct-repo"
+mkdir -p "$STRUCT"
+git -C "$STRUCT" init -q
+cat > "$STRUCT/HANDOFF.md" <<'EOF'
+## Current Task
+
+**Status:** APPROVED
+
+### Goal
+
+Keep
+
+## Execution Notes
+
+done
+
+## QA Feedback
+
+ok
+
+## QA Feedback
+
+again
+EOF
+ARCH_RC=0
+"$HANDOFF_BIN" archive "$STRUCT" > "$TMPDIR_BASE/arch.txt" 2>&1 || ARCH_RC=$?
+assert_eq "legacy archive refuses a duplicated heading" "1" "$ARCH_RC"
+assert "legacy archive names the heading" grep -q '## QA Feedback' "$TMPDIR_BASE/arch.txt"
+assert "archive file was not created" test ! -f "$STRUCT/HANDOFF-ARCHIVE.md"
+
 # ── Final report ─────────────────────────────────────────────────────────────
 echo ""
 echo "═══════════════════════════════════════"

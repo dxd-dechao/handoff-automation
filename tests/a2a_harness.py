@@ -274,6 +274,35 @@ if mode == "strip_separator":
     write_handoff(set_notes(set_status(stripped, "READY FOR QA"), "dropped a trailing separator"))
     result_json()
     sys.exit(0)
+if mode == "duplicate_heading":
+    set_value(1)
+    duplicated = text + "\n## QA Feedback\n\nsecond copy\n"
+    write_handoff(set_notes(set_status(duplicated, "READY FOR QA"), "duplicated QA heading"))
+    result_json()
+    sys.exit(0)
+if mode == "second_current_task":
+    set_value(1)
+    extra = text.replace("## Execution Notes", "## Current Task\n\nextra\n\n## Execution Notes", 1)
+    write_handoff(set_notes(set_status(extra, "READY FOR QA"), "added a second current task"))
+    result_json()
+    sys.exit(0)
+if mode == "drop_execution_notes":
+    set_value(1)
+    dropped = re.sub(r"\n---\n\n## Execution Notes\n.*?\n---\n\n## QA Feedback", "\n---\n\n## QA Feedback", text, count=1, flags=re.S)
+    write_handoff(set_status(dropped, "READY FOR QA"))
+    result_json()
+    sys.exit(0)
+if mode == "reorder_sections":
+    set_value(1)
+    notes_match = re.search(r"## Execution Notes\n.*?(?=\n## |\Z)", text, re.S)
+    qa_match = re.search(r"## QA Feedback\n.*\Z", text, re.S)
+    head = text[: text.index("## Execution Notes")]
+    swapped = head + qa_match.group(0).rstrip() + "\n\n" + notes_match.group(0)
+    if not swapped.endswith("\n"):
+        swapped += "\n"
+    write_handoff(set_status(swapped, "READY FOR QA"))
+    result_json()
+    sys.exit(0)
 if mode == "bytecode":
     set_value(1)
     cache = root / "pkg" / "__pycache__"

@@ -69,6 +69,8 @@ workflow
   runs      list past executor runs from their manifests
   archive   append Current Task / Execution Notes / QA Feedback to HANDOFF-ARCHIVE.md
             (add --superseded to close an exhausted A2A workflow)
+  qa        handoff qa <repo> --status <APPROVED|CHANGES REQUESTED> --file <path> [--append] [--json]
+            A2A only: replace QA Feedback and set Status (legacy: edit HANDOFF.md by hand)
   template  handoff template refresh <repo> [--json]
             replace the HANDOFF.md preamble with the installed template's;
             Current Task and everything after it stay byte-for-byte
@@ -710,6 +712,75 @@ cmd_watch() {
   done
 }
 
+# Whole-line heading count. A trailing CR still matches (grep -x).
+heading_count() {
+  local file="$1" heading="$2"
+  grep -c -x -e "$heading" -e "$(printf '%s\r' "$heading")" "$file" || true
+}
+
+heading_line() {
+  local file="$1" heading="$2"
+  grep -n -x -e "$heading" -e "$(printf '%s\r' "$heading")" "$file" | head -n 1 | cut -d: -f1
+}
+
+refuse_malformed_structure() {
+  local file="$1" heading count ct en qa
+  for heading in "## Current Task" "## Execution Notes" "## QA Feedback"; do
+    count="$(heading_count "$file" "$heading")"
+    if [[ "$count" -eq 0 ]]; then
+      die "\`$heading\` is missing"
+    fi
+    if [[ "$count" -ne 1 ]]; then
+      die "\`$heading\` appears ${count} times"
+    fi
+  done
+  ct="$(heading_line "$file" "## Current Task")"
+  en="$(heading_line "$file" "## Execution Notes")"
+  qa="$(heading_line "$file" "## QA Feedback")"
+  if [[ "$ct" -ge "$en" || "$en" -ge "$qa" ]]; then
+    die "HANDOFF.md headings are out of order: ## Current Task, ## Execution Notes, ## QA Feedback"
+  fi
+}
+
+cmd_qa() {
+  local repo="" status="" qa_file="" append=0 json=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --status)
+        [[ $# -ge 2 ]] || die "qa --status needs APPROVED or CHANGES REQUESTED"
+        status="$2"
+        shift 2
+        ;;
+      --file)
+        [[ $# -ge 2 ]] || die "qa --file needs a path"
+        qa_file="$2"
+        shift 2
+        ;;
+      --append) append=1; shift ;;
+      --json) json=1; shift ;;
+      --*) die "unknown qa option: $1 (try --help)" ;;
+      *)
+        [[ -z "$repo" ]] || die "qa takes one repo path"
+        repo="$1"
+        shift
+        ;;
+    esac
+  done
+  [[ -n "$status" && -n "$qa_file" ]] || die "qa requires --status and --file"
+  repo="$(resolve_repo "${repo:-}")"
+  if ! is_a2a "$repo"; then
+    local msg="handoff qa is A2A only; on legacy, edit Status and QA Feedback in HANDOFF.md by hand"
+    if [[ "$json" -eq 1 ]]; then
+      json_die qa "$msg"
+    fi
+    die "$msg"
+  fi
+  local -a extra=()
+  [[ "$append" -eq 1 ]] && extra+=(--append)
+  [[ "$json" -eq 1 ]] && extra+=(--json)
+  a2a_cli "$repo" qa --status "$status" --file "$qa_file" ${extra[@]+"${extra[@]}"}
+}
+
 cmd_archive() {
   local superseded=0 repo=""
   while [[ $# -gt 0 ]]; do
@@ -732,6 +803,7 @@ cmd_archive() {
     die "archive --superseded requires A2A workflow state"
   fi
   refuse_if_outstanding "$repo"
+  refuse_malformed_structure "$repo/HANDOFF.md"
   local archive goal
   archive="$repo/HANDOFF-ARCHIVE.md"
   goal="$(read_goal "$repo")"
@@ -1252,6 +1324,7 @@ case "$command" in
   init) cmd_init "$@" ;;
   template) cmd_template "$@" ;;
   archive) cmd_archive "$@" ;;
+  qa) cmd_qa "$@" ;;
   models | model | server | planner) a2a_manage "$command" "$@" ;;
   -h | --help | "") usage ;;
   *) die "unknown subcommand: $command (try --help)" ;;

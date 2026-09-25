@@ -253,6 +253,58 @@ def test_missing_config_is_legacy_and_unknown_transport_fails(tmp_path: Path) ->
         load_config(repo)
 
 
+def test_structure_rule_and_pinned_hash() -> None:
+    from handoff_a2a.workspace import HandoffStructureError, handoff_structure, planner_fingerprint
+
+    pin = "## Current Task\n\n**Status:** READY\n\nplan body\n"
+    assert approved_plan_hash(pin) == "99f8cd04e18a04b4c2268d9804b1fc387cf3dc41923493896f7ca35c7b76ce9d"
+    good = (
+        "## Current Task\n\n**Status:** READY FOR QA\n\nquote `## QA Feedback` inline\n\n"
+        "## Execution Notes\n\nnotes\n\n## QA Feedback\n\nok\n"
+    )
+    assert handoff_structure(good) == []
+    assert handoff_structure(good.replace("\n", "\r\n")) == []
+    duplicated = good + "\n## QA Feedback\n\nagain\n"
+    assert any("## QA Feedback" in item and "2 times" in item for item in handoff_structure(duplicated))
+    with pytest.raises(HandoffStructureError, match="QA Feedback"):
+        planner_fingerprint(duplicated)
+    missing = good.replace("## Execution Notes\n\nnotes\n\n", "")
+    assert any("Execution Notes" in item and "missing" in item for item in handoff_structure(missing))
+    swapped = (
+        "## Current Task\n\n**Status:** READY FOR QA\n\nplan\n\n"
+        "## QA Feedback\n\nok\n\n## Execution Notes\n\nnotes\n"
+    )
+    assert any("QA Feedback" in item and "before" in item for item in handoff_structure(swapped))
+
+
+def test_archive_refuses_a_damaged_or_changed_plan(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    write_handoff(repo, status="DRAFT")
+    approve(repo, workspace_id="fixture", max_rounds=3)
+    original = (repo / "HANDOFF.md").read_text(encoding="utf-8")
+    approved = original.replace("**Status:** READY FOR EXECUTION", "**Status:** APPROVED")
+    (repo / "HANDOFF.md").write_text(approved, encoding="utf-8")
+    workflow_path = repo / ".handoff-logs" / "workflow.json"
+    before = workflow_path.read_bytes()
+    archive_current(repo, superseded=False, goal="kept")
+    assert (repo / "HANDOFF-ARCHIVE.md").is_file()
+    workflow_path.write_bytes(before)
+    (repo / "HANDOFF-ARCHIVE.md").unlink()
+    changed = approved.replace("Set app.py value according to the current round.", "truncated plan")
+    (repo / "HANDOFF.md").write_text(changed, encoding="utf-8")
+    with pytest.raises(WorkflowError, match="delivered.md"):
+        archive_current(repo, superseded=False, goal="nope")
+    with pytest.raises(WorkflowError, match="pre-qa"):
+        archive_current(repo, superseded=True, goal="nope")
+    assert not (repo / "HANDOFF-ARCHIVE.md").exists()
+    assert workflow_path.read_bytes() == before
+    broken = approved + "\n## QA Feedback\n\nextra\n"
+    (repo / "HANDOFF.md").write_text(broken, encoding="utf-8")
+    with pytest.raises(WorkflowError, match="QA Feedback"):
+        archive_current(repo, superseded=False, goal="nope")
+    assert workflow_path.read_bytes() == before
+
+
 def test_decorated_branch_field_names_the_plain_branch() -> None:
     from handoff_a2a.workspace import read_declared_branch
 

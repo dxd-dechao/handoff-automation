@@ -5,7 +5,7 @@
 > the human explicitly invokes it.
 
 **Planner** (human-facing, uses the `handoff-cli` skill) writes the plan and
-does QA. **Executor** is a headless run started by the `handoff` CLI with
+does QA. On A2A, write QA Feedback with `handoff qa`. **Executor** is a headless run started by the `handoff` CLI with
 `execute the handoff`. It implements the Current Task.
 
 ### Executor rules

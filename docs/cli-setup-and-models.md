@@ -144,6 +144,12 @@ there is no `HANDOFF.md`, when `## Current Task` is missing or duplicated, or
 when `.handoff-logs/outstanding.json` shows an A2A run still in progress
 (including Markdown `READY FOR QA` with that run still unresolved).
 
+If a delivery or a QA edit damages `HANDOFF.md`, restore it before archive:
+
+- The bytes the server evaluated are `.handoff-logs/<run_id>-delivered.md` (also `handoff-delivered.md` under that run's server evidence). Copy that file back over `HANDOFF.md`.
+- `handoff qa` saves the previous file as `.handoff-logs/HANDOFF.pre-qa-<UTC timestamp>.md`. Copy the newest of those back to undo a QA write.
+- `handoff archive` refuses a malformed heading structure or a plan whose hash no longer matches approval. Restore one of those copies, or revise Current Task and re-approve. Nothing is appended to `HANDOFF-ARCHIVE.md` until the guard passes.
+
 A manually configured endpoint keeps working for `execute`/`resume`/`status`/`cancel`,
 but managed `server`/`model` commands refuse to touch it. To migrate, run
 `init --transport a2a --executor ... --model ...`. Migration refuses while a
