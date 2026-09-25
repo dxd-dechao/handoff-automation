@@ -326,7 +326,8 @@ uv run --offline --extra test python -m pytest -q
 ```
 
 `not server` skips tests that need process probes (`ps`, `kill 0` on another
-PID), a localhost bind or connect, or a started service.
+PID, including a probe run by a child `handoff` process), a localhost bind or
+connect, a started service, or that allocate a pseudo-terminal.
 
 ## 6. Change the Executor model within a workflow
 

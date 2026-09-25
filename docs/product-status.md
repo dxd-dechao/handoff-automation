@@ -2,7 +2,7 @@
 
 Reviewed: **2026-09-24**. Checkout: `codex/a2a-executor-mvp`, commit `1e09ec58f4f059c9d7f3e01fe875eb01b99ce588`.
 
-**A12 update (2026-09-25, Executor self-report; independent Planner QA pending).** Init compares preambles without a temp file, refresh keeps the file mode and each file's line endings, `handoff qa` edits only the QA body and Status and refuses a plan that already changed, rebaseline is recorded only when the snapshot changes, and `execute`/`resume` take `--wait`. The `server` pytest marker is the suite that needs process probes, localhost, or a started service. See [the A12 report](qa-a12-polish-sandbox-tests.md).
+**A12 update (2026-09-25, Executor self-report; independent Planner QA pending).** Init compares preambles without a temp file, refresh keeps the file mode and each file's line endings, `handoff qa` edits only the QA body and Status and refuses a plan that already changed, rebaseline is recorded only when the snapshot changes, and `execute`/`resume` take `--wait`. The `server` pytest marker is the suite that needs process probes (including a child `handoff` probe), localhost, a started service, or a pseudo-terminal. See [the A12 report](qa-a12-polish-sandbox-tests.md).
 
 **A11 update (2026-09-25, Executor self-report; independent Planner QA pending).** A delivery with a duplicated, missing, or reordered `## Current Task`, `## Execution Notes`, or `## QA Feedback` heading is rejected. `handoff qa` is the A2A way to write QA Feedback. `archive` refuses a damaged or changed plan. Each run saves the HANDOFF bytes the server evaluated. See [the A11 report](qa-a11-handoff-integrity.md).
 

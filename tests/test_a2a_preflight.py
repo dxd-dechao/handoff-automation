@@ -36,6 +36,7 @@ def _json(result) -> dict:
     return json.loads(result.stdout)
 
 
+@pytest.mark.server
 def test_preflight_lists_every_blocker(tmp_path: Path) -> None:
     repo, env = managed_repo(tmp_path)
     write_handoff(repo, status="READY FOR EXECUTION", branch="feature")
@@ -370,6 +371,7 @@ def _unknown_state(managed) -> ServiceState:
     )
 
 
+@pytest.mark.server
 def test_watch_retries_a_stopped_service_and_refuses_other_blockers(tmp_path: Path) -> None:
     (tmp_path / "stopped").mkdir()
     (tmp_path / "dirty").mkdir()
@@ -629,6 +631,19 @@ def test_executor_boundary_diff_is_in_the_manifest(tmp_path: Path) -> None:
     accepted, good = run(tmp_path / "strip", "strip_separator")
     assert accepted.returncode == 0, accepted.stdout + accepted.stderr
     assert good.get("boundary_note")
+
+
+def test_append_on_a_crlf_body_does_not_add_an_extra_blank_line() -> None:
+    from handoff_a2a.workspace import render_qa
+
+    text = (
+        "## Current Task\r\n\r\n**Status:** READY FOR QA\r\n\r\n"
+        "## Execution Notes\r\n\r\nx\r\n\r\n---\r\n\r\n"
+        "## QA Feedback\r\n\r\nAlready.\r\n\r\n"
+    )
+    updated = render_qa(text, "More.\n", status=None, append=True)
+    assert updated.endswith("Already.\r\n\r\nMore.\r\n")
+    assert "\r\n\r\n\r\n" not in updated.split("## QA Feedback", 1)[1]
 
 
 def test_handoff_qa_writes_only_the_qa_section(tmp_path: Path) -> None:

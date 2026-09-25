@@ -220,7 +220,7 @@ def render_qa(text: str, qa_body: str, *, status: str | None, append: bool) -> s
     if append:
         if not body:
             new_body = ending + payload
-        elif body.endswith("\n\n") or body.endswith("\r\r"):
+        elif body.endswith("\n\n") or body.endswith("\r\n\r\n") or body.endswith("\r\r"):
             new_body = body + payload
         elif body.endswith("\n") or body.endswith("\r"):
             new_body = body + ending + payload

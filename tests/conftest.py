@@ -1,8 +1,11 @@
 """Sandbox limits for tests that are not marked ``server``.
 
 ``server`` tests need process probes (``ps``, ``kill 0`` on another PID), a
-localhost bind or connect, or a started service. Everything else must pass
-with those denied and with ``TMPDIR`` under pytest's ``tmp_path``.
+localhost bind or connect, a started service, or allocate a pseudo-terminal.
+A probe run by a child ``handoff`` process counts too: this fixture only
+patches the pytest process, so those tests are marked from inspection.
+Everything else must pass with those denied and with ``TMPDIR`` under
+pytest's ``tmp_path``.
 """
 
 from __future__ import annotations
