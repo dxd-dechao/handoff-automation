@@ -183,3 +183,5 @@ Execution policy throughout: human approval followed by manual Executor launch; 
 - (A10) `init` on an existing repo calls `mktemp` only to compare preambles, so a locked-down temp directory makes `init` fail. The comparison could be done without temp files.
 - (A10) The bash `template refresh` matches `## Current Task` with `grep -x`, so a CRLF file is refused as "no Current Task", while the Python init hint strips `\r`. The two paths disagree on CRLF files.
 - (A10) A refreshed `HANDOFF.md` takes the temp file's mode (0600).
+- (A11) `handoff qa` converts every LF to CRLF when the file contains any CRLF, so a file with mixed line endings changes outside QA Feedback.
+- (A11) `handoff qa` checks that its own write keeps `approved_plan_hash`, but does not refuse when the plan already differs from the approval receipt. `archive` still catches that case.
