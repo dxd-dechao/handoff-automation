@@ -189,6 +189,7 @@ def test_drive_mode_refuses_watch_with_the_fix(tmp_path: Path) -> None:
     assert not (repo / ".handoff-logs" / "service" / "watcher.json").exists()
 
 
+@pytest.mark.server
 def test_switch_to_drive_stops_a_watcher_after_its_in_flight_run(tmp_path: Path, cleanup) -> None:
     repo, env = managed_repo(tmp_path)
     cleanup(repo)
@@ -222,6 +223,7 @@ def test_switch_to_drive_stops_a_watcher_after_its_in_flight_run(tmp_path: Path,
     assert _json(handoff(env, "status", str(repo), "--json"))["watcher"]["running"] is False
 
 
+@pytest.mark.server
 def test_watch_mode_execute_still_clears_a_dispatch_hold(tmp_path: Path, cleanup) -> None:
     repo, env = managed_repo(tmp_path)
     cleanup(repo)
@@ -240,6 +242,7 @@ def test_watch_mode_execute_still_clears_a_dispatch_hold(tmp_path: Path, cleanup
     assert "watch dispatches; the Planner does QA" in field(handoff(env, "status", str(repo)).stdout, "next")
 
 
+@pytest.mark.server
 def test_stale_watcher_record_is_not_trusted(tmp_path: Path) -> None:
     repo, env = managed_repo(tmp_path)
     record = repo / ".handoff-logs" / "service" / "watcher.json"
@@ -263,6 +266,7 @@ def test_stale_watcher_record_is_not_trusted(tmp_path: Path) -> None:
     assert not record.exists()  # released on SIGTERM
 
 
+@pytest.mark.server
 def test_tty_init_accepts_enter_as_a2a_and_asks_the_run_mode(tmp_path: Path) -> None:
     import pty
 

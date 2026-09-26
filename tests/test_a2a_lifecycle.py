@@ -12,6 +12,8 @@ from uuid import uuid4
 
 import pytest
 
+pytestmark = pytest.mark.server
+
 from handoff_a2a.client import (
     UnresolvedExecution,
     cancel_from_record,

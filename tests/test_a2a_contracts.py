@@ -412,6 +412,10 @@ def test_skill_waiting_does_not_block_or_pipe() -> None:
         assert "no pipes" in section
         assert "long foreground sleeps" in section
         assert "not permitted" in section
+    assert 'handoff execute "<repo>" --wait 900' in drive
+    assert 'handoff resume "<repo>" --wait 900' in drive
+    assert "--wait" not in watch
+    assert "do not run `handoff execute`" in watch
     assert "handoff resume" in drive
     assert "read `reason`" in drive
     assert "when a run starts" in drive
@@ -512,6 +516,34 @@ def test_init_names_refresh_only_when_the_preamble_differs(tmp_path: Path) -> No
     assert current.returncode == 0, current.stderr
     assert "already initialized" in current.stdout
     assert "template refresh" not in current.stdout
+    crlf = template.replace(b"\n", b"\r\n")
+    crlf_repo = init_repo("crlf", crlf)
+    assert crlf_repo.returncode == 0, crlf_repo.stderr
+    assert "template refresh" not in crlf_repo.stdout
+
+    locked = tmp_path / "locked-tmp"
+    locked.mkdir()
+    locked.chmod(0o500)
+    locked_env = dict(env)
+    locked_env["TMPDIR"] = str(locked)
+    repo = tmp_path / "locked"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "T"], check=True)
+    (repo / "HANDOFF.md").write_bytes(b"# old\n\n## Current Task" + template.split(b"## Current Task", 1)[1])
+    (repo / "keep.txt").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "keep.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "init"], check=True)
+    before = (repo / "HANDOFF.md").read_bytes()
+    locked_init = subprocess.run(
+        [str(bin_handoff), "init", str(repo), "--transport", "legacy"],
+        env=locked_env, capture_output=True, text=True,
+    )
+    assert locked_init.returncode == 0, locked_init.stderr
+    assert "template refresh" in locked_init.stdout
+    assert (repo / "HANDOFF.md").read_bytes() == before
+    locked.chmod(0o700)
 
 
 def test_permission_denied_status_is_unknown_not_unresolved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

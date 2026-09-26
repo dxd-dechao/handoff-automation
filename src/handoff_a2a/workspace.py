@@ -179,29 +179,53 @@ def approved_plan_hash(text: str) -> str:
 
 
 def replace_status(text: str, status: str) -> str:
-    if _STATUS_RE.search(text):
-        return _STATUS_RE.sub(f"**Status:** {status}", text, count=1)
+    """Replace the Status value and leave the rest of that line, including its ending."""
+    pattern = re.compile(r"^(\*\*Status:\*\*[ \t]*)([^\r\n]*)", re.MULTILINE)
+    if pattern.search(text):
+        return pattern.sub(lambda _match: f"**Status:** {status}", text, count=1)
     return text
 
 
+def _line_ending(line: str) -> str:
+    if line.endswith("\r\n"):
+        return "\r\n"
+    if line.endswith("\r"):
+        return "\r"
+    return "\n"
+
+
+def _apply_ending(body: str, ending: str) -> str:
+    normalized = body.replace("\r\n", "\n").replace("\r", "\n")
+    if normalized and not normalized.endswith("\n"):
+        normalized += "\n"
+    if ending == "\n":
+        return normalized
+    return normalized.replace("\n", ending)
+
+
 def render_qa(text: str, qa_body: str, *, status: str | None, append: bool) -> str:
-    """Replace or append the QA Feedback body. ``status`` None leaves Status unchanged."""
+    """Replace or append the QA Feedback body. ``status`` None leaves Status unchanged.
+
+    Bytes before the QA body stay as they are. New QA text uses the line
+    ending of the ``## QA Feedback`` heading line.
+    """
     lines = text.splitlines(keepends=True)
     indexes = [index for index, line in enumerate(lines) if line.rstrip("\r\n") == "## QA Feedback"]
     if len(indexes) != 1:
         raise HandoffStructureError(handoff_structure(text) or ["`## QA Feedback` is missing"])
+    ending = _line_ending(lines[indexes[0]])
     head = "".join(lines[: indexes[0] + 1])
     body = "".join(lines[indexes[0] + 1 :])
-    payload = qa_body
-    if payload and not payload.endswith("\n"):
-        payload += "\n"
+    payload = _apply_ending(qa_body, ending)
     if append:
-        if body.endswith("\n\n"):
+        if not body:
+            new_body = ending + payload
+        elif body.endswith("\n\n") or body.endswith("\r\n\r\n") or body.endswith("\r\r"):
             new_body = body + payload
-        elif body.endswith("\n"):
-            new_body = body + "\n" + payload
+        elif body.endswith("\n") or body.endswith("\r"):
+            new_body = body + ending + payload
         else:
-            new_body = (body + "\n\n" if body else "\n") + payload
+            new_body = body + ending + ending + payload
     else:
         new_body = payload
     updated = head + new_body

@@ -138,7 +138,10 @@ handoff template refresh "/path/to/project" --json
 
 It copies the old file to `.handoff-logs/HANDOFF.preamble-<UTC timestamp>.md`,
 then replaces every byte before the `## Current Task` line with the current
-template. That line and everything after it stay byte-for-byte. A second run
+template, using the line ending of that heading (CRLF stays CRLF). That line
+and everything after it stay byte-for-byte. A preamble that matches the
+template except for line endings is already current, and init does not name
+refresh. The refreshed file keeps its previous mode. A second run
 prints `already current` and writes nothing. It refuses, with no write, when
 there is no `HANDOFF.md`, when `## Current Task` is missing or duplicated, or
 when `.handoff-logs/outstanding.json` shows an A2A run still in progress
@@ -307,9 +310,24 @@ without `--json` is unchanged.
   Executor selection or a running task.
 
 Flow: the Planner writes a `DRAFT` and stops. After you approve in chat,
-`handoff approve` records the receipt; then, by run mode, the Planner runs
-`handoff execute` (drive) or your `handoff watch` dispatches (watch). QA is the Planner reviewing the actual diff and
+`handoff approve` records the receipt. Under A2A, approve needs a git checkout
+so it can record the code snapshot. Then, by run mode, the Planner runs
+`handoff execute` (drive) or your `handoff watch` dispatches (watch).
+`handoff execute` and `handoff resume` take `--wait <seconds>` (a positive
+number up to 1800) to override the wait for that call only; with no flag the
+configured `wait_timeout_s` applies. QA is the Planner reviewing the actual diff and
 running the tests; merging stays with you.
+
+The sandbox-safe suite and the full suite:
+
+```sh
+uv run --offline --extra test python -m pytest -q -m "not server"
+uv run --offline --extra test python -m pytest -q
+```
+
+`not server` skips tests that need process probes (`ps`, `kill 0` on another
+PID, including a probe run by a child `handoff` process), a localhost bind or
+connect, a started service, or that allocate a pseudo-terminal.
 
 ## 6. Change the Executor model within a workflow
 

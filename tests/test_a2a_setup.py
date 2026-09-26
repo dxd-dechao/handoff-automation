@@ -111,6 +111,23 @@ def test_reinit_preserves_task_token_selection_and_history(tmp_path: Path) -> No
         assert path.read_bytes() == data, path
 
 
+def test_a2a_reinit_with_a_read_only_temp_dir(tmp_path: Path) -> None:
+    repo, env = managed_repo(tmp_path)
+    original = (repo / "HANDOFF.md").read_bytes()
+    task = original[original.index(b"## Current Task") :]
+    (repo / "HANDOFF.md").write_bytes(b"# old preamble\n\n" + task)
+    locked = tmp_path / "ro-tmp"
+    locked.mkdir()
+    locked.chmod(0o500)
+    env = dict(env)
+    env["TMPDIR"] = str(locked)
+    again = handoff(env, "init", str(repo))
+    locked.chmod(0o700)
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert "template refresh" in again.stdout
+    assert (repo / "HANDOFF.md").read_bytes() == b"# old preamble\n\n" + task
+
+
 def test_missing_auth_and_unavailable_model_fail_before_any_file(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
     ignore_probes(repo)

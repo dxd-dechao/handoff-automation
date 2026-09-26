@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import signal
 import stat
@@ -203,6 +204,22 @@ def endpoint_unavailable(exc: BaseException) -> str:
     if permission_denied(exc):
         return "local service connection not permitted (sandbox?); run handoff outside the sandbox"
     return f"Executor endpoint unavailable ({exc}); run handoff server start"
+
+
+MAX_WAIT_S = 1800.0
+
+
+def parse_wait_override(value: str | None) -> float | None:
+    """``None`` keeps the configured timeout. Otherwise a positive number ≤ 1800."""
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise IntegrationError("--wait must be a positive number up to 1800") from None
+    if not math.isfinite(number) or number <= 0 or number > MAX_WAIT_S:
+        raise IntegrationError("--wait must be a positive number up to 1800")
+    return number
 
 
 def wait_timeout_payload(repo: Path, *, timeout_s: float, execution_id: str) -> dict[str, Any]:
@@ -878,10 +895,13 @@ def _reconcile(
     return manifest
 
 
-async def _wait_task(client: CodingClient, task_id: str, settings: Any) -> dict[str, Any]:
+async def _wait_task(
+    client: CodingClient, task_id: str, settings: Any, *, timeout_s: float | None = None
+) -> dict[str, Any]:
+    timeout = settings.wait_timeout_s if timeout_s is None else timeout_s
     return await client.wait(
         task_id,
-        timeout=settings.wait_timeout_s,
+        timeout=timeout,
         interval=settings.poll_interval_s,
     )
 
@@ -900,7 +920,9 @@ def dispatch_gate(repo: Path) -> None:
         raise DispatchDeferred("a queued Executor change is waiting for the service to be idle")
 
 
-async def cmd_execute_async(repo: Path, *, from_watch: bool = False, as_json: bool = False) -> int:
+async def cmd_execute_async(
+    repo: Path, *, from_watch: bool = False, as_json: bool = False, wait_s: float | None = None
+) -> int:
     require_a2a_config(repo)
     if from_watch:
         workflow = load_workflow(repo)
@@ -951,14 +973,15 @@ async def cmd_execute_async(repo: Path, *, from_watch: bool = False, as_json: bo
         task_id = task.get("id")
         if not isinstance(task_id, str) or not task_id:
             raise IntegrationError("submit returned a task without an id")
+        timeout_s = settings.wait_timeout_s if wait_s is None else wait_s
         try:
-            terminal = await _wait_task(client, task_id, settings)
+            terminal = await _wait_task(client, task_id, settings, timeout_s=timeout_s)
         except TimeoutError as exc:
             raise UnresolvedExecution(
                 "wait timeout",
                 task_id=task_id,
                 execution_id=request.execution_id,
-                details={"wait_timeout": True, "timeout_s": settings.wait_timeout_s},
+                details={"wait_timeout": True, "timeout_s": timeout_s},
             ) from exc
         result = coding_result_from_task(terminal)
         record = _update_record_from_task(record, terminal)
@@ -1015,19 +1038,20 @@ def _saved_credential(outstanding: dict[str, Any]) -> Path:
     return path
 
 
-async def cmd_resume_async(repo: Path, *, as_json: bool = False) -> int:
+async def cmd_resume_async(repo: Path, *, as_json: bool = False, wait_s: float | None = None) -> int:
     outstanding = load_outstanding(repo)
     if outstanding is None:
         # Without an outstanding run, resume is only meaningful for A2A repos.
         require_a2a_config(repo)
         raise IntegrationError("no outstanding A2A run to resume")
     timing = recovery_timing(repo)
+    timeout_s = timing.wait_timeout_s if wait_s is None else wait_s
     record_path = Path(str(outstanding["run_record"]))
     try:
         payload = await resume_from_record(
             record_path=record_path,
             credential_file=_saved_credential(outstanding),
-            timeout=timing.wait_timeout_s,
+            timeout=timeout_s,
         )
     except UnresolvedExecution as exc:
         _reconcile(repo, outstanding=outstanding, task=None, result=None, unresolved=True, reason=str(exc))
@@ -1429,14 +1453,20 @@ def cmd_qa(repo: Path, *, status: str, file: str, append: bool, as_json: bool) -
         raise IntegrationError("--status must be APPROVED or CHANGES REQUESTED")
     path = repo / HANDOFF_NAME
     raw = path.read_bytes()
-    crlf = b"\r\n" in raw
-    text = raw.replace(b"\r\n", b"\n").decode("utf-8")
-    problems = handoff_structure(text)
+    text = raw.decode("utf-8")
+    logical = text.replace("\r\n", "\n").replace("\r", "\n")
+    problems = handoff_structure(logical)
     if problems:
         raise IntegrationError("HANDOFF.md structure is malformed: " + "; ".join(problems))
     if load_outstanding(repo):
         raise IntegrationError("cannot write QA while an execution is outstanding or not terminal")
-    current = read_status(text)
+    current = read_status(logical)
+    workflow = load_workflow(repo)
+    if workflow is not None and plan_changed_since_approval(logical, workflow.get("approved_plan_hash")):
+        raise IntegrationError(
+            "the plan changed since approval; restore HANDOFF.md from the delivered copy "
+            "or the pre-QA backup, or revise the plan and re-approve"
+        )
     keep_status = append and current in {"APPROVED", "CHANGES REQUESTED"}
     if current != READY_FOR_QA and not keep_status:
         raise IntegrationError(
@@ -1446,30 +1476,31 @@ def cmd_qa(repo: Path, *, status: str, file: str, append: bool, as_json: bool) -
     qa_path = Path(file).expanduser()
     if not qa_path.is_file():
         raise IntegrationError(f"no QA file: {qa_path}")
-    payload = qa_path.read_bytes().replace(b"\r\n", b"\n").decode("utf-8")
+    payload = qa_path.read_bytes().decode("utf-8")
     try:
         updated = render_qa(text, payload, status=None if keep_status else status, append=append)
     except HandoffStructureError as exc:
         raise IntegrationError("HANDOFF.md structure is malformed: " + str(exc)) from exc
-    result_problems = handoff_structure(updated)
+    updated_logical = updated.replace("\r\n", "\n").replace("\r", "\n")
+    result_problems = handoff_structure(updated_logical)
     if result_problems:
         raise IntegrationError("refusing to write QA that would damage HANDOFF.md: " + "; ".join(result_problems))
-    if _current_task_without_status(text) != _current_task_without_status(updated):
+    if _current_task_without_status(logical) != _current_task_without_status(updated_logical):
         raise IntegrationError("refusing to write QA that would change Current Task bytes other than Status")
-    if approved_plan_hash(text) != approved_plan_hash(updated):
+    if approved_plan_hash(logical) != approved_plan_hash(updated_logical):
         raise IntegrationError("refusing to write QA that would change the approved plan hash")
     logs = repo / LOG_DIRNAME
     logs.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     backup = logs / f"HANDOFF.pre-qa-{stamp}.md"
     backup.write_bytes(raw)
-    out = updated.replace("\n", "\r\n").encode("utf-8") if crlf else updated.encode("utf-8")
+    out = updated.encode("utf-8")
     mode = stat.S_IMODE(path.stat().st_mode)
     temporary = path.with_name(f".{path.name}.{stamp}.tmp")
     temporary.write_bytes(out)
     os.chmod(temporary, mode)
     os.replace(temporary, path)
-    written = read_status(updated)
+    written = read_status(updated_logical)
     changed = "appended QA Feedback" if append else "replaced QA Feedback"
     changed += "; Status unchanged" if keep_status else f"; Status set to {written}"
     if as_json:
@@ -1512,8 +1543,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("approve")
     execute = sub.add_parser("execute")
     execute.add_argument("--json", action="store_true")
+    execute.add_argument("--wait", default=None)
     resume = sub.add_parser("resume")
     resume.add_argument("--json", action="store_true")
+    resume.add_argument("--wait", default=None)
     preflight = sub.add_parser("preflight")
     preflight.add_argument("--json", action="store_true")
     sub.add_parser("cancel")
@@ -1539,9 +1572,21 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "approve":
             return cmd_approve(repo)
         if args.command == "execute":
-            return asyncio.run(cmd_execute_async(repo, as_json=bool(getattr(args, "json", False))))
+            return asyncio.run(
+                cmd_execute_async(
+                    repo,
+                    as_json=bool(getattr(args, "json", False)),
+                    wait_s=parse_wait_override(getattr(args, "wait", None)),
+                )
+            )
         if args.command == "resume":
-            return asyncio.run(cmd_resume_async(repo, as_json=bool(getattr(args, "json", False))))
+            return asyncio.run(
+                cmd_resume_async(
+                    repo,
+                    as_json=bool(getattr(args, "json", False)),
+                    wait_s=parse_wait_override(getattr(args, "wait", None)),
+                )
+            )
         if args.command == "preflight":
             return cmd_preflight(repo, as_json=bool(getattr(args, "json", False)))
         if args.command == "cancel":

@@ -62,9 +62,9 @@ workflow
   status    Markdown status, execution state, whose turn, run mode, and the Goal [--json]
   preflight list every execute blocker and its fix (managed A2A) [--json]
   approve   record plan approval (A2A receipt) or activate a legacy DRAFT
-  execute   run the executor (only when it's the executor's turn)
+  execute   run the executor (only when it's the executor's turn) [--wait <seconds>]
   watch     poll Status; auto-execute on executor turns (refuses in drive mode)
-  resume    reconnect to an outstanding A2A run
+  resume    reconnect to an outstanding A2A run [--wait <seconds>]
   cancel    request cancellation of an outstanding A2A run
   runs      list past executor runs from their manifests
   archive   append Current Task / Execution Notes / QA Feedback to HANDOFF-ARCHIVE.md
@@ -328,28 +328,47 @@ cmd_preflight() {
   die "preflight needs managed A2A"
 }
 
+# Positive number, at most 1800. Empty is "not passed".
+validate_wait() {
+  local value="$1"
+  if [[ ! "$value" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    die "--wait must be a positive number up to 1800"
+  fi
+  awk -v v="$value" 'BEGIN { if (!(v > 0 && v <= 1800)) exit 1 }' \
+    || die "--wait must be a positive number up to 1800"
+}
+
 cmd_execute() {
   command -v jq >/dev/null || die "jq is required (brew install jq)"
-  local repo_arg="" json=0 a
-  for a in "$@"; do
-    case "$a" in
-      --json) json=1 ;;
-      -*) die "unknown execute option: $a (try --help)" ;;
-      *) repo_arg="$a" ;;
+  local repo_arg="" json=0 wait=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --wait)
+        [[ $# -ge 2 ]] || die "--wait needs a positive number of seconds up to 1800"
+        wait="$2"; shift 2 ;;
+      --wait=*) wait="${1#*=}"; shift ;;
+      -*) die "unknown execute option: $1 (try --help)" ;;
+      *)
+        [[ -z "$repo_arg" ]] || die "execute takes one repo path"
+        repo_arg="$1"; shift ;;
     esac
   done
+  [[ -z "$wait" ]] || validate_wait "$wait"
   local repo
   repo="$(resolve_repo "$repo_arg")"
   if is_a2a "$repo"; then
-    if [[ $json -eq 1 ]]; then
-      a2a_cli "$repo" execute --json
-    else
-      a2a_cli "$repo" execute
-    fi
+    local -a extra=()
+    [[ -n "$wait" ]] && extra+=(--wait "$wait")
+    [[ $json -eq 1 ]] && extra+=(--json)
+    a2a_cli "$repo" execute ${extra[@]+"${extra[@]}"}
     return
   fi
   if [[ $json -eq 1 ]]; then
     die "execute --json needs managed A2A"
+  fi
+  if [[ -n "$wait" ]]; then
+    die "--wait needs managed A2A"
   fi
   cmd_execute_legacy "$repo"
 }
@@ -845,22 +864,28 @@ cmd_approve() {
 # resume/cancel act on the saved run (endpoint, request, credential reference),
 # not on whatever transport is configured now.
 cmd_resume() {
-  local repo_arg="" json=0 a
-  for a in "$@"; do
-    case "$a" in
-      --json) json=1 ;;
-      -*) die "unknown resume option: $a (try --help)" ;;
-      *) repo_arg="$a" ;;
+  local repo_arg="" json=0 wait=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --wait)
+        [[ $# -ge 2 ]] || die "--wait needs a positive number of seconds up to 1800"
+        wait="$2"; shift 2 ;;
+      --wait=*) wait="${1#*=}"; shift ;;
+      -*) die "unknown resume option: $1 (try --help)" ;;
+      *)
+        [[ -z "$repo_arg" ]] || die "resume takes one repo path"
+        repo_arg="$1"; shift ;;
     esac
   done
+  [[ -z "$wait" ]] || validate_wait "$wait"
   local repo
   repo="$(resolve_repo "$repo_arg")"
   has_outstanding "$repo" || is_a2a "$repo" || die "resume requires an outstanding A2A run or A2A configuration"
-  if [[ $json -eq 1 ]]; then
-    a2a_cli "$repo" resume --json
-  else
-    a2a_cli "$repo" resume
-  fi
+  local -a extra=()
+  [[ -n "$wait" ]] && extra+=(--wait "$wait")
+  [[ $json -eq 1 ]] && extra+=(--json)
+  a2a_cli "$repo" resume ${extra[@]+"${extra[@]}"}
 }
 
 cmd_cancel() {
@@ -1075,32 +1100,65 @@ nothing was changed
 EOF
 }
 
-# Bytes before the single line that is exactly "## Current Task".
-# Returns 1 when that heading is missing or duplicated.
-write_preamble() {
-  local src="$1" dest="$2" count line
-  count="$(grep -c -x '## Current Task' "$src" || true)"
-  [[ "$count" == "1" ]] || return 1
-  line="$(grep -n -x '## Current Task' "$src" | head -n 1 | cut -d: -f1)"
-  if [[ "$line" == "1" ]]; then
-    : > "$dest"
-  else
-    head -n $((line - 1)) "$src" > "$dest"
-  fi
+# Preamble lines with CR stripped, plus a sentinel so trailing blank lines survive
+# command substitution. Exit 1 when ## Current Task is missing or duplicated.
+preamble_normalized() {
+  awk '
+    function norm(s) { sub(/\r$/, "", s); return s }
+    BEGIN { seen = 0 }
+    {
+      line = norm($0)
+      if (line == "## Current Task") { seen++; next }
+      if (seen == 0) printf "%s\n", line
+    }
+    END { if (seen != 1) exit 1 }
+  ' "$1" && printf '\034'
 }
 
 # One extra line when an existing HANDOFF.md preamble is not the template's.
+# Line endings alone are not a difference. No temp files: a locked-down TMPDIR
+# must not make init fail.
 preamble_refresh_hint() {
   local repo="$1" tmpl="$TEMPLATE_DIR/HANDOFF.md" old new
   [[ -f "$repo/HANDOFF.md" && -f "$tmpl" ]] || return 0
-  old="$(mktemp)"
-  new="$(mktemp)"
-  if write_preamble "$repo/HANDOFF.md" "$old" && write_preamble "$tmpl" "$new" && cmp -s "$old" "$new"; then
-    rm -f "$old" "$new"
+  old="$(preamble_normalized "$repo/HANDOFF.md")" || {
+    echo "preamble differs from the template; handoff template refresh \"$repo\""
+    return 0
+  }
+  new="$(preamble_normalized "$tmpl")" || {
+    echo "preamble differs from the template; handoff template refresh \"$repo\""
+    return 0
+  }
+  if [[ "$old" == "$new" ]]; then
     return 0
   fi
-  rm -f "$old" "$new"
   echo "preamble differs from the template; handoff template refresh \"$repo\""
+}
+
+# Octal mode of an existing file. macOS stat, GNU stat, then Python.
+file_mode() {
+  local file="$1" mode=""
+  mode="$(stat -f '%Lp' "$file" 2>/dev/null || true)"
+  if [[ -z "$mode" ]]; then
+    mode="$(stat -c '%a' "$file" 2>/dev/null || true)"
+  fi
+  if [[ -z "$mode" ]]; then
+    mode="$(python3 -c 'import os, sys; print(format(os.stat(sys.argv[1]).st_mode & 0o777, "o"))' "$file")"
+  fi
+  printf '%s' "$mode"
+}
+
+# "crlf" or "lf". A raw newline cannot be returned through command substitution.
+heading_ending() {
+  local file="$1" heading="$2" n raw
+  n="$(heading_line "$file" "$heading")"
+  raw="$(sed -n "${n}p" "$file"; printf x)"
+  raw="${raw%x}"
+  if [[ "$raw" == *$'\r'* ]]; then
+    printf 'crlf'
+  else
+    printf 'lf'
+  fi
 }
 
 cmd_template() {
@@ -1142,7 +1200,7 @@ cmd_template_refresh() {
     die "$msg"
   fi
   local count
-  count="$(grep -c -x '## Current Task' "$handoff" || true)"
+  count="$(heading_count "$handoff" "## Current Task")"
   if [[ "$count" != "1" ]]; then
     local msg
     if [[ "$count" == "0" ]]; then
@@ -1154,15 +1212,9 @@ cmd_template_refresh() {
     die "$msg"
   fi
   local old new
-  old="$(mktemp)"
-  new="$(mktemp)"
-  write_preamble "$handoff" "$old"
-  write_preamble "$tmpl" "$new"
-  local old_size new_size
-  old_size="$(wc -c < "$old" | tr -d ' ')"
-  new_size="$(wc -c < "$new" | tr -d ' ')"
-  if cmp -s "$old" "$new"; then
-    rm -f "$old" "$new"
+  old="$(preamble_normalized "$handoff")" || die "no '## Current Task' line in $handoff; refusing to refresh"
+  new="$(preamble_normalized "$tmpl")" || die "template has no single '## Current Task' line: $tmpl"
+  if [[ "$old" == "$new" ]]; then
     if [[ $json -eq 1 ]]; then
       jq -n --arg schema "$CLI_OUTPUT_SCHEMA" --arg repo "$repo" \
         '{schema: $schema, kind: "template_refresh", repo: $repo, replaced: false, message: "already current"}'
@@ -1171,17 +1223,37 @@ cmd_template_refresh() {
     fi
     return 0
   fi
+  local ending line mode old_size new_size
+  ending="$(heading_ending "$handoff" "## Current Task")"
+  line="$(heading_line "$handoff" "## Current Task")"
+  mode="$(file_mode "$handoff")"
   mkdir -p "$repo/.handoff-logs"
-  local stamp backup tmp line
+  local stamp backup tmp
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   backup="$repo/.handoff-logs/HANDOFF.preamble-$stamp.md"
   cp "$handoff" "$backup"
-  line="$(grep -n -x '## Current Task' "$handoff" | head -n 1 | cut -d: -f1)"
   tmp="$(mktemp "$repo/.handoff-logs/HANDOFF.md.XXXXXX")"
-  cat "$new" > "$tmp"
+  awk -v kind="$ending" '
+    function norm(s) { sub(/\r$/, "", s); return s }
+    BEGIN { end = (kind == "crlf" ? "\r\n" : "\n") }
+    {
+      line = norm($0)
+      if (line == "## Current Task") exit
+      printf "%s%s", line, end
+    }
+  ' "$tmpl" > "$tmp"
   tail -n +"$line" "$handoff" >> "$tmp"
+  if [[ "$line" == "1" ]]; then
+    old_size=0
+  else
+    old_size="$(head -n $((line - 1)) "$handoff" | wc -c | tr -d ' ')"
+  fi
+  local kept
+  kept="$(tail -n +"$line" "$handoff" | wc -c | tr -d ' ')"
+  new_size="$(wc -c < "$tmp" | tr -d ' ')"
+  new_size=$((new_size - kept))
+  chmod "$mode" "$tmp"
   mv "$tmp" "$handoff"
-  rm -f "$old" "$new"
   if [[ $json -eq 1 ]]; then
     jq -n --arg schema "$CLI_OUTPUT_SCHEMA" --arg repo "$repo" --arg backup "$backup" \
       --argjson old_preamble_bytes "$old_size" --argjson new_preamble_bytes "$new_size" \

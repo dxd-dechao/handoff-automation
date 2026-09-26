@@ -653,6 +653,15 @@ def _reinit(
     _next_steps(paths, provider, planner or current_planner, report)
 
 
+def _same_preamble(current: bytes, installed: bytes) -> bool:
+    """Line endings alone are not a difference."""
+
+    def norm(data: bytes) -> bytes:
+        return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+    return norm(current) == norm(installed)
+
+
 def _preamble(data: bytes) -> bytes | None:
     lines = data.splitlines(keepends=True)
     hits = [index for index, line in enumerate(lines) if line.rstrip(b"\r\n") == b"## Current Task"]
@@ -667,7 +676,7 @@ def _preamble_refresh_note(handoff: Path, template: Path | None, repo: Path) -> 
         return None
     current = _preamble(handoff.read_bytes())
     installed = _preamble(template.read_bytes())
-    if current is not None and current == installed:
+    if current is not None and installed is not None and _same_preamble(current, installed):
         return None
     return f'preamble differs from the template; handoff template refresh "{repo}"'
 

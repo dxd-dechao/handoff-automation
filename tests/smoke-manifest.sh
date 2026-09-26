@@ -182,7 +182,46 @@ assert_eq "task bytes unchanged" "$BEFORE_TAIL" "$AFTER_TAIL"
 assert "preamble backup exists" test -n "$(find "$REFRESH_REPO/.handoff-logs" -name 'HANDOFF.preamble-*.md' -print -quit)"
 "$HANDOFF_BIN" template refresh "$REFRESH_REPO" > "$TMPDIR_BASE/refresh-again.txt"
 assert "second refresh is already current" grep -q "already current" "$TMPDIR_BASE/refresh-again.txt"
+
+CRLF_REPO="$TMPDIR_BASE/crlf-repo"
+mkdir -p "$CRLF_REPO"
+python3 - "$SCRIPT_DIR/../templates/HANDOFF.md" "$CRLF_REPO/HANDOFF.md" "$TMPDIR_BASE/crlf-task.bin" <<'PY'
+import sys
+from pathlib import Path
+template = Path(sys.argv[1]).read_bytes()
+_preamble, sep, rest = template.partition(b"## Current Task")
+body = (b"# stale\n\n" + sep + rest).replace(b"\n", b"\r\n")
+path = Path(sys.argv[2])
+path.write_bytes(body)
+path.chmod(0o644)
+Path(sys.argv[3]).write_bytes(body[body.index(b"## Current Task"):])
+PY
+"$HANDOFF_BIN" template refresh "$CRLF_REPO" > "$TMPDIR_BASE/crlf-refresh.txt"
+assert "CRLF refresh succeeds" grep -q "replaced the preamble" "$TMPDIR_BASE/crlf-refresh.txt"
+python3 - "$CRLF_REPO/HANDOFF.md" "$TMPDIR_BASE/crlf-task.bin" <<'PY'
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+data = path.read_bytes()
+task = Path(sys.argv[2]).read_bytes()
+assert data.endswith(task), "task bytes changed"
+preamble = data[: data.index(b"## Current Task")]
+assert preamble.endswith(b"\r\n"), preamble[-8:]
+assert b"\n" not in preamble.replace(b"\r\n", b"")
+assert (path.stat().st_mode & 0o777) == 0o644
+PY
+assert "CRLF task bytes and mode 0644" test $? -eq 0
 export PATH="$OLD_PATH"
+
+echo ""
+echo "=== --wait refusal ==="
+WAIT_RC=0
+"$HANDOFF_BIN" execute --wait 0 "$REPO" > "$TMPDIR_BASE/wait.txt" 2>&1 || WAIT_RC=$?
+assert_eq "--wait 0 refused" "1" "$WAIT_RC"
+assert "--wait message" grep -q "positive number up to 1800" "$TMPDIR_BASE/wait.txt"
+WAIT_RC=0
+"$HANDOFF_BIN" resume --wait abc "$REPO" > "$TMPDIR_BASE/wait-abc.txt" 2>&1 || WAIT_RC=$?
+assert_eq "--wait abc refused" "1" "$WAIT_RC"
 
 # ── Legacy qa refusal and archive structure check ────────────────────────────
 echo ""

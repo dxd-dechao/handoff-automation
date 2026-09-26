@@ -9,6 +9,8 @@ from uuid import uuid4
 
 import httpx
 import pytest
+
+pytestmark = pytest.mark.server
 from handoff_a2a.__main__ import main
 from handoff_a2a.client import CodingClient, coding_result_from_task
 from handoff_a2a.contracts import parse_coding_request, snapshot_sha256

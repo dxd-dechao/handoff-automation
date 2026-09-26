@@ -10,6 +10,8 @@ import pytest
 
 from handoff_a2a.processes import group_pids, start_owned, stop_owned
 
+pytestmark = pytest.mark.server
+
 
 def _wait_file(path: Path, timeout: float = 5.0) -> None:
     deadline = time.time() + timeout
