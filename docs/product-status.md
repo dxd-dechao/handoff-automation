@@ -180,4 +180,4 @@ Execution policy throughout: human approval followed by manual Executor launch; 
 
 ## Known follow-ups
 
-None open.
+- (A13) `handoff status` now reads the Planner skill folders on every call. `skills.elsewhere_copy` calls `root.iterdir()` without catching `OSError`, and `status_entries` catches only `SkillError`. So a host that denies reading a user skill root (for example `~/.cursor/skills`) would make `status` fail over optional information. The skill report should degrade to "unknown" instead.
