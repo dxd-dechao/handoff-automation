@@ -33,7 +33,7 @@ explicit ID, which is recorded as unverified.
 | `handoff resume "<repo>" [--wait <seconds>]` / `handoff cancel "<repo>"` | Reconnect to / cancel an outstanding run. `--wait` is the same override as on `execute`. |
 | `handoff runs "<repo>"` | Past runs from manifests. |
 | `handoff archive "<repo>" [--superseded]` | Move the finished task to HANDOFF-ARCHIVE.md; `--superseded` closes an exhausted workflow. Refuses a damaged heading structure or a plan that changed since approval. |
-| `handoff qa "<repo>" --status <APPROVED\|CHANGES REQUESTED> --file <path> [--append] [--json]` | A2A only (`kind: qa`). Replaces QA Feedback and sets Status. `--append` on APPROVED or CHANGES REQUESTED adds a note and leaves Status unchanged. Refuses while a run is outstanding, on a bad structure, or if Current Task would change. |
+| `handoff qa "<repo>" --status <APPROVED\|CHANGES REQUESTED> --file <path> [--append] [--json]` | A2A only (`kind: qa`). Replaces QA Feedback and sets Status. `--append` from READY FOR QA appends the new round and sets Status in the same write. `--append` on APPROVED or CHANGES REQUESTED adds a note and leaves Status unchanged. Refuses from DRAFT or READY FOR EXECUTION, while a run is outstanding, on a bad structure, or if Current Task would change. |
 | `handoff template refresh "<repo>" [--json]` | Replace the HANDOFF.md preamble from the installed template (`kind: template_refresh`). Everything from `## Current Task` on stays byte-for-byte. Prints "already current" when nothing differs. Refuses, without writing, when the heading is missing or duplicated or an A2A run is outstanding. |
 
 ## Executor and run mode
@@ -57,7 +57,10 @@ explicit ID, which is recorded as unverified.
   `plan_changed_since_approval`), `executor` (as `model`), `run`, `reason`,
   `next`, `preflight` (`ready`, `branch.expected`, `branch.actual`,
   `branch.exists`, `baseline_clean`, `dirty_paths`, `blockers[]` with
-  `code`, `message`, `fix`; `null` with no approved workflow or on legacy).
+  `code`, `message`, `fix`; `null` with no approved workflow or on legacy),
+  `planner_skill` (`stale`: paths whose content differs from this checkout;
+  empty when every copy is current or absent). A stale copy does not block
+  preflight.
 - `models`: `provider`, `models_listed`, `models` (`id`, `name`), `note`,
   `reasoning_effort_supported`, `login_command`. `models_listed: false`
   only means the CLI cannot list models (always for Claude: ask for an
@@ -76,7 +79,8 @@ explicit ID, which is recorded as unverified.
 - `mode`: `mode`, `transport`, `managed`, `changed`, `previous`, `watcher`
   (managed) or `hint` (not managed).
 - `skill-status`: `locations[]` with `host`, `scope` (`project`|`user`),
-  `path`, `state`, `detail`, `install_command`.
+  `path`, `state`, `detail`, `install_command`, `stale`. `elsewhere` also
+  has `found_path` and `current_content`.
 
 ## Skill copy states
 
@@ -87,6 +91,10 @@ never modified); `foreign` (user-modified, unrelated, symlinked, or
 tracked; never overwritten, so tell the human to keep it or move it aside);
 `unsupported` (a `--user` location that cannot be verified, for example
 Claude with a relocated `CLAUDE_CONFIG_DIR`). `elsewhere` counts as available.
+`stale` is true for `outdated`, and for `elsewhere` when `current_content`
+is false. Tell the human which copy is stale. For `elsewhere`, update it
+with the tool that installed it (for example skillshare); handoff never
+modifies it.
 
 ## Environment
 

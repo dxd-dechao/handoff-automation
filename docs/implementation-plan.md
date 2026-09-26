@@ -157,6 +157,10 @@ A HANDOFF file is well-formed only with exactly one `## Current Task`, one `## E
 
 `init` compares preambles in memory, so a read-only temp directory does not fail it. `template refresh` keeps the previous file mode and the file's own line ending, and accepts a CRLF `## Current Task`. `handoff qa` leaves every byte outside the QA body and the Status value unchanged, and refuses when the plan already differs from the approval receipt. Re-approval records a new baseline only when the workspace fingerprint changed. `execute` and `resume` take `--wait` (a positive number up to 1800) for that call only. Tests that need process probes (including a child `handoff` probe), localhost, a started service, or a pseudo-terminal are marked `server`.
 
+### A13 — QA append and stale skill copies
+
+From READY FOR QA, `handoff qa --append` appends a later QA round and sets Status in one write. From APPROVED or CHANGES REQUESTED, `--append` still leaves Status unchanged. A Planner skill copy is `stale` when it is `outdated`, or `elsewhere` with content that differs from this checkout. `skill status`, `init` next steps, and `handoff status` report it. Handoff does not modify an `elsewhere` copy. A stale copy does not block preflight.
+
 ## Final completion bar
 
 The feature is complete when the actual handoff CLI can switch Claude/Codex endpoints, run the existing Planner/QA loop against real git changes, and handle ordinary duplicate/disconnection/cancellation cases without losing workspace control. Human plan approval and final merge authority remain explicit. Keep A2A opt-in until these checks pass.

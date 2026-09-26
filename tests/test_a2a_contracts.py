@@ -289,6 +289,21 @@ def test_skill_is_mode_aware_and_keeps_the_safety_rules() -> None:
     assert "handoff preflight" in drive and drive.index("preflight") < drive.index("handoff execute")
 
 
+def test_skill_appends_later_qa_rounds_and_reports_stale_copies() -> None:
+    skill = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    qa = _section(skill, "## QA")
+    assert "--append" in qa and "later round" in qa and "earlier rounds" in qa
+    assert "planner_skill.stale" in skill and "mention them once" in skill
+    assert "for example skillshare" in skill
+    assert "Never edit, overwrite, or install over an `elsewhere` copy." in skill
+    setup = _section(skill, "## Setup")
+    assert "Report a `stale` entry like `outdated`" in setup
+    assert "skillshare" in setup
+    reference = (SKILL_DIR / "reference.md").read_text(encoding="utf-8")
+    assert "--append` from READY FOR QA" in reference
+    assert "`stale`" in reference and "planner_skill" in reference
+
+
 def test_installed_copies_of_every_host_are_workflow_paths() -> None:
     from handoff_a2a.skills import PROJECT_DIRS
     from handoff_a2a.workspace import is_workflow_path

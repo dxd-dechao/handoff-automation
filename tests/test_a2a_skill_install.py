@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -211,6 +212,61 @@ def test_planner_launcher_names_the_upgrade_for_an_outdated_copy(tmp_path: Path)
     ok = handoff(env, "planner", str(repo), "--provider", "cursor", "--model", "fake-model", "--print-command")
     assert ok.returncode == 0, ok.stderr
     assert "older release" in ok.stdout and "handoff skill install" in ok.stdout
+
+
+def test_stale_copies_are_marked_and_left_unchanged(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    env = _env(tmp_path)
+    home = Path(env["HOME"])
+    copy = home / ".cursor" / "skills" / "_handoff-cli__skills__handoff-cli"
+    copy.mkdir(parents=True)
+    (copy / "SKILL.md").write_text("---\nname: handoff-cli\ndescription: skillshare\n---\nold body\n", encoding="utf-8")
+    before = tree_digest(copy)
+    status = handoff(env, "skill", "status", str(repo), "--json")
+    assert status.returncode == 0, status.stderr
+    cursor = next(item for item in _json(status)["locations"] if item["host"] == "cursor" and item["scope"] == "user")
+    assert cursor["state"] == "elsewhere" and cursor["current_content"] is False and cursor["stale"] is True
+    assert cursor["found_path"] == str(copy)
+    text = handoff(env, "skill", "status", str(repo))
+    assert "stale (content differs from this checkout's skills/handoff-cli)" in text.stdout
+    assert "update it with the tool that installed it (e.g. skillshare); handoff never modifies it" in text.stdout
+    assert tree_digest(copy) == before
+
+    current = home / ".agents" / "skills" / "renamed-handoff"
+    shutil.copytree(REPO_SKILL, current)
+    current_before = tree_digest(current)
+    again = _json(handoff(env, "skill", "status", str(repo), "--json"))
+    codex = next(item for item in again["locations"] if item["host"] == "codex" and item["scope"] == "user")
+    assert codex["state"] == "elsewhere" and codex["current_content"] is True and codex["stale"] is False
+    assert tree_digest(current) == current_before and tree_digest(copy) == before
+
+    assert handoff(env, "skill", "install", str(repo), "--host", "claude").returncode == 0
+    target = repo / PROJECT_DIRS["claude"]
+    (target / "SKILL.md").write_text("---\nname: handoff-cli\ndescription: old\n---\nold release\n", encoding="utf-8")
+    marker = json.loads((target / MARKER_NAME).read_text())
+    marker["digest"] = tree_digest(target)
+    (target / MARKER_NAME).write_text(json.dumps(marker), encoding="utf-8")
+    outdated_before = tree_digest(target)
+    listed = _json(handoff(env, "skill", "status", str(repo), "--json"))
+    project = next(item for item in listed["locations"] if item["host"] == "claude" and item["scope"] == "project")
+    assert project["state"] == "outdated" and project["stale"] is True
+    assert tree_digest(target) == outdated_before and tree_digest(copy) == before
+
+
+def test_init_names_a_stale_elsewhere_copy_and_installs_nothing(tmp_path: Path) -> None:
+    repo, env = managed_repo(tmp_path)
+    home = Path(env["HOME"])
+    copy = home / ".claude" / "skills" / "_handoff-cli__skills__handoff-cli"
+    copy.mkdir(parents=True)
+    (copy / "SKILL.md").write_text("---\nname: handoff-cli\ndescription: skillshare\n---\nstale\n", encoding="utf-8")
+    before = tree_digest(copy)
+    init = handoff(env, "init", str(repo), "--planner", "claude")
+    assert init.returncode == 0, init.stderr
+    assert str(copy) in init.stdout
+    assert "update it with the tool that installed it (e.g. skillshare); handoff never modifies it" in init.stdout
+    assert "handoff skill install" not in init.stdout
+    assert not (repo / ".claude" / "skills" / "handoff-cli").exists()
+    assert tree_digest(copy) == before
 
 
 def test_skill_command_needs_the_runtime(tmp_path: Path) -> None:

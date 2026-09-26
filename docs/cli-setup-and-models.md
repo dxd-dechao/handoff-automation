@@ -53,6 +53,9 @@ digest). `skill status` reports each location as:
 | `outdated` | unmodified copy of an earlier release (its files still match its marker, or an unmarked A6 copy) | upgrades in place |
 | `foreign` | modified after install, unrelated, symlinked, or tracked in git | never overwritten; keep it or move it aside |
 | `unsupported` | a `--user` location that cannot be verified | refused |
+| `elsewhere` | another folder in that host's skill root whose `SKILL.md` names `handoff-cli` | never modified |
+
+A copy is `stale` when it is `outdated`, or `elsewhere` with content that differs from this checkout's `skills/handoff-cli`. `skill status` marks it `stale (content differs from this checkout's skills/handoff-cli)`. Handoff never modifies an `elsewhere` copy; update it with the tool that installed it (for example skillshare). A stale copy still counts as available, so init does not install a second copy beside it. When that is the only copy for the Planner host, init names the path and that update hint, and does not suggest `handoff skill install`. `handoff status` lists the paths in `planner_skill.stale` (empty when every copy is current or absent) and prints one `skill:` line only when the list is not empty. Preflight does not mention a stale copy and does not block on it.
 
 `handoff init --planner <cursor|codex|claude>` uses the same installer.
 Without the A2A runtime, legacy `init --planner` makes a fresh copy only.
@@ -150,7 +153,7 @@ when `.handoff-logs/outstanding.json` shows an A2A run still in progress
 If a delivery or a QA edit damages `HANDOFF.md`, restore it before archive:
 
 - The bytes the server evaluated are `.handoff-logs/<run_id>-delivered.md` (also `handoff-delivered.md` under that run's server evidence). Copy that file back over `HANDOFF.md`.
-- `handoff qa` saves the previous file as `.handoff-logs/HANDOFF.pre-qa-<UTC timestamp>.md`. Copy the newest of those back to undo a QA write.
+- `handoff qa` saves the previous file as `.handoff-logs/HANDOFF.pre-qa-<UTC timestamp>.md`. Copy the newest of those back to undo a QA write. From READY FOR QA, `handoff qa --append` keeps the earlier round and sets Status in the same write. From APPROVED or CHANGES REQUESTED, `--append` adds a note and leaves Status unchanged. It still refuses from DRAFT or READY FOR EXECUTION.
 - `handoff archive` refuses a malformed heading structure or a plan whose hash no longer matches approval. Restore one of those copies, or revise Current Task and re-approve. Nothing is appended to `HANDOFF-ARCHIVE.md` until the guard passes.
 
 A manually configured endpoint keeps working for `execute`/`resume`/`status`/`cancel`,
@@ -281,19 +284,20 @@ object on stdout:
 
 | `kind` | From | Main fields |
 |---|---|---|
-| `status` | `handoff status --json` | `transport` (`legacy`/`a2a`), `managed`, `status`, `turn`, `goal`, `execution` (`UNKNOWN` when a status probe is not permitted), `probe`, `workflow`, `mode`, `watcher`, `executor`, `run`, `reason`, `next` |
+| `status` | `handoff status --json` | `transport` (`legacy`/`a2a`), `managed`, `status`, `turn`, `goal`, `execution` (`UNKNOWN` when a status probe is not permitted), `probe`, `workflow`, `mode`, `watcher`, `executor`, `run`, `reason`, `next`, `planner_skill.stale` |
 | `template_refresh` | `handoff template refresh --json` | `replaced`, `backup`, `old_preamble_bytes`, `new_preamble_bytes`, `message` |
 | `models` | `handoff models --json` | `provider`, `binary`, `version`, `models_listed` (false only means no enumeration, as for Claude), `source`, `models[]` (`id`, `name`), `note`, `reasoning_effort_supported`, `login_command` |
 | `model` / `model-change` | `handoff model [...] --json` | `selected`, `active` (`state`: `verified`/`unverified`/`stopped`/`unknown`), `current_run`, `pending`; changes add `messages[]` |
 | `server-status` / `server-stop` | `handoff server ... --json` | `service`, `verified`, `endpoint`, `port`, `selected`, `active`, `pid`, `started_at`, `log`, `notes`, `last_failure` / `outcome` |
 | `mode` | `handoff mode --json` | `transport`, `managed`, `mode`, `changed`, `previous`, `watcher` or `hint` |
-| `skill-install` / `skill-status` | `handoff skill ... --json` | `outcome` / `locations[]` (`host`, `scope`, `path`, `state`, `detail`, `install_command`) |
+| `skill-install` / `skill-status` | `handoff skill ... --json` | `outcome` / `locations[]` (`host`, `scope`, `path`, `state`, `detail`, `install_command`, `stale`; `elsewhere` also has `found_path` and `current_content`) |
 
 Errors keep a nonzero exit and print `{"schema": ..., "kind": ..., "error":
 "..."}` on stdout. No object contains the service token, credential
 contents, or provider auth output. Legacy `status --json` and `mode --json`
-are built with `jq`, so legacy stays Python-free. Human-readable output
-without `--json` is unchanged.
+are built with `jq`, so legacy stays Python-free and does not include
+`planner_skill`. Managed A2A `status` does. Human-readable output
+without `--json` is unchanged apart from the `skill:` line described above.
 
 ## 5. Plan with Cursor (or any Planner)
 

@@ -305,10 +305,12 @@ def test_skill_elsewhere_is_reported_and_not_modified(tmp_path: Path) -> None:
     assert claude["state"] == "elsewhere"
     assert claude["found_path"] == str(copy)
     assert claude["current_content"] is True
+    assert claude["stale"] is False
     assert (copy / "SKILL.md").read_bytes() == before
     init = handoff(env, "init", str(repo), "--planner", "claude")
     assert init.returncode == 0, init.stderr
     assert str(copy) in init.stdout
+    assert "stale (content differs" not in init.stdout
     assert not (repo / ".claude" / "skills" / "handoff-cli").exists()
 
 
@@ -408,6 +410,54 @@ def test_watch_retries_an_unknown_service(tmp_path: Path, monkeypatch: pytest.Mo
     out = captured.out + captured.err
     assert "dispatch deferred" in out and "watch will retry at the next poll" in out, out
     assert "probe not permitted" in out
+
+
+def test_status_lists_stale_planner_skills(tmp_path: Path) -> None:
+    repo, env = managed_repo(tmp_path)
+    write_handoff(repo, status="DRAFT", branch="main")
+    empty = _json(handoff(env, "status", str(repo), "--json"))
+    assert empty["schema"] == "urn:handoff-automation:cli-output:v1" and empty["kind"] == "status"
+    assert empty["planner_skill"] == {"stale": []}
+    assert "status" in empty and "execution" in empty and "preflight" in empty
+    assert not any(line.startswith("skill:") for line in handoff(env, "status", str(repo)).stdout.splitlines())
+
+    copy = Path(env["HOME"]) / ".cursor" / "skills" / "_handoff-cli__skills__handoff-cli"
+    copy.mkdir(parents=True)
+    (copy / "SKILL.md").write_text("---\nname: handoff-cli\ndescription: skillshare\n---\nold\n", encoding="utf-8")
+    shown = _json(handoff(env, "status", str(repo), "--json"))
+    assert shown["planner_skill"]["stale"] == [str(copy)]
+    assert shown["status"] == empty["status"] and shown["preflight"] == empty["preflight"]
+    human = handoff(env, "status", str(repo))
+    skill_lines = [line for line in human.stdout.splitlines() if line.startswith("skill:")]
+    assert skill_lines == [
+        f"skill:  {copy}: stale (content differs from this checkout's skills/handoff-cli); "
+        "update it with the tool that installed it (e.g. skillshare); handoff never modifies it"
+    ]
+
+
+def test_preflight_output_ignores_a_stale_skill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo, env = managed_repo(tmp_path)
+    write_handoff(repo, status="READY FOR EXECUTION", branch="main")
+    assert handoff(env, "approve", str(repo)).returncode == 0
+    monkeypatch.setenv("HOME", env["HOME"])
+    monkeypatch.setattr("handoff_a2a.integration.inspect_service", lambda managed: _unknown_state(managed))
+    from handoff_a2a.integration import cmd_preflight
+
+    assert cmd_preflight(repo, as_json=False) == 1
+    first = capsys.readouterr()
+    assert cmd_preflight(repo, as_json=True) == 1
+    first_json = capsys.readouterr().out
+    copy = Path(env["HOME"]) / ".cursor" / "skills" / "_handoff-cli__skills__handoff-cli"
+    copy.mkdir(parents=True)
+    (copy / "SKILL.md").write_text("---\nname: handoff-cli\ndescription: skillshare\n---\nold\n", encoding="utf-8")
+    assert cmd_preflight(repo, as_json=False) == 1
+    second = capsys.readouterr()
+    assert cmd_preflight(repo, as_json=True) == 1
+    second_json = capsys.readouterr().out
+    assert second.out == first.out and second.err == first.err and second_json == first_json
+    assert "planner_skill" not in first_json and "skill:" not in first.out
 
 
 def test_preflight_reports_service_unknown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -696,6 +746,42 @@ def test_handoff_qa_writes_only_the_qa_section(tmp_path: Path) -> None:
     malformed = handoff(env, "qa", str(repo), "--status", "APPROVED", "--file", str(qa))
     assert malformed.returncode != 0 and "QA Feedback" in malformed.stderr
     assert path.read_text(encoding="utf-8") == broken
+
+
+def test_qa_append_from_ready_for_qa_sets_status_and_keeps_the_round(tmp_path: Path) -> None:
+    repo, env = managed_repo(tmp_path)
+    round1 = "Round 1 kept byte-for-byte.\n"
+    write_handoff(repo, status="READY FOR QA", branch="main", qa=round1)
+    path = repo / "HANDOFF.md"
+    before = path.read_bytes()
+    before_hash = approved_plan_hash(path.read_text(encoding="utf-8"))
+    second = tmp_path / "r2.md"
+    second.write_text("Round 2.\n", encoding="utf-8")
+    result = handoff(env, "qa", str(repo), "--append", "--status", "APPROVED", "--file", str(second))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "appended QA Feedback" in result.stdout and "Status set to APPROVED" in result.stdout
+    written = path.read_text(encoding="utf-8")
+    assert "Round 1 kept byte-for-byte.\n\nRound 2.\n" in written
+    assert parse_handoff(written).status == "APPROVED"
+    assert approved_plan_hash(written) == before_hash
+    backups = list((repo / ".handoff-logs").glob("HANDOFF.pre-qa-*"))
+    assert len(backups) == 1 and backups[0].read_bytes() == before
+
+    note = tmp_path / "note.md"
+    note.write_text("Note after approval.\n", encoding="utf-8")
+    appended = handoff(env, "qa", str(repo), "--append", "--status", "CHANGES REQUESTED", "--file", str(note))
+    assert appended.returncode == 0, appended.stdout + appended.stderr
+    assert "Status unchanged" in appended.stdout
+    assert parse_handoff(path.read_text(encoding="utf-8")).status == "APPROVED"
+
+    draft = path.read_text(encoding="utf-8").replace("**Status:** APPROVED", "**Status:** DRAFT")
+    path.write_text(draft, encoding="utf-8")
+    refused = handoff(env, "qa", str(repo), "--append", "--status", "APPROVED", "--file", str(second))
+    assert refused.returncode != 0 and path.read_text(encoding="utf-8") == draft
+    execution = draft.replace("**Status:** DRAFT", "**Status:** READY FOR EXECUTION")
+    path.write_text(execution, encoding="utf-8")
+    refused_exec = handoff(env, "qa", str(repo), "--append", "--status", "CHANGES REQUESTED", "--file", str(second))
+    assert refused_exec.returncode != 0 and path.read_text(encoding="utf-8") == execution
 
 
 def test_qa_on_mixed_endings_changes_only_the_body_and_status(tmp_path: Path) -> None:
