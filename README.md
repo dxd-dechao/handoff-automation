@@ -66,6 +66,10 @@ login is missing)
 handoff skill install "/path/to/project" --host claude   # or cursor, codex; --user for all repos
 ```
 
+If another tool (for example skillshare) installed the skill, re-sync it
+after you update this checkout. `handoff status` prints a `skill:` line
+while a copy is stale; handoff never modifies copies it did not install.
+
 **4. Ask your Planner to set it up**
 
 > /handoff-cli set up handoff in this repo
@@ -114,24 +118,27 @@ when the human asks for a handoff workflow.
 
 - **Planner:** follow [`skills/handoff-cli/SKILL.md`](skills/handoff-cli/SKILL.md).
   Keep new plans as DRAFT until the human approves them. Read state with
-  `--json`. QA the diff, not the Executor's notes.
+  `--json`. QA the diff, not the Executor's notes. On A2A, write QA
+  Feedback and Status with `handoff qa`; on legacy, edit them by hand.
 - **Executor:** implement the Current Task in `HANDOFF.md` directly, following
   its `### Executor rules`. Edit only its Status line and Execution Notes.
   Do not run `handoff`, the Planner skill, or another agent.
   `handoff template refresh` updates an old preamble and leaves the task
   byte-for-byte.
 
-There are no `handoff plan`, `qa`, or `drive` commands; those are agent work.
+There are no `handoff plan` or `drive` commands; those are agent work.
 
 ## Status and limitations
 
-Current evidence, 2026-09-25:
+Current evidence, 2026-09-26:
 
-- **226 Python tests and 28 legacy smoke checks** pass
-  ([A10 report](docs/qa-a10-slim-handoff-template.md)).
+- **250 Python tests and 38 legacy smoke checks** pass
+  ([A14 report](docs/qa-a14-unreadable-skill-roots.md)). The 141 tests
+  not marked `server` also pass inside a sandboxed Planner shell.
 - A live **Claude Code Planner** (auto mode, sandboxed shell) drove a live
-  **Cursor Executor** (`grok-4.7-high-fast`) through two drive-mode rounds.
-  The second round fixed QA feedback and was approved (A8).
+  **Cursor Executor** (`grok-4.7-high-fast`) through tasks A8–A14 in drive
+  mode. A8 and A12 each had a CHANGES REQUESTED round that the Executor
+  fixed and the Planner approved. A11–A14 QA was written with `handoff qa`.
 - A live **Cursor CLI Planner** ran the setup interview through to a DRAFT
   ([A7](docs/qa-a7-skill-first-setup.md)). Cursor Grok and Composer
   Executors and model switches were checked live
@@ -163,9 +170,16 @@ uv run --offline --extra test python -m pytest -q
 git diff --check
 ```
 
-Tests use fake providers and make no paid calls. Service tests need local
-process and localhost access, so run them outside a sandboxed shell. Live
-checks in `scripts/` need `--confirm-live` and make paid calls.
+Tests use fake providers and make no paid calls. Tests marked `server` need
+process probes, localhost, a started service, or a pseudo-terminal, so run
+the full suite (about 12 minutes) outside a sandboxed shell. Inside one, run
+the rest (about 2 minutes):
+
+```sh
+uv run --offline --extra test python -m pytest -q -m "not server"
+```
+
+Live checks in `scripts/` need `--confirm-live` and make paid calls.
 
 | Path | Contents |
 | --- | --- |
@@ -181,7 +195,13 @@ checks in `scripts/` need `--confirm-live` and make paid calls.
 - [CLI setup, models, run modes, and recovery](docs/cli-setup-and-models.md)
 - [Advanced setup: legacy mode and manual A2A endpoints](docs/advanced-setup.md)
 - [A2A coding-task protocol](docs/a2a-coding-task-v1.md)
-- QA evidence: [A8](docs/qa-a8-preflight-sandbox.md) ·
+- QA evidence: [A14](docs/qa-a14-unreadable-skill-roots.md) ·
+  [A13](docs/qa-a13-qa-append-stale-skill.md) ·
+  [A12](docs/qa-a12-polish-sandbox-tests.md) ·
+  [A11](docs/qa-a11-handoff-integrity.md) ·
+  [A10](docs/qa-a10-slim-handoff-template.md) ·
+  [A9](docs/qa-a9-fingerprint-rebaseline.md) ·
+  [A8](docs/qa-a8-preflight-sandbox.md) ·
   [A7](docs/qa-a7-skill-first-setup.md) · [A6](docs/qa-a6-cli-usability.md)
 - [Product status](docs/product-status.md) ·
   [Implementation history](docs/implementation-plan.md)
