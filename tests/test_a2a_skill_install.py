@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -10,16 +11,18 @@ from pathlib import Path
 
 import pytest
 
-from a2a_harness import git, handoff, make_repo, managed_env, managed_repo
+from a2a_harness import git, handoff, ignore_probes, make_repo, managed_env, managed_repo, write_handoff
 from handoff_a2a import skills
 from handoff_a2a.skills import (
     KNOWN_RELEASE_DIGESTS,
     MARKER_NAME,
     PROJECT_DIRS,
     REPO_SKILL,
+    any_skill_available,
     project_location,
     skill_state,
     tree_digest,
+    user_location,
 )
 from handoff_a2a.workspace import is_workflow_path
 
@@ -267,6 +270,197 @@ def test_init_names_a_stale_elsewhere_copy_and_installs_nothing(tmp_path: Path) 
     assert "handoff skill install" not in init.stdout
     assert not (repo / ".claude" / "skills" / "handoff-cli").exists()
     assert tree_digest(copy) == before
+
+
+def _deny_root() -> None:
+    if os.geteuid() == 0:
+        pytest.skip("chmod 000 does not deny access when running as root")
+
+
+def _skill_lines(text: str) -> list[str]:
+    return [line for line in text.splitlines() if line.startswith("skill:")]
+
+
+def test_unreadable_skill_root_keeps_status_and_skill_status(tmp_path: Path) -> None:
+    _deny_root()
+    repo, env = managed_repo(tmp_path)
+    write_handoff(repo, status="DRAFT", branch="main")
+    before = handoff(env, "status", str(repo))
+    before_json = _json(handoff(env, "status", str(repo), "--json"))
+    assert before.returncode == 0 and before_json["planner_skill"] == {"stale": [], "unknown": []}
+    locked = Path(env["HOME"]) / ".cursor" / "skills"
+    locked.mkdir(parents=True)
+    locked.chmod(0)
+    try:
+        status = handoff(env, "status", str(repo), "--json")
+        human = handoff(env, "status", str(repo))
+        skill = handoff(env, "skill", "status", str(repo), "--json")
+        skill_text = handoff(env, "skill", "status", str(repo))
+    finally:
+        locked.chmod(0o755)
+    assert status.returncode == before.returncode == 0
+    data = _json(status)
+    unreadable = str(locked / "handoff-cli")
+    assert data["planner_skill"]["unknown"] == [unreadable]
+    assert data["planner_skill"]["stale"] == []
+    for key in ("workflow", "execution", "next", "turn", "status", "preflight"):
+        assert data[key] == before_json[key]
+    assert _skill_lines(human.stdout) == [
+        f"skill:  could not read {unreadable} (permission denied); stale check skipped"
+    ]
+    rest = [line for line in human.stdout.splitlines() if not line.startswith("skill:")]
+    assert rest == before.stdout.splitlines()
+    assert human.returncode == 0
+    assert skill.returncode == 0 and skill_text.returncode == 0
+    listed = _json(skill)
+    cursor = next(item for item in listed["locations"] if item["host"] == "cursor" and item["scope"] == "user")
+    assert cursor["state"] == "unknown" and cursor["probe"] == "not_permitted"
+    assert cursor["stale"] is False and cursor["unknown"] is True
+    assert unreadable in skill_text.stdout and "unknown (" in skill_text.stdout
+    others = [item for item in listed["locations"] if item is not cursor]
+    assert others and all(item["state"] != "unknown" and item["unknown"] is False and "probe" not in item for item in others)
+
+
+def test_unreadable_root_is_not_a_copy_and_init_still_suggests_install(tmp_path: Path) -> None:
+    _deny_root()
+    repo, env = managed_repo(tmp_path)
+    write_handoff(repo, status="DRAFT", branch="main")
+    home = Path(env["HOME"])
+    copy = home / ".claude" / "skills" / "_handoff-cli__skills__handoff-cli"
+    copy.mkdir(parents=True)
+    (copy / "SKILL.md").write_text("---\nname: handoff-cli\ndescription: skillshare\n---\nstale\n", encoding="utf-8")
+    locked = home / ".cursor" / "skills"
+    locked.mkdir(parents=True)
+    locked.chmod(0)
+    try:
+        shown = _json(handoff(env, "status", str(repo), "--json"))
+        assert any_skill_available(repo, env) == str(copy)
+    finally:
+        locked.chmod(0o755)
+    assert shown["planner_skill"]["stale"] == [str(copy)]
+    assert shown["planner_skill"]["unknown"] == [str(locked / "handoff-cli")]
+
+    fresh_root = tmp_path / "fresh"
+    fresh_root.mkdir()
+    fresh = make_repo(fresh_root)
+    ignore_probes(fresh)
+    none_env = _env(fresh_root)
+    none_locked = Path(none_env["HOME"]) / ".cursor" / "skills"
+    none_locked.mkdir(parents=True)
+    none_locked.chmod(0)
+    try:
+        assert any_skill_available(fresh, none_env) is None
+        init = handoff(
+            none_env,
+            "init",
+            str(fresh),
+            "--transport",
+            "a2a",
+            "--executor",
+            "cursor",
+            "--model",
+            "fake-model",
+        )
+    finally:
+        none_locked.chmod(0o755)
+    assert init.returncode == 0, init.stderr
+    assert "make the Planner skill available: handoff skill install" in init.stdout
+    assert f"could not read {none_locked / 'handoff-cli'}; the skill check skipped it" in init.stdout
+
+
+def test_install_refuses_an_unreadable_target_and_init_warns(tmp_path: Path) -> None:
+    _deny_root()
+    repo = make_repo(tmp_path)
+    ignore_probes(repo)
+    env = _env(tmp_path)
+    locked = Path(env["HOME"]) / ".cursor" / "skills"
+    locked.mkdir(parents=True)
+    before = git(repo, "status", "--porcelain").stdout
+    locked.chmod(0)
+    try:
+        refused = handoff(env, "skill", "install", "--host", "cursor", "--user")
+        refused_json = handoff(env, "skill", "install", "--host", "cursor", "--user", "--json")
+    finally:
+        locked.chmod(0o755)
+    assert refused.returncode == 2
+    assert f"cannot read {locked / 'handoff-cli'} (Permission denied); not installing" in refused.stderr
+    assert refused_json.returncode == 2
+    assert "not installing" in _json(refused_json)["error"]
+    assert not (locked / "handoff-cli").exists()
+    assert git(repo, "status", "--porcelain").stdout == before
+
+    project = repo / ".cursor" / "skills"
+    project.mkdir(parents=True)
+    project.chmod(0)
+    try:
+        init = handoff(
+            env,
+            "init",
+            str(repo),
+            "--transport",
+            "a2a",
+            "--executor",
+            "cursor",
+            "--model",
+            "fake-model",
+            "--planner",
+            "cursor",
+        )
+    finally:
+        project.chmod(0o755)
+    assert init.returncode == 0, init.stderr
+    assert "warning:" in init.stdout
+    assert f"cannot read {project / 'handoff-cli'} (Permission denied); not installing" in init.stdout
+    assert f"could not read {project / 'handoff-cli'}; the skill check skipped it" in init.stdout
+    assert list(project.iterdir()) == []
+
+
+def test_non_permission_oserror_is_unknown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = make_repo(tmp_path)
+    env = _env(tmp_path)
+    loc = project_location(repo, "cursor")
+
+    def boom(_loc: object) -> tuple[str, str]:
+        raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr(skills, "_classify", boom)
+    state, detail = skill_state(loc)
+    assert state == "unknown" and "Input/output error" in detail
+    entry = skills._entry(loc)
+    assert entry["probe"] == "error" and entry["stale"] is False and entry["unknown"] is True
+    entries = skills.status_entries(repo, env)
+    assert entries
+    assert all(item["state"] == "unknown" and item["probe"] == "error" for item in entries)
+
+
+def test_unreadable_child_is_skipped_and_unlistable_root_is_unknown(tmp_path: Path) -> None:
+    _deny_root()
+    env = _env(tmp_path)
+    home = Path(env["HOME"])
+    root = home / ".claude" / "skills"
+    locked = root / "locked"
+    locked.mkdir(parents=True)
+    copy = root / "renamed-handoff"
+    copy.mkdir()
+    (copy / "SKILL.md").write_text("---\nname: handoff-cli\ndescription: skillshare\n---\nbody\n", encoding="utf-8")
+    locked.chmod(0)
+    try:
+        found = skills.elsewhere_copy(user_location("claude", env))
+    finally:
+        locked.chmod(0o755)
+    assert found is not None and found["path"] == str(copy) and not found.get("unreadable")
+
+    codex = home / ".agents" / "skills"
+    codex.mkdir(parents=True)
+    codex.chmod(0o111)
+    try:
+        loc = user_location("codex", env)
+        assert skill_state(loc)[0] == "absent"
+        entry = skills._entry(loc)
+    finally:
+        codex.chmod(0o755)
+    assert entry["state"] == "unknown" and entry["path"] == str(codex)
+    assert entry["probe"] == "not_permitted" and entry["stale"] is False and entry["unknown"] is True
 
 
 def test_skill_command_needs_the_runtime(tmp_path: Path) -> None:

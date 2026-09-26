@@ -304,6 +304,18 @@ def test_skill_appends_later_qa_rounds_and_reports_stale_copies() -> None:
     assert "`stale`" in reference and "planner_skill" in reference
 
 
+def test_skill_reports_unreadable_locations_without_fixing_permissions() -> None:
+    skill = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    assert skill.count("planner_skill.unknown") == 1
+    assert "could not be read" in skill and "stale check skipped" in skill
+    assert "not block anything" in skill
+    assert "Never try to fix permissions" in skill
+    assert "chmod" not in skill
+    reference = (SKILL_DIR / "reference.md").read_text(encoding="utf-8")
+    assert "`unknown`" in reference and "not_permitted" in reference
+    assert "does not block anything" in reference
+
+
 def test_installed_copies_of_every_host_are_workflow_paths() -> None:
     from handoff_a2a.skills import PROJECT_DIRS
     from handoff_a2a.workspace import is_workflow_path

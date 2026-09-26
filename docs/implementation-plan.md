@@ -161,6 +161,10 @@ A HANDOFF file is well-formed only with exactly one `## Current Task`, one `## E
 
 From READY FOR QA, `handoff qa --append` appends a later QA round and sets Status in one write. From APPROVED or CHANGES REQUESTED, `--append` still leaves Status unchanged. A Planner skill copy is `stale` when it is `outdated`, or `elsewhere` with content that differs from this checkout. `skill status`, `init` next steps, and `handoff status` report it. Handoff does not modify an `elsewhere` copy. A stale copy does not block preflight.
 
+### A14 — Unreadable skill roots
+
+When a Planner skill folder cannot be read, `status`, `skill status`, and `init` report that location as `unknown` and keep working. The location is not treated as a copy or as absent. `handoff skill install` into it is refused and writes nothing. `init --planner` still completes, with a warning, when that install is refused.
+
 ## Final completion bar
 
 The feature is complete when the actual handoff CLI can switch Claude/Codex endpoints, run the existing Planner/QA loop against real git changes, and handle ordinary duplicate/disconnection/cancellation cases without losing workspace control. Human plan approval and final merge authority remain explicit. Keep A2A opt-in until these checks pass.

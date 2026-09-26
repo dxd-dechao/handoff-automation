@@ -59,8 +59,9 @@ explicit ID, which is recorded as unverified.
   `branch.exists`, `baseline_clean`, `dirty_paths`, `blockers[]` with
   `code`, `message`, `fix`; `null` with no approved workflow or on legacy),
   `planner_skill` (`stale`: paths whose content differs from this checkout;
-  empty when every copy is current or absent). A stale copy does not block
-  preflight.
+  empty when every copy is current or absent; `unknown`: paths that could
+  not be read, empty when every location was readable). A stale or unreadable
+  location does not block preflight.
 - `models`: `provider`, `models_listed`, `models` (`id`, `name`), `note`,
   `reasoning_effort_supported`, `login_command`. `models_listed: false`
   only means the CLI cannot list models (always for Claude: ask for an
@@ -79,8 +80,9 @@ explicit ID, which is recorded as unverified.
 - `mode`: `mode`, `transport`, `managed`, `changed`, `previous`, `watcher`
   (managed) or `hint` (not managed).
 - `skill-status`: `locations[]` with `host`, `scope` (`project`|`user`),
-  `path`, `state`, `detail`, `install_command`, `stale`. `elsewhere` also
-  has `found_path` and `current_content`.
+  `path`, `state`, `detail`, `install_command`, `stale`, `unknown`.
+  `elsewhere` also has `found_path` and `current_content`. State `unknown`
+  also has `probe` (`not_permitted` or `error`).
 
 ## Skill copy states
 
@@ -90,11 +92,15 @@ whose `SKILL.md` names `handoff-cli`; `found_path` and `current_content`;
 never modified); `foreign` (user-modified, unrelated, symlinked, or
 tracked; never overwritten, so tell the human to keep it or move it aside);
 `unsupported` (a `--user` location that cannot be verified, for example
-Claude with a relocated `CLAUDE_CONFIG_DIR`). `elsewhere` counts as available.
-`stale` is true for `outdated`, and for `elsewhere` when `current_content`
-is false. Tell the human which copy is stale. For `elsewhere`, update it
-with the tool that installed it (for example skillshare); handoff never
-modifies it.
+Claude with a relocated `CLAUDE_CONFIG_DIR`); `unknown` (the location could
+not be read; `probe` is `not_permitted` or `error`; `stale` is false and
+`unknown` is true). `elsewhere` counts as available. `unknown` does not
+count as available or as absent, and it does not block anything. Do not try
+to fix its permissions. `handoff skill install` into that location is refused
+and writes nothing. `stale` is true for `outdated`, and for `elsewhere` when
+`current_content` is false. Tell the human which copy is stale. For
+`elsewhere`, update it with the tool that installed it (for example
+skillshare); handoff never modifies it.
 
 ## Environment
 

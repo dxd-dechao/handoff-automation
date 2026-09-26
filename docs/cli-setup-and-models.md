@@ -54,8 +54,11 @@ digest). `skill status` reports each location as:
 | `foreign` | modified after install, unrelated, symlinked, or tracked in git | never overwritten; keep it or move it aside |
 | `unsupported` | a `--user` location that cannot be verified | refused |
 | `elsewhere` | another folder in that host's skill root whose `SKILL.md` names `handoff-cli` | never modified |
+| `unknown` | the location could not be read | refused; nothing is written |
 
 A copy is `stale` when it is `outdated`, or `elsewhere` with content that differs from this checkout's `skills/handoff-cli`. `skill status` marks it `stale (content differs from this checkout's skills/handoff-cli)`. Handoff never modifies an `elsewhere` copy; update it with the tool that installed it (for example skillshare). A stale copy still counts as available, so init does not install a second copy beside it. When that is the only copy for the Planner host, init names the path and that update hint, and does not suggest `handoff skill install`. `handoff status` lists the paths in `planner_skill.stale` (empty when every copy is current or absent) and prints one `skill:` line only when the list is not empty. Preflight does not mention a stale copy and does not block on it.
+
+A location is `unknown` when reading it raises an `OSError` (permission denied, or any other error). `handoff status`, `handoff skill status`, and `init` keep working. The location is not treated as a copy and not treated as absent. `status --json` lists the paths in `planner_skill.unknown` (empty when every location could be read) and, only when that list is not empty, prints one `skill:` line: `could not read <paths> (permission denied); stale check skipped`. `skill status` prints `unknown (<detail>)` and exits 0. `init` adds one next-step line, `could not read <path>; the skill check skipped it`, and still reports install or availability from the locations it could read. Installing into an `unknown` location is refused (`cannot read <path> (<strerror>); not installing`) and writes nothing. `init --planner` still finishes, with that refusal as a warning. Handoff does not change the folder's permissions.
 
 `handoff init --planner <cursor|codex|claude>` uses the same installer.
 Without the A2A runtime, legacy `init --planner` makes a fresh copy only.
@@ -284,13 +287,13 @@ object on stdout:
 
 | `kind` | From | Main fields |
 |---|---|---|
-| `status` | `handoff status --json` | `transport` (`legacy`/`a2a`), `managed`, `status`, `turn`, `goal`, `execution` (`UNKNOWN` when a status probe is not permitted), `probe`, `workflow`, `mode`, `watcher`, `executor`, `run`, `reason`, `next`, `planner_skill.stale` |
+| `status` | `handoff status --json` | `transport` (`legacy`/`a2a`), `managed`, `status`, `turn`, `goal`, `execution` (`UNKNOWN` when a status probe is not permitted), `probe`, `workflow`, `mode`, `watcher`, `executor`, `run`, `reason`, `next`, `planner_skill.stale`, `planner_skill.unknown` |
 | `template_refresh` | `handoff template refresh --json` | `replaced`, `backup`, `old_preamble_bytes`, `new_preamble_bytes`, `message` |
 | `models` | `handoff models --json` | `provider`, `binary`, `version`, `models_listed` (false only means no enumeration, as for Claude), `source`, `models[]` (`id`, `name`), `note`, `reasoning_effort_supported`, `login_command` |
 | `model` / `model-change` | `handoff model [...] --json` | `selected`, `active` (`state`: `verified`/`unverified`/`stopped`/`unknown`), `current_run`, `pending`; changes add `messages[]` |
 | `server-status` / `server-stop` | `handoff server ... --json` | `service`, `verified`, `endpoint`, `port`, `selected`, `active`, `pid`, `started_at`, `log`, `notes`, `last_failure` / `outcome` |
 | `mode` | `handoff mode --json` | `transport`, `managed`, `mode`, `changed`, `previous`, `watcher` or `hint` |
-| `skill-install` / `skill-status` | `handoff skill ... --json` | `outcome` / `locations[]` (`host`, `scope`, `path`, `state`, `detail`, `install_command`, `stale`; `elsewhere` also has `found_path` and `current_content`) |
+| `skill-install` / `skill-status` | `handoff skill ... --json` | `outcome` / `locations[]` (`host`, `scope`, `path`, `state`, `detail`, `install_command`, `stale`, `unknown`; `elsewhere` also has `found_path` and `current_content`; `unknown` also has `probe`) |
 
 Errors keep a nonzero exit and print `{"schema": ..., "kind": ..., "error":
 "..."}` on stdout. No object contains the service token, credential
@@ -392,6 +395,7 @@ the same history rules.
 | `run mode is drive: ... handoff watch does not start` | `handoff mode "<repo>" watch`, or let the Planner drive |
 | `a handoff watch is already running for this repository` | keep the running watcher, or stop it first |
 | `... is not an unmodified handoff install ... not overwritten` | keep your skill copy, or move it aside and re-run `handoff skill install` |
+| `could not read ... stale check skipped`, or skill status `unknown` | that skill folder could not be read. Handoff does not change its permissions. `status` and `init` keep working. Install only into a location that can be read |
 
 ## 8. Cursor Executor details and limits
 
