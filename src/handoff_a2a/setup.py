@@ -48,10 +48,12 @@ from handoff_a2a.providers import (
 from handoff_a2a.skills import (
     HOSTS as PLANNER_HOSTS,
     SkillError,
+    any_skill_available,
     exclude_pattern as skill_exclude,
     install as install_skill,
     project_location,
     skill_state,
+    stale_available_notice,
 )
 from handoff_a2a.workspace import (
     CONFIG_NAME,
@@ -731,20 +733,29 @@ def _next_steps(paths: ManagedPaths, provider: str, planner: str | None, report:
         report.next_steps.append(f"choose the run mode: handoff mode {q} <drive|watch>")
     elif report.mode == "watch":
         report.next_steps.append(f"keep a terminal open with: handoff watch {q}")
+
+    def stale_lines(hosts: tuple[str, ...]) -> list[str]:
+        lines = []
+        for host in hosts:
+            notice = stale_available_notice(paths.repo, host)
+            if notice:
+                lines.append(notice)
+        return lines
+
     if planner:
         report.next_steps.append(
             f"in your {planner.capitalize()} Planner chat: /handoff-cli plan <task> in the handoff "
             "(the skill writes a DRAFT, waits for your approval, then runs the CLI)"
         )
+        report.next_steps.extend(stale_lines((planner,)))
     else:
-        from handoff_a2a.skills import any_skill_available
-
         found = any_skill_available(paths.repo)
         if found:
             report.next_steps.append(
                 f"Planner skill is available at {found}; in the Planner chat: "
                 "/handoff-cli plan <task> in the handoff"
             )
+            report.next_steps.extend(stale_lines(PLANNER_HOSTS))
         else:
             report.next_steps.append(
                 f"make the Planner skill available: handoff skill install {q} --host <cursor|codex|claude>, "

@@ -2,6 +2,8 @@
 
 Reviewed: **2026-09-24**. Checkout: `codex/a2a-executor-mvp`, commit `1e09ec58f4f059c9d7f3e01fe875eb01b99ce588`.
 
+**A13 update (2026-09-26, Executor self-report; independent Planner QA pending).** `handoff qa --append` from READY FOR QA appends the new round and sets Status in one write. Stale Planner skill copies (`outdated`, or `elsewhere` with different content) are reported by `skill status`, `init`, and `status`, and are not modified. See [the A13 report](qa-a13-qa-append-stale-skill.md).
+
 **A12 update (2026-09-25, Executor self-report; independent Planner QA pending).** Init compares preambles without a temp file, refresh keeps the file mode and each file's line endings, `handoff qa` edits only the QA body and Status and refuses a plan that already changed, rebaseline is recorded only when the snapshot changes, and `execute`/`resume` take `--wait`. The `server` pytest marker is the suite that needs process probes (including a child `handoff` probe), localhost, a started service, or a pseudo-terminal. See [the A12 report](qa-a12-polish-sandbox-tests.md).
 
 **A11 update (2026-09-25, Executor self-report; independent Planner QA pending).** A delivery with a duplicated, missing, or reordered `## Current Task`, `## Execution Notes`, or `## QA Feedback` heading is rejected. `handoff qa` is the A2A way to write QA Feedback. `archive` refuses a damaged or changed plan. Each run saves the HANDOFF bytes the server evaluated. See [the A11 report](qa-a11-handoff-integrity.md).
@@ -178,4 +180,4 @@ Execution policy throughout: human approval followed by manual Executor launch; 
 
 ## Known follow-ups
 
-- (A12) `handoff qa --append` never changes Status, so adding a new QA round below an earlier one and setting Status takes two steps, or one replace with both rounds combined. Allow `--append` with `--status` when Status is READY FOR QA: append the new round and set Status in one write, with the same checks as a replace.
+- (A13) `handoff status` now reads the Planner skill folders on every call. `skills.elsewhere_copy` calls `root.iterdir()` without catching `OSError`, and `status_entries` catches only `SkillError`. So a host that denies reading a user skill root (for example `~/.cursor/skills`) would make `status` fail over optional information. The skill report should degrade to "unknown" instead.

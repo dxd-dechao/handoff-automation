@@ -377,6 +377,18 @@ def resolve_repo(path: Path) -> Path:
 # ── `handoff skill` ─────────────────────────────────────────────────────────
 
 
+STALE_DIFFERS = "stale (content differs from this checkout's skills/handoff-cli)"
+ELSEWHERE_UPDATE = "update it with the tool that installed it (e.g. skillshare); handoff never modifies it"
+
+
+def _with_stale(entry: dict[str, Any]) -> dict[str, Any]:
+    """``stale`` is derived: outdated, or an elsewhere copy whose content differs."""
+    entry["stale"] = entry.get("state") == "outdated" or (
+        entry.get("state") == "elsewhere" and entry.get("current_content") is False
+    )
+    return entry
+
+
 def _entry(loc: Location) -> dict[str, Any]:
     state, detail = skill_state(loc)
     entry: dict[str, Any] = {"host": loc.host, "scope": loc.scope, "path": str(loc.path), "state": state, "detail": detail}
@@ -387,10 +399,10 @@ def _entry(loc: Location) -> dict[str, Any]:
             entry["found_path"] = found["path"]
             entry["current_content"] = found["current_content"]
             entry["detail"] = found["path"]
-            return entry
+            return _with_stale(entry)
     if state in {"absent", "outdated"}:
         entry["install_command"] = install_command(loc)
-    return entry
+    return _with_stale(entry)
 
 
 def status_entries(repo: Path | None, env: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
@@ -399,8 +411,57 @@ def status_entries(repo: Path | None, env: Mapping[str, str] | None = None) -> l
         try:
             entries.append(_entry(user_location(host, env)))
         except SkillError as exc:
-            entries.append({"host": host, "scope": "user", "path": None, "state": "unsupported", "detail": str(exc)})
+            entries.append(
+                _with_stale({"host": host, "scope": "user", "path": None, "state": "unsupported", "detail": str(exc)})
+            )
     return entries
+
+
+def _copy_path(entry: dict[str, Any]) -> str | None:
+    path = entry.get("found_path") or entry.get("path")
+    return str(path) if path else None
+
+
+def planner_skill_report(repo: Path | None, env: Mapping[str, str] | None = None) -> tuple[list[str], str | None]:
+    """Stale copy paths, and one human ``status`` line when that list is non-empty.
+
+    Uses the same entries as ``skill status``. The line is omitted when nothing is stale.
+    """
+    stale = [entry for entry in status_entries(repo, env) if entry.get("stale")]
+    paths: list[str] = []
+    for entry in stale:
+        path = _copy_path(entry)
+        if path:
+            paths.append(path)
+    if not paths:
+        return [], None
+    line = f"skill:  {', '.join(paths)}: {STALE_DIFFERS}"
+    if all(entry.get("state") == "elsewhere" for entry in stale):
+        line += f"; {ELSEWHERE_UPDATE}"
+    return paths, line
+
+
+def stale_available_notice(repo: Path | None, host: str, env: Mapping[str, str] | None = None) -> str | None:
+    """When the copy ``skill_available`` would return is stale, one update line.
+
+    Walks locations in the same order as ``skill_available``. An elsewhere copy
+    names the tool that installed it. An outdated copy names its upgrade command.
+    """
+    for entry in status_entries(repo, env):
+        if entry.get("host") != host:
+            continue
+        state = entry.get("state")
+        if state in {"current", "outdated"}:
+            if not entry.get("stale"):
+                return None
+            path = _copy_path(entry)
+            return f"{path}: {STALE_DIFFERS}; upgrade: {entry['install_command']}"
+        if state == "elsewhere":
+            if not entry.get("stale"):
+                return None
+            path = _copy_path(entry)
+            return f"{path}: {STALE_DIFFERS}; {ELSEWHERE_UPDATE}"
+    return None
 
 
 def cmd_install(repo_arg: str | None, host: str, user: bool, as_json: bool) -> int:
@@ -453,7 +514,10 @@ def cmd_status(repo_arg: str | None, as_json: bool) -> int:
         print(f"note:    project locations skipped: {note}")
     for entry in entries:
         detail = f" ({entry['detail']})" if entry.get("detail") else ""
-        print(f"{entry['scope']:<8}{entry['host']:<7} {entry['path'] or '-'}: {entry['state']}{detail}")
+        mark = f" {STALE_DIFFERS}" if entry.get("stale") else ""
+        print(f"{entry['scope']:<8}{entry['host']:<7} {entry['path'] or '-'}: {entry['state']}{detail}{mark}")
+        if entry.get("state") == "elsewhere" and entry.get("stale"):
+            print(f"         {ELSEWHERE_UPDATE}")
         if entry["state"] == "outdated":
             print(f"         upgrade: {entry['install_command']}")
     return 0

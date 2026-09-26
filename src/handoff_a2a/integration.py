@@ -58,6 +58,7 @@ from handoff_a2a.reporting import (
     usage_fields,
     write_manifest,
 )
+from handoff_a2a.skills import planner_skill_report
 from handoff_a2a.workflow import (
     WorkflowError,
     approve as record_approval,
@@ -1177,6 +1178,7 @@ async def cmd_status_async(repo: Path, *, as_json: bool = False) -> int:
     next_action = _mode_next(
         _next_action(markdown_status=document.status, execution=execution, workflow=workflow), mode, watcher, repo
     )
+    stale_skills, skill_line = planner_skill_report(repo)
     code = 2 if execution in {"UNRESOLVED", "UNKNOWN", "RECOVERY"} else 0
     if structure_problems:
         structure_reason = "; ".join(structure_problems)
@@ -1203,6 +1205,7 @@ async def cmd_status_async(repo: Path, *, as_json: bool = False) -> int:
                 "probe": probe,
                 "next": next_action,
                 "preflight": _status_preflight(repo),
+                "planner_skill": {"stale": stale_skills},
             },
         )
         return code
@@ -1250,6 +1253,8 @@ async def cmd_status_async(repo: Path, *, as_json: bool = False) -> int:
         for item in preflight.get("blockers") or []:
             print(f"  - {item['message']}")
             print(f"    fix: {item['fix']}")
+    if skill_line:
+        print(skill_line)
     print(f"next:   {next_action}")
     return code
 
@@ -1467,6 +1472,8 @@ def cmd_qa(repo: Path, *, status: str, file: str, append: bool, as_json: bool) -
             "the plan changed since approval; restore HANDOFF.md from the delivered copy "
             "or the pre-QA backup, or revise the plan and re-approve"
         )
+    # READY FOR QA: --append writes the new round and sets Status together.
+    # APPROVED or CHANGES REQUESTED: --append adds a note and leaves Status.
     keep_status = append and current in {"APPROVED", "CHANGES REQUESTED"}
     if current != READY_FOR_QA and not keep_status:
         raise IntegrationError(

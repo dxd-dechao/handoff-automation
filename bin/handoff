@@ -70,7 +70,9 @@ workflow
   archive   append Current Task / Execution Notes / QA Feedback to HANDOFF-ARCHIVE.md
             (add --superseded to close an exhausted A2A workflow)
   qa        handoff qa <repo> --status <APPROVED|CHANGES REQUESTED> --file <path> [--append] [--json]
-            A2A only: replace QA Feedback and set Status (legacy: edit HANDOFF.md by hand)
+            A2A only: replace QA Feedback and set Status. --append from READY FOR QA
+            appends a round and sets Status; on APPROVED or CHANGES REQUESTED it leaves
+            Status unchanged (legacy: edit HANDOFF.md by hand)
   template  handoff template refresh <repo> [--json]
             replace the HANDOFF.md preamble with the installed template's;
             Current Task and everything after it stay byte-for-byte

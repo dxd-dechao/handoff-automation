@@ -21,6 +21,12 @@ them. Commands and `--json` fields are in [reference.md](reference.md).
 Read state with `--json`; do not scrape human text. Never hand-edit
 `.handoff-config.json`, `.handoff-logs/*.json`, or other generated files.
 
+At the start of a handoff conversation, read `handoff status "<repo>" --json`
+once. If `planner_skill.stale` lists copies, mention them once: the path and
+how to update it. For an `elsewhere` copy, that is the tool that installed
+it (for example skillshare). Never edit, overwrite, or install over an
+`elsewhere` copy.
+
 **Target:** the repository the user named, else the unambiguous current
 project (ask only if ambiguous; never this skill's own folder). Use `handoff`
 on `PATH` or `<checkout>/bin/handoff`. Keep `HANDOFF_*`. Quote paths.
@@ -52,6 +58,9 @@ on `PATH` or `<checkout>/bin/handoff`. Keep `HANDOFF_*`. Quote paths.
      recommendation, but the human chooses.
    - **Planner skill location:** only if `skill status` shows this host's
      copy `absent` or `outdated` (project, or `--user` if they ask).
+     Report a `stale` entry like `outdated`: name the copy and how to
+     update it. For `elsewhere`, the tool that installed it (for example
+     skillshare). Never edit, overwrite, or install over an `elsewhere` copy.
    Never choose a transport, provider, model, or mode yourself. Silence or
    an unrelated answer is not agreement; re-ask only the unanswered item.
    **The questions end your turn.** If the question tool returns no answers
@@ -137,7 +146,7 @@ is not approval): `handoff approve "<repo>"`. Then read `mode` from
 
 Review the **actual git diff**, not Execution Notes. Run the checks the task lists (or the project's ordinary test/lint commands). Block on reproducible failures, materially wrong code, a broken legacy path, or a practical safety regression. Distinguish blocking items from nits (naming, formatting, or doc wording). Write concrete CHANGES REQUESTED (file, problem, what fixed looks like) or APPROVED. Do not implement runtime, test, or behavior fixes as Planner. If only documentation remains, fix it yourself, verify it, record files and checks in QA Feedback, and approve without another Executor run.
 
-On A2A, write QA Feedback and Status only with `handoff qa "<repo>" --status <APPROVED|CHANGES REQUESTED> --file <path>`, never with hand edits or scripts. After writing, check that `status --json` shows `plan_changed_since_approval: false`. On legacy, edit Status and QA Feedback in HANDOFF.md by hand, and match headings at the start of a line.
+On A2A, write QA Feedback and Status only with `handoff qa "<repo>" --status <APPROVED|CHANGES REQUESTED> --file <path>`, never with hand edits or scripts. For a later round, append it with `handoff qa "<repo>" --status <APPROVED|CHANGES REQUESTED> --file <path> --append` so earlier rounds stay in the record. After writing, check that `status --json` shows `plan_changed_since_approval: false`. On legacy, edit Status and QA Feedback in HANDOFF.md by hand, and match headings at the start of a line.
 
 ## Change the Executor: "switch the Executor to <model>"
 
