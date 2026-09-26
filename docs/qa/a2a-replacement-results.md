@@ -1,10 +1,10 @@
 # A2A Executor replacement: live results (2026-09-24)
 
-Planner review update: retained fixture tests, behavior probes, commits/diffs, and manifest identities were independently verified on 2026-09-24. R1/R2 were accepted at `8d99b93`; A5 closes R3 at `1e09ec5`. The scoped local MVP now passes Planner QA ([final report](../qa/qa-a5-2026-09-24.md)). No paid comparison was repeated for A5. The report below preserves the original experiment and its limitations.
+Planner review update: retained fixture tests, behavior probes, commits/diffs, and manifest identities were independently verified on 2026-09-24. R1/R2 were accepted at `8d99b93`; A5 closes R3 at `1e09ec5`. The scoped local MVP now passes Planner QA ([final report](qa-a5-2026-09-24.md)). No paid comparison was repeated for A5. The report below preserves the original experiment and its limitations.
 
 **Outcome:** the real `handoff` CLI ran the same plan and correction on identical disposable fixtures through a Claude endpoint and a Codex endpoint. It also switched from Claude to Codex in the middle of one workflow. Only endpoint configuration changed; the Planner/client code did not. All three workflows passed independent fixture QA for both the implementation and the correction. Codex did so only after two adapter defects, found by the first live attempt, were fixed and verified. The Executor produced these results; independent Planner QA of this product is still pending.
 
-Durable data: [`docs/qa/evidence/a2a-replacement-2026-09-24.json`](../qa/evidence/a2a-replacement-2026-09-24.json). It holds per-execution IDs, usage/cost with provenance, fixture-QA checks, final diffs, Agent Card checks, and command transcripts. Fixtures lived under `/private/tmp/handoff-live-20260924*`; those paths are not the record.
+Durable data: [`docs/qa/evidence/a2a-replacement-2026-09-24.json`](evidence/a2a-replacement-2026-09-24.json). It holds per-execution IDs, usage/cost with provenance, fixture-QA checks, final diffs, Agent Card checks, and command transcripts. Fixtures lived under `/private/tmp/handoff-live-20260924*`; those paths are not the record.
 
 ## Setup
 

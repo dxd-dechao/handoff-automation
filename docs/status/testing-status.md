@@ -23,7 +23,7 @@ Known limits:
 - No cross-provider correction has succeeded live yet. In A6, a Codex
   correction round edited Planner-owned QA text, and its delivery was
   rightly rejected. Earlier Claude–Codex checks are
-  [recorded separately](../history/a2a-replacement-results.md).
+  [recorded separately](../qa/a2a-replacement-results.md).
 - Credential filtering is not OS-level account isolation. User-level Cursor
   rules and skills can reach the Executor.
 - One local checkout and one active task at a time. Third-party A2A servers

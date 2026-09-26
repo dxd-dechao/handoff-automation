@@ -157,13 +157,12 @@ Current results and known limits:
 | `skills/handoff-cli/` | Planner skill |
 | `templates/` | `HANDOFF.md` protocol and permission templates |
 | `tests/`, `scripts/` | Automated and live checks |
-| `docs/` | Guides, protocol reference, QA evidence, status, history |
+| `docs/` | Guides, protocol reference, QA evidence, status |
 
 ## Documentation
 
 - [CLI setup, models, run modes, and recovery](docs/guides/cli-setup-and-models.md)
 - [Advanced setup: legacy mode and manual A2A endpoints](docs/guides/advanced-setup.md)
 - [A2A coding-task protocol](docs/reference/a2a-coding-task-v1.md)
-- [QA evidence](docs/qa/): one report per task, plus raw evidence
-- [Testing status](docs/status/): current results, known limits, product status
-- [History](docs/history/): implementation plan, earlier results, archived task specs
+- [QA evidence](docs/qa/): one report per task, live results, raw evidence
+- [Testing status](docs/status/): current results, known limits, product status, implementation plan

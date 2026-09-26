@@ -207,7 +207,7 @@ Tests must point `claude.binary` / `codex.binary` / `cursor.binary` at a fake
 executable, never a paid CLI. The explicit live checks
 `scripts/a2a_live_check.py --confirm-live` and
 `scripts/a2a_cursor_live_check.py --confirm-live` make real, paid model calls
-against disposable fixtures ([A4 results](../history/a2a-replacement-results.md),
+against disposable fixtures ([A4 results](../qa/a2a-replacement-results.md),
 [A6 results](../qa/qa-a6-cli-usability.md)). If
 restart recovery reports `recovery_required`, inspect
 `.handoff-logs/execute.lock/owner.json` and `state.sqlite` and remove the lock

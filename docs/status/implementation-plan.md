@@ -14,7 +14,7 @@ Status as of 2026-09-24 (Planner review, before the continuation): A1 and A2 QA 
 Created: 2026-09-14. Original source baseline: `6201590bb98d7cc9514c04e7df14482695f8afed`. Current inspected HEAD: `7c45000174ac583a2003f2b10ea2dbb5e0b6f7d7` on `codex/a2a-executor-mvp`.
 Historical PR check: no open PRs on 2026-09-14; not rechecked for this status review.
 
-See [current product status and remaining work](../status/product-status.md) for the evidence, reproduced blocker, ordered delivery plan, and completion checklist. The sections below retain the original architecture and acceptance requirements.
+See [current product status and remaining work](product-status.md) for the evidence, reproduced blocker, ordered delivery plan, and completion checklist. The sections below retain the original architecture and acceptance requirements.
 
 Execution authorization (2026-09-24, before the continuation): the human requested one implementation agent to complete the remaining plan, with independent Planner QA afterward. Root `HANDOFF.md` was set to **A3-A4-COMPLETE**, READY FOR EXECUTION, for manual launch. That continuation has now finished and received the QA decision above. The old A3 task and findings remain in the local archive without claiming approval or resetting history. No agent has been launched by the Planner. Open PR check on this date returned none.
 
@@ -26,7 +26,7 @@ The Planner is the external chat agent. `drive` is a workflow instruction, not a
 
 Add a small `handoff-cli` skill as the user-facing entry point for that Planner. It invokes the existing CLI and preserves the same responsibilities. The skill is useful with legacy execution immediately and with A2A after A3; it does not implement either transport.
 
-The temporary experiment established that the same official-SDK A2A client could run identical coding requests and follow-ups through Claude and Codex. It did not establish production reliability or improvement in coding quality, speed, or cost. See [prototype evidence](a2a-prototype-results.md).
+The temporary experiment established that the same official-SDK A2A client could run identical coding requests and follow-ups through Claude and Codex. It did not establish production reliability or improvement in coding quality, speed, or cost. See [prototype evidence](../qa/a2a-prototype-results.md).
 
 ## How implementation and QA will run
 
@@ -70,7 +70,7 @@ Planner is authorized to make documentation-only QA corrections directly at any 
 | A1 | Standalone local A2A server, Claude adapter, provider-neutral client, request/result contract, and Planner-facing CLI skill | Existing baseline | APPROVED | d615f09 + b9bd0aa; reviewed through 123eccc; 23 A2A + 17 legacy checks and five independent CLI probes passed |
 | A2 | Durable execution identity, reconnect/restart handling, and cancellation | A1 | APPROVED; R3 closed by A5 | b8468ce + 756ad06; 35 A2A + 17 legacy checks and both independent cancellation/restart probes passed on 2026-09-15 |
 | A3 | Wire A2A into handoff CLI, workflow status, gates, and reporting | A2 | APPROVED; recovery and R1 accepted | Reviewed through 8d99b93; 93 Python + 17 legacy checks; [current QA](../qa/qa-a3-a4-correction-2026-09-24.md) |
-| A4 | Codex adapter and real replacement validation through handoff CLI | A3 | APPROVED for scoped local replacement experiment | [Live results](a2a-replacement-results.md); [current QA](../qa/qa-a3-a4-correction-2026-09-24.md) |
+| A4 | Codex adapter and real replacement validation through handoff CLI | A3 | APPROVED for scoped local replacement experiment | [Live results](../qa/a2a-replacement-results.md); [current QA](../qa/qa-a3-a4-correction-2026-09-24.md) |
 | A5 | Safe cancellation during worker startup | Preserved A1–A4 work | APPROVED at 1e09ec5, execution 1 | 99 Python + 17 legacy checks; independent cancel probe 4/4; [final QA](../qa/qa-a5-2026-09-24.md) |
 
 ### A1 — Make a real A2A execution path work
