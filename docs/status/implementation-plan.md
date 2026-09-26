@@ -165,6 +165,10 @@ From READY FOR QA, `handoff qa --append` appends a later QA round and sets Statu
 
 When a Planner skill folder cannot be read, `status`, `skill status`, and `init` report that location as `unknown` and keep working. The location is not treated as a copy or as absent. `handoff skill install` into it is refused and writes nothing. `init --planner` still completes, with a warning, when that install is refused.
 
+### A15 — Archive list and show
+
+`handoff archive list` prints an index of `HANDOFF-ARCHIVE.md`. `handoff archive show` prints one entry, or its Current Task, Execution Notes, or QA Feedback. The Planner skill uses those commands and does not open or search the archive file. `archive` refuses when the Current Task matches the last archived entry. Entries already in the file, including the duplicate A8 record, stay as they are.
+
 ## Final completion bar
 
 The feature is complete when the actual handoff CLI can switch Claude/Codex endpoints, run the existing Planner/QA loop against real git changes, and handle ordinary duplicate/disconnection/cancellation cases without losing workspace control. Human plan approval and final merge authority remain explicit. Keep A2A opt-in until these checks pass.

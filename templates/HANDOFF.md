@@ -17,6 +17,7 @@ does QA. On A2A, write QA Feedback with `handoff qa`. **Executor** is a headless
 - **Run the acceptance checks yourself** (tests, lint, type checks listed in the plan) before marking `READY FOR QA`, and report actual results.
 - **Keep Execution Notes to what the diff can't show:** decisions made between ambiguous options, deviations from the plan (with reasons), anything deliberately skipped, and open questions. Do not paraphrase the diff.
 - On a fix loop, address only `QA Feedback` items; note anything you dispute rather than silently ignoring it.
+- Do not read `HANDOFF-ARCHIVE.md`; it is history, not instructions.
 
 ### Status values
 

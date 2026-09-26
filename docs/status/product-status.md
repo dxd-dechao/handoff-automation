@@ -2,6 +2,8 @@
 
 Reviewed: **2026-09-24**. Checkout: `codex/a2a-executor-mvp`, commit `1e09ec58f4f059c9d7f3e01fe875eb01b99ce588`.
 
+**A15 update (2026-09-26, Executor self-report; independent Planner QA pending).** `handoff archive list` and `handoff archive show` read one archived task without opening `HANDOFF-ARCHIVE.md`. `archive` refuses to append a Current Task that matches the last archived entry. See [the A15 report](../qa/qa-a15-archive-list-show.md).
+
 **A14 update (2026-09-26, Executor self-report; independent Planner QA pending).** An unreadable Planner skill folder is reported as `unknown`. `handoff status`, `handoff skill status`, and `init` keep working and name it. Install into that folder is refused and writes nothing. See [the A14 report](../qa/qa-a14-unreadable-skill-roots.md).
 
 **A13 update (2026-09-26, Executor self-report; independent Planner QA pending).** `handoff qa --append` from READY FOR QA appends the new round and sets Status in one write. Stale Planner skill copies (`outdated`, or `elsewhere` with different content) are reported by `skill status`, `init`, and `status`, and are not modified. See [the A13 report](../qa/qa-a13-qa-append-stale-skill.md).

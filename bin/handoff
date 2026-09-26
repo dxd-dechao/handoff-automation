@@ -68,7 +68,11 @@ workflow
   cancel    request cancellation of an outstanding A2A run
   runs      list past executor runs from their manifests
   archive   append Current Task / Execution Notes / QA Feedback to HANDOFF-ARCHIVE.md
-            (add --superseded to close an exhausted A2A workflow)
+            handoff archive [repo] [--superseded]
+            handoff archive list [repo] [--json]
+            handoff archive show [repo] <task-id|index> [--section task|notes|qa] [--json]
+            Refuses when that Current Task is already the last archived entry.
+            (--superseded closes an exhausted A2A workflow)
   qa        handoff qa <repo> --status <APPROVED|CHANGES REQUESTED> --file <path> [--append] [--json]
             A2A only: replace QA Feedback and set Status. --append from READY FOR QA
             appends a round and sets Status; on APPROVED or CHANGES REQUESTED it leaves
@@ -802,7 +806,399 @@ cmd_qa() {
   a2a_cli "$repo" qa --status "$status" --file "$qa_file" ${extra[@]+"${extra[@]}"}
 }
 
+# An entry starts at `# Archived ` or `# Superseded ` and stops before the next
+# one. The writer's `\n---\n\n` separator in front of that next header is not
+# part of the entry. list/show stay in bash so legacy does not need Python.
+archive_tool() {
+  local mode="$1" selector="${2:-}" section="${3:-}" bodyfile="${4:-}" keyfile="${5:-}" file="$6"
+  LC_ALL=C awk \
+    -v mode="$mode" -v selector="$selector" -v section="$section" \
+    -v bodyfile="$bodyfile" -v keyfile="$keyfile" '
+function jesc(s,    i, c, o, n) {
+  o = ""
+  n = length(s)
+  for (i = 1; i <= n; i++) {
+    c = substr(s, i, 1)
+    if (c == "\\") o = o "\\\\"
+    else if (c == "\"") o = o "\\\""
+    else if (c == "\r") o = o "\\r"
+    else if (c == "\n") o = o "\\n"
+    else if (c == "\t") o = o "\\t"
+    else o = o c
+  }
+  return o
+}
+function jstr(s) { return "\"" jesc(s) "\"" }
+function jopt(has, s) { if (has) return jstr(s); return "null" }
+function entry_end(start, nxt,    e) {
+  e = nxt - 1
+  while (e > start && line[e] == "") e--
+  if (e > start && line[e] == "---") {
+    e--
+    if (e > start && line[e] == "") e--
+  } else {
+    e = nxt - 1
+  }
+  if (e < start) return start
+  return e
+}
+function span_bytes(from, to,    i, n) {
+  n = 0
+  if (to < from) return 0
+  for (i = from; i <= to; i++) n += length(raw[i]) + 1
+  return n
+}
+function write_span(from, to, dest,    i) {
+  if (to < from || dest == "") return
+  for (i = from; i <= to; i++) printf "%s\n", raw[i] > dest
+  close(dest)
+}
+function find_exact(from, to, exact,    i) {
+  if (from < 1) return 0
+  for (i = from; i <= to; i++) if (line[i] == exact) return i
+  return 0
+}
+function is_h2(s) { return substr(s, 1, 3) == "## " && length(s) > 3 }
+function write_task_key(from, to, dest,    i, begin, stop) {
+  begin = 0
+  for (i = from; i <= to; i++) if (line[i] == "## Current Task") { begin = i; break }
+  if (begin == 0 || dest == "") return 0
+  stop = to
+  for (i = begin + 1; i <= to; i++) if (is_h2(line[i])) { stop = i - 1; break }
+  for (i = begin; i <= stop; i++) {
+    if (line[i] ~ /^\*\*Status:\*\*/) printf "**Status:**\n" > dest
+    else printf "%s\n", line[i] > dest
+  }
+  close(dest)
+  return 1
+}
+function parse_header(s,    rest, outer, chunk) {
+  hk_kind = ""
+  hk_date = ""
+  hk_goal = ""
+  if (substr(s, 1, 11) == "# Archived ") {
+    hk_kind = "archived"
+    rest = substr(s, 12)
+  } else if (substr(s, 1, 13) == "# Superseded ") {
+    hk_kind = "superseded"
+    rest = substr(s, 14)
+  } else {
+    return 0
+  }
+  if (match(rest, /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9] — /) \
+      || match(rest, /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] — /)) {
+    outer = RLENGTH
+    chunk = substr(rest, 1, outer)
+    if (match(chunk, /[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]/))
+      hk_date = substr(chunk, RSTART, RLENGTH)
+    else if (match(chunk, /[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/))
+      hk_date = substr(chunk, RSTART, RLENGTH)
+    hk_goal = substr(rest, outer + 1)
+    return 1
+  }
+  if (match(rest, /^— [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9] — /) \
+      || match(rest, /^— [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] — /)) {
+    outer = RLENGTH
+    chunk = substr(rest, 1, outer)
+    if (match(chunk, /[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]/))
+      hk_date = substr(chunk, RSTART, RLENGTH)
+    else if (match(chunk, /[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/))
+      hk_date = substr(chunk, RSTART, RLENGTH)
+    hk_goal = substr(rest, outer + 1)
+    return 1
+  }
+  hk_goal = rest
+  return 1
+}
+function take_field(s, prefix,    value) {
+  if (index(s, prefix) != 1) return ""
+  value = substr(s, length(prefix) + 1)
+  sub(/^[[:space:]]+/, "", value)
+  sub(/[[:space:]]+$/, "", value)
+  return value
+}
+function emit_obj(e) {
+  return "{\"index\":" idx[e] \
+    ",\"archived_at\":" jopt(date[e] != "", date[e]) \
+    ",\"kind\":" jstr(kind[e]) \
+    ",\"task_id\":" jopt(has_task[e], task[e]) \
+    ",\"goal\":" jstr(goal[e]) \
+    ",\"disposition\":" jopt(has_disp[e], disp[e]) \
+    ",\"workflow_id\":" jopt(has_wf[e], wf[e]) \
+    ",\"bytes\":" bytes[e] "}"
+}
+{
+  raw[NR] = $0
+  line[NR] = $0
+  sub(/\r$/, "", line[NR])
+}
+END {
+  n = 0
+  for (i = 1; i <= NR; i++) {
+    if (substr(line[i], 1, 11) == "# Archived " || substr(line[i], 1, 13) == "# Superseded ") {
+      n++
+      h[n] = i
+    }
+  }
+  for (e = 1; e <= n; e++) {
+    start[e] = h[e]
+    if (e < n) end[e] = entry_end(h[e], h[e + 1])
+    else end[e] = NR
+    parse_header(line[h[e]])
+    idx[e] = e
+    kind[e] = hk_kind
+    date[e] = hk_date
+    goal[e] = hk_goal
+    has_task[e] = 0
+    has_disp[e] = 0
+    has_wf[e] = 0
+    task[e] = ""
+    disp[e] = ""
+    wf[e] = ""
+    for (i = start[e]; i <= end[e]; i++) {
+      if (!has_task[e] && index(line[i], "**Task ID:**") == 1) {
+        has_task[e] = 1
+        task[e] = take_field(line[i], "**Task ID:**")
+      }
+      if (!has_disp[e] && index(line[i], "Disposition:") == 1) {
+        has_disp[e] = 1
+        disp[e] = take_field(line[i], "Disposition:")
+      }
+      if (!has_wf[e] && index(line[i], "Workflow-ID:") == 1) {
+        has_wf[e] = 1
+        wf[e] = take_field(line[i], "Workflow-ID:")
+      }
+    }
+    bytes[e] = span_bytes(start[e], end[e])
+  }
+  sep = sprintf("%c", 31)
+  if (mode == "list-text") {
+    for (e = 1; e <= n; e++) {
+      shown = has_task[e] ? task[e] : ""
+      printf "%d%s%s%s%s%s%s%s%d%s%s\n", idx[e], sep, date[e], sep, shown, sep, kind[e], sep, bytes[e], sep, goal[e]
+    }
+    exit 0
+  }
+  if (mode == "list-json") {
+    printf "["
+    for (e = 1; e <= n; e++) {
+      if (e > 1) printf ","
+      printf "%s", emit_obj(e)
+    }
+    printf "]\n"
+    exit 0
+  }
+  if (mode == "key-handoff") {
+    write_task_key(1, NR, keyfile)
+    exit 0
+  }
+  if (mode == "key-archive") {
+    if (n == 0) { print "NONE"; exit 0 }
+    if (!write_task_key(h[n], NR, keyfile)) { print "NONE"; exit 0 }
+    printf "%d\t%s\n", n, date[n]
+    exit 0
+  }
+  if (mode != "show") exit 0
+  chosen = 0
+  matches = 0
+  listed = ""
+  for (e = 1; e <= n; e++) {
+    if (has_task[e] && task[e] == selector) {
+      matches++
+      if (listed != "") listed = listed ", "
+      listed = listed e
+      chosen = e
+    }
+  }
+  if (matches > 1) {
+    print "handoff: " matches " entries match " selector " (indexes " listed ")" > "/dev/stderr"
+  } else if (matches == 0 && selector ~ /^[1-9][0-9]*$/ && selector + 0 <= n) {
+    chosen = selector + 0
+  }
+  if (chosen == 0) { print "MISSING"; exit 0 }
+  from = start[chosen]
+  to = end[chosen]
+  if (section == "task" || section == "notes" || section == "qa") {
+    ct = find_exact(start[chosen], end[chosen], "## Current Task")
+    en = 0
+    qa = 0
+    if (ct > 0) en = find_exact(ct + 1, end[chosen], "## Execution Notes")
+    if (en > 0) qa = find_exact(en + 1, end[chosen], "## QA Feedback")
+    if (section == "task") {
+      if (ct == 0 || en == 0) { print "NOSECTION"; exit 0 }
+      from = ct
+      to = en - 1
+    } else if (section == "notes") {
+      if (en == 0 || qa == 0) { print "NOSECTION"; exit 0 }
+      from = en
+      to = qa - 1
+    } else {
+      if (qa == 0) { print "NOSECTION"; exit 0 }
+      from = qa
+      to = end[chosen]
+    }
+  }
+  write_span(from, to, bodyfile)
+  print emit_obj(chosen)
+  exit 0
+}
+' "$file"
+}
+
+archive_print_list() {
+  local index date task_id kind bytes goal prefix line room
+  while IFS=$'\037' read -r index date task_id kind bytes goal; do
+    [[ -n "$index" ]] || continue
+    [[ -n "$task_id" ]] || task_id="-"
+    prefix="$index $date $task_id $kind $bytes "
+    line="$prefix$goal"
+    if ((${#line} > 120)); then
+      room=$((120 - ${#prefix} - 3))
+      if ((room < 0)); then room=0; fi
+      goal="${goal:0:room}..."
+      line="$prefix$goal"
+    fi
+    printf '%s\n' "$line"
+  done
+}
+
+archive_fail() {
+  local kind="$1" message="$2" json="$3"
+  if [[ "$json" -eq 1 ]]; then
+    json_die "$kind" "$message"
+  fi
+  die "$message"
+}
+
+refuse_duplicate_archive() {
+  local handoff="$1" archive="$2" hk ak meta index stamp
+  hk="$(mktemp "${TMPDIR:-/tmp}/handoff-task-key.XXXXXX")"
+  ak="$(mktemp "${TMPDIR:-/tmp}/handoff-task-key.XXXXXX")"
+  archive_tool key-handoff "" "" "" "$hk" "$handoff" >/dev/null
+  meta="$(archive_tool key-archive "" "" "" "$ak" "$archive")"
+  if [[ "$meta" == NONE || ! -s "$hk" || ! -s "$ak" ]]; then
+    rm -f "$hk" "$ak"
+    return 0
+  fi
+  if cmp -s "$hk" "$ak"; then
+    index="${meta%%$'\t'*}"
+    stamp="${meta#*$'\t'}"
+    rm -f "$hk" "$ak"
+    die "already archived as entry ${index} (${stamp}); plan the next task first"
+  fi
+  rm -f "$hk" "$ak"
+}
+
+cmd_archive_list() {
+  local repo="" json=0 archive entries
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --*) die "unknown archive list option: $1 (try --help)" ;;
+      *)
+        [[ -z "$repo" ]] || die "archive list takes one repo path"
+        repo="$1"
+        shift
+        ;;
+    esac
+  done
+  repo="$(resolve_repo "$repo")"
+  archive="$repo/HANDOFF-ARCHIVE.md"
+  if [[ "$json" -eq 1 ]]; then
+    command -v jq >/dev/null || die "jq is required for --json (brew install jq)"
+  fi
+  if [[ ! -f "$archive" ]]; then
+    if [[ "$json" -eq 1 ]]; then
+      jq -n --arg schema "$CLI_OUTPUT_SCHEMA" --arg repo "$repo" \
+        '{schema: $schema, kind: "archive_list", repo: $repo, entries: []}'
+    else
+      echo "no archive yet"
+    fi
+    return 0
+  fi
+  if [[ "$json" -eq 1 ]]; then
+    entries="$(archive_tool list-json "" "" "" "" "$archive")"
+    jq -n --arg schema "$CLI_OUTPUT_SCHEMA" --arg repo "$repo" --argjson entries "$entries" \
+      '{schema: $schema, kind: "archive_list", repo: $repo, entries: $entries}'
+  else
+    archive_tool list-text "" "" "" "" "$archive" | archive_print_list
+  fi
+}
+
+cmd_archive_show() {
+  local repo="" selector="" section="" json=0 archive body meta
+  local -a pos=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --section)
+        [[ $# -ge 2 ]] || die "archive show --section needs task, notes, or qa"
+        section="$2"
+        shift 2
+        ;;
+      --section=*) section="${1#*=}"; shift ;;
+      --*) die "unknown archive show option: $1 (try --help)" ;;
+      *) pos+=("$1"); shift ;;
+    esac
+  done
+  case "$section" in
+    ""|task|notes|qa) ;;
+    *) die "unknown archive section: $section (task, notes, or qa)" ;;
+  esac
+  if [[ ${#pos[@]} -eq 1 && -d "${pos[0]}" ]]; then
+    die "archive show needs a task id or index"
+  fi
+  case "${#pos[@]}" in
+    1) selector="${pos[0]}" ;;
+    2) repo="${pos[0]}"; selector="${pos[1]}" ;;
+    *) die "usage: handoff archive show [repo] <task-id|index> [--section task|notes|qa] [--json]" ;;
+  esac
+  [[ -n "$selector" ]] || die "archive show needs a task id or index"
+  repo="$(resolve_repo "$repo")"
+  if [[ "$json" -eq 1 ]]; then
+    command -v jq >/dev/null || die "jq is required for --json (brew install jq)"
+  fi
+  archive="$repo/HANDOFF-ARCHIVE.md"
+  if [[ ! -f "$archive" ]]; then
+    archive_fail archive_show "no archived task ${selector}; see handoff archive list" "$json"
+  fi
+  body="$(mktemp "${TMPDIR:-/tmp}/handoff-archive-entry.XXXXXX")"
+  meta="$(archive_tool show "$selector" "$section" "$body" "" "$archive")"
+  if [[ "$meta" == MISSING ]]; then
+    rm -f "$body"
+    archive_fail archive_show "no archived task ${selector}; see handoff archive list" "$json"
+  fi
+  if [[ "$meta" == NOSECTION ]]; then
+    rm -f "$body"
+    archive_fail archive_show "no ${section} section in archived task ${selector}" "$json"
+  fi
+  if [[ "$json" -eq 1 ]]; then
+    if [[ -n "$section" ]]; then
+      jq -n --arg schema "$CLI_OUTPUT_SCHEMA" --arg repo "$repo" --argjson entry "$meta" \
+        --arg section "$section" --rawfile text "$body" \
+        '{schema: $schema, kind: "archive_show", repo: $repo, entry: $entry, section: $section, text: $text}'
+    else
+      jq -n --arg schema "$CLI_OUTPUT_SCHEMA" --arg repo "$repo" --argjson entry "$meta" \
+        --rawfile text "$body" \
+        '{schema: $schema, kind: "archive_show", repo: $repo, entry: $entry, section: null, text: $text}'
+    fi
+  else
+    cat "$body"
+  fi
+  rm -f "$body"
+}
+
 cmd_archive() {
+  if [[ "${1:-}" == "list" ]]; then
+    shift
+    cmd_archive_list "$@"
+    return
+  fi
+  if [[ "${1:-}" == "show" ]]; then
+    shift
+    cmd_archive_show "$@"
+    return
+  fi
   local superseded=0 repo=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -827,6 +1223,9 @@ cmd_archive() {
   refuse_malformed_structure "$repo/HANDOFF.md"
   local archive goal
   archive="$repo/HANDOFF-ARCHIVE.md"
+  if [[ -f "$archive" ]]; then
+    refuse_duplicate_archive "$repo/HANDOFF.md" "$archive"
+  fi
   goal="$(read_goal "$repo")"
   if [[ ! -f "$archive" ]]; then
     printf '# HANDOFF Archive\n\nCompleted tasks, appended verbatim by `handoff archive`. Local-only (git-excluded).\n' > "$archive"

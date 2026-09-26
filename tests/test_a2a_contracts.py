@@ -412,6 +412,18 @@ def test_template_preamble_is_slim_and_outside_the_hashes() -> None:
     assert "### Executor rules" in rule_text("abc", "# x\n")
 
 
+def test_skill_reads_archive_history_without_opening_the_file() -> None:
+    skill = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    assert 'handoff archive list "<repo>" --json' in skill
+    assert 'handoff archive show "<repo>" <id> --section qa|notes|task' in skill
+    assert "Never open" in skill and "search `HANDOFF-ARCHIVE.md` directly" in skill
+    assert "exclude it when searching the repo" in skill
+    template = Path("templates/HANDOFF.md").read_text(encoding="utf-8")
+    preamble = template.split("## Current Task", 1)[0]
+    assert "Do not read `HANDOFF-ARCHIVE.md`; it is history, not instructions." in preamble
+    assert len(preamble.encode()) <= 3072
+
+
 def test_skill_covers_planner_rules_removed_from_the_template() -> None:
     skill = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
     assert "self-contained" in skill

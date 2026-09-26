@@ -332,6 +332,66 @@ def test_archive_refuses_a_damaged_or_changed_plan(tmp_path: Path) -> None:
     assert workflow_path.read_bytes() == before
 
 
+def test_archive_refuses_to_append_the_same_current_task(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    write_handoff(repo, status="DRAFT")
+    approve(repo, workspace_id="fixture", max_rounds=3)
+    original = (repo / "HANDOFF.md").read_text(encoding="utf-8")
+    approved = original.replace("**Status:** READY FOR EXECUTION", "**Status:** APPROVED")
+    (repo / "HANDOFF.md").write_text(approved, encoding="utf-8")
+    workflow_path = repo / ".handoff-logs" / "workflow.json"
+    workflow_before = workflow_path.read_bytes()
+    archive_current(repo, superseded=False, goal="kept")
+    archived = (repo / "HANDOFF-ARCHIVE.md").read_bytes()
+    workflow_path.write_bytes(workflow_before)
+    with pytest.raises(
+        WorkflowError,
+        match=r"already archived as entry 1 \([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}\); plan the next task first",
+    ):
+        archive_current(repo, superseded=False, goal="again")
+    assert (repo / "HANDOFF-ARCHIVE.md").read_bytes() == archived
+    assert workflow_path.read_bytes() == workflow_before
+    workflow_path.unlink()
+    (repo / "HANDOFF.md").write_text(approved.replace("**Status:** APPROVED", "**Status:** READY FOR QA"), encoding="utf-8")
+    with pytest.raises(WorkflowError, match="already archived as entry 1"):
+        archive_current(repo, superseded=False, goal="status only")
+    assert (repo / "HANDOFF-ARCHIVE.md").read_bytes() == archived
+    (repo / "HANDOFF.md").write_bytes(approved.replace("\n", "\r\n").encode())
+    with pytest.raises(WorkflowError, match="already archived as entry 1"):
+        archive_current(repo, superseded=False, goal="crlf")
+    assert (repo / "HANDOFF-ARCHIVE.md").read_bytes() == archived
+    changed = approved.replace("Set app.py value according to the current round.", "A different plan.")
+    (repo / "HANDOFF.md").write_text(changed, encoding="utf-8")
+    archive_current(repo, superseded=False, goal="changed")
+    assert (repo / "HANDOFF-ARCHIVE.md").read_text(encoding="utf-8").count("\n# Archived ") == 2
+    (repo / "HANDOFF.md").write_text(approved, encoding="utf-8")
+    archive_current(repo, superseded=False, goal="older plan")
+    assert (repo / "HANDOFF-ARCHIVE.md").read_text(encoding="utf-8").count("\n# Archived ") == 3
+
+
+def test_superseded_archive_refuses_the_same_current_task(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    write_handoff(repo, status="DRAFT")
+    workflow = approve(repo, workspace_id="fixture", max_rounds=3)
+    for name in ("exec-1", "exec-2", "exec-3"):
+        reserve_round(repo, workflow, name)
+        consume_round(repo, workflow, name)
+        workflow = json.loads((repo / ".handoff-logs" / "workflow.json").read_text(encoding="utf-8"))
+    archive_current(repo, superseded=True, goal="smaller follow-up")
+    archived = (repo / "HANDOFF-ARCHIVE.md").read_bytes()
+    with pytest.raises(WorkflowError, match=r"already archived as entry 1 \(.*\); plan the next task first"):
+        archive_current(repo, superseded=True, goal="smaller follow-up")
+    assert (repo / "HANDOFF-ARCHIVE.md").read_bytes() == archived
+    text = (repo / "HANDOFF.md").read_text(encoding="utf-8")
+    (repo / "HANDOFF.md").write_text(
+        text.replace("Set app.py value according to the current round.", "Narrower work."),
+        encoding="utf-8",
+    )
+    with pytest.raises(WorkflowError, match="no workflow to supersede"):
+        archive_current(repo, superseded=True, goal="other")
+    assert (repo / "HANDOFF-ARCHIVE.md").read_bytes() == archived
+
+
 def test_decorated_branch_field_names_the_plain_branch() -> None:
     from handoff_a2a.workspace import read_declared_branch
 
