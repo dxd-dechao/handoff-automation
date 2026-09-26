@@ -178,4 +178,4 @@ Execution policy throughout: human approval followed by manual Executor launch; 
 
 ## Known follow-ups
 
-None open.
+- (A12) `handoff qa --append` never changes Status, so adding a new QA round below an earlier one and setting Status takes two steps, or one replace with both rounds combined. Allow `--append` with `--status` when Status is READY FOR QA: append the new round and set Status in one write, with the same checks as a replace.
