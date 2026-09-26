@@ -2,21 +2,21 @@
 
 Reviewed: **2026-09-24**. Checkout: `codex/a2a-executor-mvp`, commit `1e09ec58f4f059c9d7f3e01fe875eb01b99ce588`.
 
-**A14 update (2026-09-26, Executor self-report; independent Planner QA pending).** An unreadable Planner skill folder is reported as `unknown`. `handoff status`, `handoff skill status`, and `init` keep working and name it. Install into that folder is refused and writes nothing. See [the A14 report](qa-a14-unreadable-skill-roots.md).
+**A14 update (2026-09-26, Executor self-report; independent Planner QA pending).** An unreadable Planner skill folder is reported as `unknown`. `handoff status`, `handoff skill status`, and `init` keep working and name it. Install into that folder is refused and writes nothing. See [the A14 report](../qa/qa-a14-unreadable-skill-roots.md).
 
-**A13 update (2026-09-26, Executor self-report; independent Planner QA pending).** `handoff qa --append` from READY FOR QA appends the new round and sets Status in one write. Stale Planner skill copies (`outdated`, or `elsewhere` with different content) are reported by `skill status`, `init`, and `status`, and are not modified. See [the A13 report](qa-a13-qa-append-stale-skill.md).
+**A13 update (2026-09-26, Executor self-report; independent Planner QA pending).** `handoff qa --append` from READY FOR QA appends the new round and sets Status in one write. Stale Planner skill copies (`outdated`, or `elsewhere` with different content) are reported by `skill status`, `init`, and `status`, and are not modified. See [the A13 report](../qa/qa-a13-qa-append-stale-skill.md).
 
-**A12 update (2026-09-25, Executor self-report; independent Planner QA pending).** Init compares preambles without a temp file, refresh keeps the file mode and each file's line endings, `handoff qa` edits only the QA body and Status and refuses a plan that already changed, rebaseline is recorded only when the snapshot changes, and `execute`/`resume` take `--wait`. The `server` pytest marker is the suite that needs process probes (including a child `handoff` probe), localhost, a started service, or a pseudo-terminal. See [the A12 report](qa-a12-polish-sandbox-tests.md).
+**A12 update (2026-09-25, Executor self-report; independent Planner QA pending).** Init compares preambles without a temp file, refresh keeps the file mode and each file's line endings, `handoff qa` edits only the QA body and Status and refuses a plan that already changed, rebaseline is recorded only when the snapshot changes, and `execute`/`resume` take `--wait`. The `server` pytest marker is the suite that needs process probes (including a child `handoff` probe), localhost, a started service, or a pseudo-terminal. See [the A12 report](../qa/qa-a12-polish-sandbox-tests.md).
 
-**A11 update (2026-09-25, Executor self-report; independent Planner QA pending).** A delivery with a duplicated, missing, or reordered `## Current Task`, `## Execution Notes`, or `## QA Feedback` heading is rejected. `handoff qa` is the A2A way to write QA Feedback. `archive` refuses a damaged or changed plan. Each run saves the HANDOFF bytes the server evaluated. See [the A11 report](qa-a11-handoff-integrity.md).
+**A11 update (2026-09-25, Executor self-report; independent Planner QA pending).** A delivery with a duplicated, missing, or reordered `## Current Task`, `## Execution Notes`, or `## QA Feedback` heading is rejected. `handoff qa` is the A2A way to write QA Feedback. `archive` refuses a damaged or changed plan. Each run saves the HANDOFF bytes the server evaluated. See [the A11 report](../qa/qa-a11-handoff-integrity.md).
 
-**A10 update (2026-09-25, Executor self-report; independent Planner QA pending).** The HANDOFF preamble is a short Executor contract. `handoff template refresh` replaces only that preamble. A sandboxed status probe of an outstanding run is `UNKNOWN`, not `UNRESOLVED`. See [the A10 report](qa-a10-slim-handoff-template.md).
+**A10 update (2026-09-25, Executor self-report; independent Planner QA pending).** The HANDOFF preamble is a short Executor contract. `handoff template refresh` replaces only that preamble. A sandboxed status probe of an outstanding run is `UNKNOWN`, not `UNRESOLVED`. See [the A10 report](../qa/qa-a10-slim-handoff-template.md).
 
-**A9 update (2026-09-25, Executor self-report; independent Planner QA pending).** Untracked Python bytecode is left out of the code fingerprint and the dirty-path list. Re-approving a changed plan records the current workspace as the new baseline when one already exists. A baseline recorded before this change that included bytecode still mismatches; revise Current Task and re-approve to recover. See [the A9 report](qa-a9-fingerprint-rebaseline.md).
+**A9 update (2026-09-25, Executor self-report; independent Planner QA pending).** Untracked Python bytecode is left out of the code fingerprint and the dirty-path list. Re-approving a changed plan records the current workspace as the new baseline when one already exists. A baseline recorded before this change that included bytecode still mismatches; revise Current Task and re-approve to recover. See [the A9 report](../qa/qa-a9-fingerprint-rebaseline.md).
 
-**A8 update (2026-09-25, Executor self-report; independent Planner QA pending).** `handoff preflight` lists every execute blocker and its fix. A sandboxed probe is `unknown`, not stopped. `init --planner` keeps setup when the skill install fails. See [the A8 report](qa-a8-preflight-sandbox.md).
+**A8 update (2026-09-25, Executor self-report; independent Planner QA pending).** `handoff preflight` lists every execute blocker and its fix. A sandboxed probe is `unknown`, not stopped. `init --planner` keeps setup when the skill install fails. See [the A8 report](../qa/qa-a8-preflight-sandbox.md).
 
-**A7 update (2026-09-25, Executor self-report; independent Planner QA pending).** Branch `codex/a7-skill-first-setup` from `2a5bf25`. The `handoff-cli` Planner skill is now the default entry point. After `handoff skill install` (Cursor, Codex, or Claude Code; project or explicit `--user`), the human asks the Planner to "set up handoff". The skill checks existing state with `--json`, proposes managed A2A for explicit agreement, asks provider, model, Codex effort, and run mode, then runs `init` and `server start`. The run mode (drive or watch) is saved by the CLI (`handoff mode`), shown in status, and enforced by watch. A Cursor CLI Planner passed the bounded live check after one failed turn led to a skill fix. Cursor Editor discovery remains a manual pending step. See [the A7 report](qa-a7-skill-first-setup.md).
+**A7 update (2026-09-25, Executor self-report; independent Planner QA pending).** Branch `codex/a7-skill-first-setup` from `2a5bf25`. The `handoff-cli` Planner skill is now the default entry point. After `handoff skill install` (Cursor, Codex, or Claude Code; project or explicit `--user`), the human asks the Planner to "set up handoff". The skill checks existing state with `--json`, proposes managed A2A for explicit agreement, asks provider, model, Codex effort, and run mode, then runs `init` and `server start`. The run mode (drive or watch) is saved by the CLI (`handoff mode`), shown in status, and enforced by watch. A Cursor CLI Planner passed the bounded live check after one failed turn led to a skill fix. Cursor Editor discovery remains a manual pending step. See [the A7 report](../qa/qa-a7-skill-first-setup.md).
 
 **A6 update (2026-09-24, Executor self-report; independent Planner QA pending).** Branch `codex/a6-cli-setup-cursor-model-switch` from `7ee6d78`. The three user requirements are implemented through public commands:
 
@@ -24,9 +24,9 @@ Reviewed: **2026-09-24**. Checkout: `codex/a2a-executor-mvp`, commit `1e09ec58f4
 2. Cursor works as Executor (`adapters/cursor.py`) and as Planner (project-local skill; `handoff planner` launches the Cursor CLI).
 3. `handoff model` switches the Executor between executions, or with `--after-current` during one, without JSON edits or restarting the server or watch.
 
-Live, one approved workflow used a Cursor CLI Planner draft, Cursor Grok and Composer executions, a Codex continuation, and Planner QA. The Codex continuation's delivery failed because it edited the QA section; it was correctly refused. Cursor editor skill discovery is still a manual pending step. See [the A6 report](qa-a6-cli-usability.md) and [setup guide](cli-setup-and-models.md). The sections below predate A6.
+Live, one approved workflow used a Cursor CLI Planner draft, Cursor Grok and Composer executions, a Codex continuation, and Planner QA. The Codex continuation's delivery failed because it edited the QA section; it was correctly refused. Cursor editor skill discovery is still a manual pending step. See [the A6 report](../qa/qa-a6-cli-usability.md) and [setup guide](../guides/cli-setup-and-models.md). The sections below predate A6.
 
-**The scoped local A2A MVP passes Planner QA.** R1/R2 were accepted previously; A5 now resolves R3 startup cancellation. **99 Python tests and 17 legacy checks pass.** The original independent cancellation probe passes 4/4 runs across both fake providers, with no surviving worker or delayed write after cancellation. Deterministic regressions cover cancellation before/during launch, child cleanup, and safe workspace reuse. See the [final QA report](qa-a5-2026-09-24.md).
+**The scoped local A2A MVP passes Planner QA.** R1/R2 were accepted previously; A5 now resolves R3 startup cancellation. **99 Python tests and 17 legacy checks pass.** The original independent cancellation probe passes 4/4 runs across both fake providers, with no surviving worker or delayed write after cancellation. Deterministic regressions cover cancellation before/during launch, child cleanup, and safe workspace reuse. See the [final QA report](../qa/qa-a5-2026-09-24.md).
 
 Root `HANDOFF.md` is **A5-CANCEL-STARTUP, APPROVED**, after its first execution. The three-execution predecessor remains archived as **superseded, not approved**, preserving its history. No further implementation correction or paid comparison is required for this scope. Human merge/push and target-repository adoption remain pending; legacy remains the default.
 
@@ -37,41 +37,11 @@ The demonstrated benefit is Executor replacement by endpoint configuration while
 - a related failed-delivery routing fix;
 - a production Codex adapter behind the same server boundary.
 
-Live-verified: Claude, Codex, and a mid-workflow Claude→Codex switch through the real CLI, with the defects found live fixed ([results](a2a-replacement-results.md)). Skill discovery and invocation were checked in the Codex CLI host; the Cursor host is untested. Details are in [Continuation results](#continuation-results-a3-a4-complete-executor-self-report) below. Nothing here is QA approval.
+Live-verified: Claude, Codex, and a mid-workflow Claude→Codex switch through the real CLI, with the defects found live fixed ([results](../history/a2a-replacement-results.md)). Skill discovery and invocation were checked in the Codex CLI host; the Cursor host is untested. Details are in [Continuation results](#continuation-results-a3-a4-complete-executor-self-report) below. Nothing here is QA approval.
 
 Execution decision (2026-09-24, before the continuation): the human requested one agent to finish the remaining plan and return to the original Planner for independent QA. Root `HANDOFF.md` was set to **A3-A4-COMPLETE**, READY FOR EXECUTION, for manual launch. That continuation and its R1/R2 correction are complete; the cancellation follow-up is now accepted in A5. The original A3 task/findings remain in the local archive. A3/A4 and the A5 lifecycle follow-up now pass Planner QA; the adoption/merge decision remains pending.
 
-## Testing status and known limits
-
-Current evidence, 2026-09-26:
-
-- **250 Python tests and 38 legacy smoke checks** pass
-  ([A14 report](qa-a14-unreadable-skill-roots.md)). The 141 tests
-  not marked `server` also pass inside a sandboxed Planner shell.
-- A live **Claude Code Planner** (auto mode, sandboxed shell) drove a live
-  **Cursor Executor** (`grok-4.7-high-fast`) through tasks A8–A14 in drive
-  mode. A8 and A12 each had a CHANGES REQUESTED round that the Executor
-  fixed and the Planner approved. A11–A14 QA was written with `handoff qa`.
-- A live **Cursor CLI Planner** ran the setup interview through to a DRAFT
-  ([A7](qa-a7-skill-first-setup.md)). Cursor Grok and Composer
-  Executors and model switches were checked live
-  ([A6](qa-a6-cli-usability.md)).
-
-Known limits:
-
-- Not yet checked live:
-  - a Codex Planner host;
-  - skill discovery in the Cursor Editor;
-  - queued `--after-current` switches.
-- No cross-provider correction has succeeded live yet. In A6, a Codex
-  correction round edited Planner-owned QA text, and its delivery was
-  rightly rejected. Earlier Claude–Codex checks are
-  [recorded separately](a2a-replacement-results.md).
-- Credential filtering is not OS-level account isolation. User-level Cursor
-  rules and skills can reach the Executor.
-- One local checkout and one active task at a time. Third-party A2A servers
-  are untested.
-- None of this measures coding quality, speed, or cost.
+Current testing status and known limits: [testing-status.md](testing-status.md).
 
 ## Goal and scope
 
@@ -94,7 +64,7 @@ The MVP is local: a manually started loopback server operates on a registered ch
 | Workspace protection | Submission mutex, outstanding-run record, worker lock, branch/HEAD checks, code fingerprints and continuation baselines | Transport-switch recovery accepted; A5 prevents premature lock release during worker startup |
 | Auth and accounting | Service bearer; Claude auth-variable stripping; neutral usage/cost fields and provenance; manifests and events | Same OS user is not filesystem/account isolation; missing cost remains unknown |
 | Skill entry point | Repository-owned `skills/handoff-cli/SKILL.md` routes Planner intents through the CLI | Codex CLI host: discovery from a temporary repo location and `$handoff-cli status` invocation verified. Cursor host untested |
-| Executor replacement (A4) | `adapters/{base,claude,codex}.py`; server config selects exactly one adapter; Agent Card names the Executor | Fake Claude/Codex share the profile tests; live Claude, Codex, and mixed workflows pass fixture QA ([results](a2a-replacement-results.md)); fixture evidence and R2 accepted; scoped MVP QA approved |
+| Executor replacement (A4) | `adapters/{base,claude,codex}.py`; server config selects exactly one adapter; Agent Card names the Executor | Fake Claude/Codex share the profile tests; live Claude, Codex, and mixed workflows pass fixture QA ([results](../history/a2a-replacement-results.md)); fixture evidence and R2 accepted; scoped MVP QA approved |
 
 Implementation map: `bin/handoff`; `src/handoff_a2a/{client,contracts,server,store,processes,workspace}.py`; A3 adds `{integration,workflow,config,reporting}.py`. The continuation moved all provider-specific construction, environment, and parsing into `adapters/{claude,codex}.py` behind `adapters/base.py`. `server.py` only selects the configured adapter. The explicit live check is `scripts/a2a_live_check.py`.
 
@@ -139,7 +109,7 @@ Commits on `codex/a2a-executor-mvp` after `7c45000`: `5197e2f` (A3 fix), `b57729
 | A3 watch after timeout/failure/cancel | Self-tested | Public `handoff watch`: reconciles a timed-out run once and notifies once; does not retry a held failure or re-dispatch after cancel |
 | A3 constrained successor | Self-tested | Exhausted workflow → `archive --superseded` → approved successor inherits the post-run fingerprint, including uncommitted work, and executes; parent counters stay 3/3 |
 | Codex adapter | Implemented, self-tested, live-verified | Same roundtrip/CLI/failure/usage/cancel/deadline tests for fake Claude and fake Codex; live results report |
-| Real replacement through CLI | Live-verified (Executor-run fixture QA) | Claude, Codex, and Claude→Codex mixed workflows pass implementation and correction on identical fixtures ([results](a2a-replacement-results.md)) |
+| Real replacement through CLI | Live-verified (Executor-run fixture QA) | Claude, Codex, and Claude→Codex mixed workflows pass implementation and correction on identical fixtures ([results](../history/a2a-replacement-results.md)) |
 | Skill: metadata, host discovery, invocation | Codex CLI host verified | `codex debug prompt-input` lists `handoff-cli` from `<fixture>/.agents/skills` (control repo: absent; no user-level install). One read-only `codex exec '$handoff-cli status'` session chose the skill, ran `handoff status "<repo>"`, and launched no worker |
 | Skill: plan/approve/manual-launch/QA routing in a host | Partly untested | The CLI routing each intent uses (approve, execute, status `next:`, archive) was exercised by the live workflows. A host-driven plan→approve→QA conversation was not run (it needs an interactive Planner session) |
 | Cursor host discovery | **Blocked/untested** | Cursor cannot be driven from this session. Follow-up: copy `skills/handoff-cli` to `<disposable repo>/.cursor/skills/handoff-cli`, open it in Cursor, ask "handoff status", and confirm the skill is selected and runs `handoff status "<repo>"` |

@@ -83,7 +83,7 @@ never picks these for you.
 > service. On Claude Code, add both user settings: the `handoff` sandbox
 > exclusion and the allow rules. `handoff preflight` lists every blocker
 > before dispatch. See
-> [When the Planner's host blocks local commands](docs/cli-setup-and-models.md#when-the-planners-host-blocks-local-commands).
+> [When the Planner's host blocks local commands](docs/guides/cli-setup-and-models.md#when-the-planners-host-blocks-local-commands).
 
 ## Usage
 
@@ -105,10 +105,10 @@ a terminal. It dispatches each approved run, and you ask for QA when it
 notifies you. Choose watch for long runs or to keep the chat free.
 
 **Model switching** keeps the approval, history, round count, and Git state.
-Details: [model guide](docs/cli-setup-and-models.md#6-change-the-executor-model-within-a-workflow).
+Details: [model guide](docs/guides/cli-setup-and-models.md#6-change-the-executor-model-within-a-workflow).
 
 **Legacy mode** runs Claude Code directly, with no Python or local service.
-It has no model switching. See [Advanced setup](docs/advanced-setup.md).
+It has no model switching. See [Advanced setup](docs/guides/advanced-setup.md).
 
 ## For agents
 
@@ -148,7 +148,7 @@ uv run --offline --extra test python -m pytest -q -m "not server"
 
 Live checks in `scripts/` need `--confirm-live` and make paid calls.
 Current results and known limits:
-[Testing status](docs/product-status.md#testing-status-and-known-limits).
+[Testing status](docs/status/).
 
 | Path | Contents |
 | --- | --- |
@@ -157,21 +157,13 @@ Current results and known limits:
 | `skills/handoff-cli/` | Planner skill |
 | `templates/` | `HANDOFF.md` protocol and permission templates |
 | `tests/`, `scripts/` | Automated and live checks |
-| `docs/` | Guides and recorded QA evidence |
+| `docs/` | Guides, protocol reference, QA evidence, status, history |
 
 ## Documentation
 
-- [CLI setup, models, run modes, and recovery](docs/cli-setup-and-models.md)
-- [Advanced setup: legacy mode and manual A2A endpoints](docs/advanced-setup.md)
-- [A2A coding-task protocol](docs/a2a-coding-task-v1.md)
-- QA evidence: [A14](docs/qa-a14-unreadable-skill-roots.md) ·
-  [A13](docs/qa-a13-qa-append-stale-skill.md) ·
-  [A12](docs/qa-a12-polish-sandbox-tests.md) ·
-  [A11](docs/qa-a11-handoff-integrity.md) ·
-  [A10](docs/qa-a10-slim-handoff-template.md) ·
-  [A9](docs/qa-a9-fingerprint-rebaseline.md) ·
-  [A8](docs/qa-a8-preflight-sandbox.md) ·
-  [A7](docs/qa-a7-skill-first-setup.md) · [A6](docs/qa-a6-cli-usability.md)
-- [Testing status and known limits](docs/product-status.md#testing-status-and-known-limits) ·
-  [Product status](docs/product-status.md) ·
-  [Implementation history](docs/implementation-plan.md)
+- [CLI setup, models, run modes, and recovery](docs/guides/cli-setup-and-models.md)
+- [Advanced setup: legacy mode and manual A2A endpoints](docs/guides/advanced-setup.md)
+- [A2A coding-task protocol](docs/reference/a2a-coding-task-v1.md)
+- [QA evidence](docs/qa/): one report per task, plus raw evidence
+- [Testing status](docs/status/): current results, known limits, product status
+- [History](docs/history/): implementation plan, earlier results, archived task specs

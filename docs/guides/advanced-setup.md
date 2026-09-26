@@ -1,7 +1,7 @@
 # Advanced setup
 
 For generated setup, model selection, and the normal workflow, start with the
-[README](../README.md) and [CLI guide](cli-setup-and-models.md). This reference
+[README](../../README.md) and [CLI guide](cli-setup-and-models.md). This reference
 covers legacy Claude permissions, logging, and manually configured A2A endpoints.
 
 ## Legacy Claude setup
@@ -46,7 +46,7 @@ and a fixed set of test, lint, build, and formatting commands. Package-manager
 commands follow the repository's lockfile. It denies `git push`,
 `git merge`, and `gh pr create`. Additional project-specific commands require
 a deliberate permission change. See the
-[reference permission template](../templates/executor-settings.json).
+[reference permission template](../../templates/executor-settings.json).
 
 The Executor runs headless with `--permission-mode acceptEdits`. File edits
 are accepted, while shell commands still require permission. It cannot answer
@@ -84,7 +84,7 @@ CLI's stored login.
 
 Without `.handoff-config.json`, `handoff` stays on the legacy direct-Claude
 path and does not import Python. For normal A2A use, follow the
-[README Quick start](../README.md#quick-start):
+[README Quick start](../../README.md#quick-start):
 `handoff init --transport a2a` generates the managed configuration and
 `handoff server start` starts its local service. You do not need to create or
 populate JSON files yourself.
@@ -207,10 +207,10 @@ Tests must point `claude.binary` / `codex.binary` / `cursor.binary` at a fake
 executable, never a paid CLI. The explicit live checks
 `scripts/a2a_live_check.py --confirm-live` and
 `scripts/a2a_cursor_live_check.py --confirm-live` make real, paid model calls
-against disposable fixtures ([A4 results](a2a-replacement-results.md),
-[A6 results](qa-a6-cli-usability.md)). If
+against disposable fixtures ([A4 results](../history/a2a-replacement-results.md),
+[A6 results](../qa/qa-a6-cli-usability.md)). If
 restart recovery reports `recovery_required`, inspect
 `.handoff-logs/execute.lock/owner.json` and `state.sqlite` and remove the lock
 only after confirming the worker is stopped.
 
-Profile: [`docs/a2a-coding-task-v1.md`](a2a-coding-task-v1.md).
+Profile: [`docs/reference/a2a-coding-task-v1.md`](../reference/a2a-coding-task-v1.md).

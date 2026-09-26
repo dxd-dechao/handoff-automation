@@ -22,7 +22,7 @@ Executor self-report, 2026-09-25. Branch `claude/a10-slim-handoff-template`. Ind
 6. **Executor still works.** The fake-provider suite (including execute against a repo whose handoff came from the template path used by init) passed. `rule_text` names `### Executor rules`, which is the template heading.
 7. **Waiting.** `test_skill_waiting_does_not_block_or_pipe` pins background execution, the wait-timeout wording, plain `handoff` commands, reading `reason`, no long foreground sleeps, and telling the human when a run starts, times out, and finishes. Existing skill contract tests passed.
 8. **Unknown state.** `test_permission_denied_status_is_unknown_not_unresolved` reports `execution: UNKNOWN`, `probe: not_permitted`, the existing reason, turn `WAIT`, exit 2, and a next action that is not QA. A `ConnectionError` stays `UNRESOLVED`. `test_executor_active_state_is_unknown_when_probe_is_denied` sets `executor.active.state` to `unknown`.
-9. **Follow-ups.** `docs/product-status.md` ends with `## Known follow-ups` and the five items from the task.
+9. **Follow-ups.** `docs/status/product-status.md` ends with `## Known follow-ups` and the five items from the task.
 10. **Regression.** The counts above. JSON kinds keep `urn:handoff-automation:cli-output:v1`. Status JSON gains `probe` (null unless the probe was denied).
 
 ## Decisions

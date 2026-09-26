@@ -180,7 +180,7 @@ Keep Bash as the public interface and put substantive managed logic in small Pyt
 - src/handoff_a2a/{client,contracts,store,processes}.py only for concrete needs such as additive identity metadata, service ownership reuse or transaction support. Preserve backward reading of existing requests/results/state and keep worker ownership semantics.
 - skills/handoff-cli/SKILL.md; templates/HANDOFF.md; narrowly scoped new Cursor/setup templates. Existing role instructions must be updated accurately for all three Executors and separate Planner selection.
 - tests/a2a_harness.py; existing tests/test_a2a_{adapters,cli,contracts,lifecycle,processes,roundtrip,workflow}.py; new tests/test_a2a_{setup,service,selection,cursor_planner}.py.
-- scripts/a2a_live_check.py or a dedicated scripts/a2a_cursor_live_check.py; README.md; docs/a2a-coding-task-v1.md; docs/product-status.md; docs/implementation-plan.md; new docs/cli-setup-and-models.md; docs/qa-a6-cli-usability.md and redacted durable evidence under docs/evidence/.
+- scripts/a2a_live_check.py or a dedicated scripts/a2a_cursor_live_check.py; README.md; docs/reference/a2a-coding-task-v1.md; docs/status/product-status.md; docs/history/implementation-plan.md; new docs/guides/cli-setup-and-models.md; docs/qa/qa-a6-cli-usability.md and redacted durable evidence under docs/evidence/.
 - pyproject.toml/uv.lock only if a demonstrated dependency need remains after considering the existing standard library/runtime. No general SDK/provider upgrades.
 
 Suggested order: command/schema design and fixtures; setup/service primitives; Cursor adapter; Planner entry points; atomic switching/watch integration; focused tests; bounded native/live evidence; complete documentation and final regression. These are phases in one long execution, not separate Planner approval gates or recursively dispatched tasks. Commit coherent phases with resumable progress notes.
@@ -239,7 +239,7 @@ Verified 2026-09-24; recheck installed capabilities before depending on version-
 - Cursor permissions: https://cursor.com/docs/cli/reference/permissions
 - Cursor skills: https://cursor.com/docs/skills
 - Installed Cursor help/version and failed authenticated model discovery described above.
-- Existing local accepted behavior: docs/qa-a5-2026-09-24.md, docs/qa-a3-a4-correction-2026-09-24.md, docs/a2a-replacement-results.md, docs/a2a-coding-task-v1.md.
+- Existing local accepted behavior: docs/qa/qa-a5-2026-09-24.md, docs/qa/qa-a3-a4-correction-2026-09-24.md, docs/history/a2a-replacement-results.md, docs/reference/a2a-coding-task-v1.md.
 
 Public docs show the CLI mechanisms; they do not prove this account's model entitlement, installed permission enforcement or this repository's future integration.
 
@@ -247,7 +247,7 @@ Public docs show the CLI mechanisms; they do not prove this account's model enti
 
 ## Execution Notes
 
-Not started. Planning only. A5 has been archived with its approval and full execution/QA history. Complete plan is mirrored at docs/handoffs/A6-CLI-USABILITY-CURSOR.md; root HANDOFF.md is the active coordination surface. If the approved plan changes, synchronize Current Task in both before execution; execution notes/QA thereafter live in root HANDOFF.md.
+Not started. Planning only. A5 has been archived with its approval and full execution/QA history. Complete plan is mirrored at docs/history/handoffs/A6-CLI-USABILITY-CURSOR.md; root HANDOFF.md is the active coordination surface. If the approved plan changes, synchronize Current Task in both before execution; execution notes/QA thereafter live in root HANDOFF.md.
 
 ---
 

@@ -29,9 +29,9 @@ A skill rewrite with no CLI support for run mode, a skill that silently chooses 
 
 - Repository: /Users/CHEN_Dechao/Documents/GitHub/handoff-automation.
 - Planning HEAD: 2a5bf25 (Update README.md) on `codex/a2a-executor-mvp`, which contains all A6 commits through c9f97b9. Record the actual execution starting HEAD.
-- Uncommitted human work at planning time: modified `README.md` (restructured, ~300 lines changed) and new untracked `docs/advanced-setup.md`. Treat them as the starting documentation content. Do not revert or discard them. Commit them as their own first commit on the new branch ("docs: human README restructure and advanced setup") before your changes, unless they were already committed by the human.
+- Uncommitted human work at planning time: modified `README.md` (restructured, ~300 lines changed) and new untracked `docs/guides/advanced-setup.md`. Treat them as the starting documentation content. Do not revert or discard them. Commit them as their own first commit on the new branch ("docs: human README restructure and advanced setup") before your changes, unless they were already committed by the human.
 - Open PRs on 2026-09-24: none, including drafts.
-- Last recorded regression: 157 Python tests and 17 legacy smoke checks at A6 QA (docs/qa-a6-cli-usability.md). This planning turn did not rerun them.
+- Last recorded regression: 157 Python tests and 17 legacy smoke checks at A6 QA (docs/qa/qa-a6-cli-usability.md). This planning turn did not rerun them.
 - Skill: `skills/handoff-cli/SKILL.md` (~180 lines) covers plan/execute/QA/drive/status. It has a "Setup and Executor selection" section that lists flags but no interview flow, and no run-mode concept. `tests/test_a2a_contracts.py` (~line 188) and `tests/test_a2a_cursor_planner.py` pin parts of its text and byte-identity of the installed copy.
 - Skill install: `setup.py` `install_planner_skill` / `planner_skill_state` copy the whole `skills/handoff-cli` tree into `<repo>/.cursor/skills/handoff-cli` only (`--planner cursor|none`). State is `absent`, `current` (identical tree digest), or `foreign` (anything else, symlink, or tracked). Consequence: once SKILL.md changes, every A6-installed copy becomes `foreign`, re-init fails with "not overwriting", and `handoff planner` prints a mismatch note. There is no upgrade path.
 - `workspace.py` `PLANNER_SKILL_DIR = ".cursor/skills/handoff-cli"`; `is_workflow_path` excludes only that skill location from fingerprints. `setup.py` `PLANNER_EXCLUDE` adds only that path to local git excludes.
@@ -133,7 +133,7 @@ Skill content:
 - `templates/HANDOFF.md`, `templates/executor-settings.json`.
 - Tests: extend `tests/test_a2a_{setup,cli,cursor_planner,contracts,adapters,selection,workflow}.py` and `tests/a2a_harness.py`; add `tests/test_a2a_skill_install.py` and `tests/test_a2a_run_mode.py` (keep the `test_a2a_` prefix so pytest collects them). Keep `tests/smoke-manifest.sh` 17 checks passing; add legacy checks only for legacy-visible changes (`status --json`, `mode` refusal).
 - `scripts/a2a_cursor_live_check.py` (or a new `scripts/a2a_skill_setup_live_check.py`) for the bounded live check.
-- Docs: `README.md` (skill-first Quick start and Workflow; command reference moved out), `docs/cli-setup-and-models.md` (full manual CLI reference incl. new commands and JSON schema), `docs/advanced-setup.md` (only if affected), `docs/product-status.md`, `docs/implementation-plan.md`, new `docs/qa-a7-skill-first-setup.md`, redacted evidence under `docs/evidence/`.
+- Docs: `README.md` (skill-first Quick start and Workflow; command reference moved out), `docs/guides/cli-setup-and-models.md` (full manual CLI reference incl. new commands and JSON schema), `docs/guides/advanced-setup.md` (only if affected), `docs/status/product-status.md`, `docs/history/implementation-plan.md`, new `docs/qa/qa-a7-skill-first-setup.md`, redacted evidence under `docs/evidence/`.
 - `pyproject.toml`/`uv.lock` only for a demonstrated need. No SDK/provider upgrades.
 
 Suggested order (phases within one long execution, not separate approval gates): commit the human's pending docs; run mode config + `handoff mode` + status line + watch enforcement; `--json` outputs; installer/upgrade + `skill install/status` + `init --planner` hosts + excludes/fingerprints; Executor isolation deny rule and tests; skill rewrite + reference; help/init output; docs; bounded live check; final regression. Commit each coherent phase with resumable notes.
@@ -147,7 +147,7 @@ Suggested order (phases within one long execution, not separate approval gates):
 5. Executor isolation: with the Planner skill installed in each project location (and user location where supported), fake Claude/Codex/Cursor Executor runs cannot invoke `handoff`; the Claude deny rule is generated for new and re-initialized projects and merged without dropping user entries.
 6. Skill contract: SKILL.md has the Setup interview (A2A proposed as default with explicit human agreement, legacy fallback with its limits, migration offer for legacy/unmanaged repos, provider, model via `models --json`, Codex-only reasoning effort, run mode, skill location), never silently picks transport/provider/model/mode, checks existing state first, is mode-aware after approval, keeps all existing safety rules, and links `reference.md`. Tests pin the essential rules (not prose wording).
 7. Live (bounded, see budget): a Cursor CLI Planner with the installed skill, asked "set up handoff" in a fresh disposable repo, asks the questions (including the A2A-default agreement) without running `init`; given answers that accept A2A, runs `init --transport a2a` with exactly those choices plus `server start`, and reports readiness. Given "plan <tiny task> in the handoff" in watch mode, writes a DRAFT and stops for approval. Cursor Editor discovery/invocation is evidenced or explicitly marked pending with a precise manual step.
-8. Docs: README Quick start leads with the bootstrap and chat prompts; the human-facing command list is ≤ the bootstrap commands plus `handoff watch` (for watch mode); the full manual reference lives in `docs/cli-setup-and-models.md`, with every documented command tested. `handoff --help` and `init` output point to the skill first.
+8. Docs: README Quick start leads with the bootstrap and chat prompts; the human-facing command list is ≤ the bootstrap commands plus `handoff watch` (for watch mode); the full manual reference lives in `docs/guides/cli-setup-and-models.md`, with every documented command tested. `handoff --help` and `init` output point to the skill first.
 9. Regression: full suite and legacy smoke pass; `git diff --check` clean.
 
 ### Verification and live-call budget
@@ -176,7 +176,7 @@ Commit coherently on the named branch created from the verified baseline; no pus
 
 ## Execution Notes
 
-Not started. Planning only. A6 is archived with its approval and full history in HANDOFF-ARCHIVE.md. This plan is mirrored at docs/handoffs/A7-SKILL-FIRST-SETUP.md; root HANDOFF.md is the active coordination surface. If the approved plan changes, synchronize Current Task in both before execution; execution notes and QA thereafter live in root HANDOFF.md.
+Not started. Planning only. A6 is archived with its approval and full history in HANDOFF-ARCHIVE.md. This plan is mirrored at docs/history/handoffs/A7-SKILL-FIRST-SETUP.md; root HANDOFF.md is the active coordination surface. If the approved plan changes, synchronize Current Task in both before execution; execution notes and QA thereafter live in root HANDOFF.md.
 
 ---
 

@@ -1,7 +1,7 @@
 # A7 skill-first setup: Executor evidence report
 
 Task: A7-SKILL-FIRST-SETUP. Branch `codex/a7-skill-first-setup`, started from
-`2a5bf25` (the human's pending README restructure and `docs/advanced-setup.md`
+`2a5bf25` (the human's pending README restructure and `docs/guides/advanced-setup.md`
 were committed first, as `2d37097`). This is the Executor's self-report for
 independent Planner QA; it is **not** QA approval.
 
@@ -18,7 +18,7 @@ Durable evidence: [`evidence/a7-skill-setup-live-2026-09-25.json`](evidence/a7-s
 | Executor isolation | `adapters/claude.py` and legacy `bin/handoff` execute pass `--disallowedTools` for the handoff CLIs and `Skill(handoff-cli)`; `adapters/codex.py` also disables a project `.agents/skills/handoff-cli` |
 | Public CLI | `bin/handoff`: skill-first `--help`, `skill` and `mode` dispatch (legacy `mode` answer is Python-free), `status --json`, `[A2A/legacy]` TTY prompt (Enter = A2A), `--mode` / `--planner` hosts, legacy `--mode` refusal |
 | Skill | `skills/handoff-cli/SKILL.md` (193 lines, by intent) and new `reference.md` |
-| Template / docs | `templates/HANDOFF.md` drive text; README (skill-first); `docs/cli-setup-and-models.md` (full manual reference); `docs/advanced-setup.md`; this report; status docs |
+| Template / docs | `templates/HANDOFF.md` drive text; README (skill-first); `docs/guides/cli-setup-and-models.md` (full manual reference); `docs/guides/advanced-setup.md`; this report; status docs |
 | Tests | new `test_a2a_skill_install.py`, `test_a2a_run_mode.py`; additions to `test_a2a_{adapters,cli,contracts,setup,cursor_planner}.py`; 4 new legacy smoke checks |
 | Live check | new `scripts/a2a_skill_setup_live_check.py` |
 
