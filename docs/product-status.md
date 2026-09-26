@@ -41,6 +41,38 @@ Live-verified: Claude, Codex, and a mid-workflow Claude→Codex switch through t
 
 Execution decision (2026-09-24, before the continuation): the human requested one agent to finish the remaining plan and return to the original Planner for independent QA. Root `HANDOFF.md` was set to **A3-A4-COMPLETE**, READY FOR EXECUTION, for manual launch. That continuation and its R1/R2 correction are complete; the cancellation follow-up is now accepted in A5. The original A3 task/findings remain in the local archive. A3/A4 and the A5 lifecycle follow-up now pass Planner QA; the adoption/merge decision remains pending.
 
+## Testing status and known limits
+
+Current evidence, 2026-09-26:
+
+- **250 Python tests and 38 legacy smoke checks** pass
+  ([A14 report](qa-a14-unreadable-skill-roots.md)). The 141 tests
+  not marked `server` also pass inside a sandboxed Planner shell.
+- A live **Claude Code Planner** (auto mode, sandboxed shell) drove a live
+  **Cursor Executor** (`grok-4.7-high-fast`) through tasks A8–A14 in drive
+  mode. A8 and A12 each had a CHANGES REQUESTED round that the Executor
+  fixed and the Planner approved. A11–A14 QA was written with `handoff qa`.
+- A live **Cursor CLI Planner** ran the setup interview through to a DRAFT
+  ([A7](qa-a7-skill-first-setup.md)). Cursor Grok and Composer
+  Executors and model switches were checked live
+  ([A6](qa-a6-cli-usability.md)).
+
+Known limits:
+
+- Not yet checked live:
+  - a Codex Planner host;
+  - skill discovery in the Cursor Editor;
+  - queued `--after-current` switches.
+- No cross-provider correction has succeeded live yet. In A6, a Codex
+  correction round edited Planner-owned QA text, and its delivery was
+  rightly rejected. Earlier Claude–Codex checks are
+  [recorded separately](a2a-replacement-results.md).
+- Credential filtering is not OS-level account isolation. User-level Cursor
+  rules and skills can reach the Executor.
+- One local checkout and one active task at a time. Third-party A2A servers
+  are untested.
+- None of this measures coding quality, speed, or cost.
+
 ## Goal and scope
 
 Keep **Human → Planner → Executor → same Planner QA → correction → human merge**. The experiment succeeds if the Planner can select a different coding Executor through endpoint configuration while keeping its orchestration, coding contract, and git-based QA unchanged.
