@@ -372,7 +372,7 @@ def test_documented_commands_use_real_verbs_and_flags() -> None:
     for source in Path("src/handoff_a2a").glob("*.py"):
         known_flags |= set(re.findall(r'add_argument\(\s*"(--[a-z-]+)"', source.read_text(encoding="utf-8")))
     checked = 0
-    for doc in (Path("README.md"), Path("docs/cli-setup-and-models.md")):
+    for doc in (Path("README.md"), Path("docs/guides/cli-setup-and-models.md")):
         text = doc.read_text(encoding="utf-8")
         for block in re.findall(r"```sh\n(.*?)```", text, re.DOTALL):
             for line in block.replace("\\\n", " ").splitlines():

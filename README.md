@@ -9,8 +9,7 @@ those hosts, with its own model. After a one-time setup you talk only to the
 Planner; it runs the `handoff` CLI for you.
 
 [Quick start](#quick-start) · [Usage](#usage) · [For agents](#for-agents) ·
-[Status](#status-and-limitations) · [Development](#development) ·
-[Docs](#documentation)
+[Development](#development) · [Docs](#documentation)
 
 ## How it works
 
@@ -66,6 +65,10 @@ login is missing)
 handoff skill install "/path/to/project" --host claude   # or cursor, codex; --user for all repos
 ```
 
+If another tool (for example skillshare) installed the skill, re-sync it
+after you update this checkout. `handoff status` prints a `skill:` line
+while a copy is stale; handoff never modifies copies it did not install.
+
 **4. Ask your Planner to set it up**
 
 > /handoff-cli set up handoff in this repo
@@ -80,7 +83,7 @@ never picks these for you.
 > service. On Claude Code, add both user settings: the `handoff` sandbox
 > exclusion and the allow rules. `handoff preflight` lists every blocker
 > before dispatch. See
-> [When the Planner's host blocks local commands](docs/cli-setup-and-models.md#when-the-planners-host-blocks-local-commands).
+> [When the Planner's host blocks local commands](docs/guides/cli-setup-and-models.md#when-the-planners-host-blocks-local-commands).
 
 ## Usage
 
@@ -102,10 +105,10 @@ a terminal. It dispatches each approved run, and you ask for QA when it
 notifies you. Choose watch for long runs or to keep the chat free.
 
 **Model switching** keeps the approval, history, round count, and Git state.
-Details: [model guide](docs/cli-setup-and-models.md#6-change-the-executor-model-within-a-workflow).
+Details: [model guide](docs/guides/cli-setup-and-models.md#6-change-the-executor-model-within-a-workflow).
 
 **Legacy mode** runs Claude Code directly, with no Python or local service.
-It has no model switching. See [Advanced setup](docs/advanced-setup.md).
+It has no model switching. See [Advanced setup](docs/guides/advanced-setup.md).
 
 ## For agents
 
@@ -114,44 +117,15 @@ when the human asks for a handoff workflow.
 
 - **Planner:** follow [`skills/handoff-cli/SKILL.md`](skills/handoff-cli/SKILL.md).
   Keep new plans as DRAFT until the human approves them. Read state with
-  `--json`. QA the diff, not the Executor's notes.
+  `--json`. QA the diff, not the Executor's notes. On A2A, write QA
+  Feedback and Status with `handoff qa`; on legacy, edit them by hand.
 - **Executor:** implement the Current Task in `HANDOFF.md` directly, following
   its `### Executor rules`. Edit only its Status line and Execution Notes.
   Do not run `handoff`, the Planner skill, or another agent.
   `handoff template refresh` updates an old preamble and leaves the task
   byte-for-byte.
 
-There are no `handoff plan`, `qa`, or `drive` commands; those are agent work.
-
-## Status and limitations
-
-Current evidence, 2026-09-25:
-
-- **226 Python tests and 28 legacy smoke checks** pass
-  ([A10 report](docs/qa-a10-slim-handoff-template.md)).
-- A live **Claude Code Planner** (auto mode, sandboxed shell) drove a live
-  **Cursor Executor** (`grok-4.7-high-fast`) through two drive-mode rounds.
-  The second round fixed QA feedback and was approved (A8).
-- A live **Cursor CLI Planner** ran the setup interview through to a DRAFT
-  ([A7](docs/qa-a7-skill-first-setup.md)). Cursor Grok and Composer
-  Executors and model switches were checked live
-  ([A6](docs/qa-a6-cli-usability.md)).
-
-Known limits:
-
-- Not yet checked live:
-  - a Codex Planner host;
-  - skill discovery in the Cursor Editor;
-  - queued `--after-current` switches.
-- No cross-provider correction has succeeded live yet. In A6, a Codex
-  correction round edited Planner-owned QA text, and its delivery was
-  rightly rejected. Earlier Claude–Codex checks are
-  [recorded separately](docs/a2a-replacement-results.md).
-- Credential filtering is not OS-level account isolation. User-level Cursor
-  rules and skills can reach the Executor.
-- One local checkout and one active task at a time. Third-party A2A servers
-  are untested.
-- None of this measures coding quality, speed, or cost.
+There are no `handoff plan` or `drive` commands; those are agent work.
 
 ## Development
 
@@ -163,9 +137,18 @@ uv run --offline --extra test python -m pytest -q
 git diff --check
 ```
 
-Tests use fake providers and make no paid calls. Service tests need local
-process and localhost access, so run them outside a sandboxed shell. Live
-checks in `scripts/` need `--confirm-live` and make paid calls.
+Tests use fake providers and make no paid calls. Tests marked `server` need
+process probes, localhost, a started service, or a pseudo-terminal, so run
+the full suite (about 12 minutes) outside a sandboxed shell. Inside one, run
+the rest (about 2 minutes):
+
+```sh
+uv run --offline --extra test python -m pytest -q -m "not server"
+```
+
+Live checks in `scripts/` need `--confirm-live` and make paid calls.
+Current results and known limits:
+[Testing status](docs/status/).
 
 | Path | Contents |
 | --- | --- |
@@ -174,14 +157,12 @@ checks in `scripts/` need `--confirm-live` and make paid calls.
 | `skills/handoff-cli/` | Planner skill |
 | `templates/` | `HANDOFF.md` protocol and permission templates |
 | `tests/`, `scripts/` | Automated and live checks |
-| `docs/` | Guides and recorded QA evidence |
+| `docs/` | Guides, protocol reference, QA evidence, status |
 
 ## Documentation
 
-- [CLI setup, models, run modes, and recovery](docs/cli-setup-and-models.md)
-- [Advanced setup: legacy mode and manual A2A endpoints](docs/advanced-setup.md)
-- [A2A coding-task protocol](docs/a2a-coding-task-v1.md)
-- QA evidence: [A8](docs/qa-a8-preflight-sandbox.md) ·
-  [A7](docs/qa-a7-skill-first-setup.md) · [A6](docs/qa-a6-cli-usability.md)
-- [Product status](docs/product-status.md) ·
-  [Implementation history](docs/implementation-plan.md)
+- [CLI setup, models, run modes, and recovery](docs/guides/cli-setup-and-models.md)
+- [Advanced setup: legacy mode and manual A2A endpoints](docs/guides/advanced-setup.md)
+- [A2A coding-task protocol](docs/reference/a2a-coding-task-v1.md)
+- [QA evidence](docs/qa/): one report per task, live results, raw evidence
+- [Testing status](docs/status/): current results, known limits, product status, implementation plan

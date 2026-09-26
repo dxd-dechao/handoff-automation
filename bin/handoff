@@ -39,7 +39,7 @@ Start here (one-time bootstrap, then talk to your Planner agent):
             managed A2A, and runs the commands below for you.
   handoff watch <repo>   the one command you keep running yourself in watch mode
 
-Manual / scripted reference (the skill uses these; see docs/cli-setup-and-models.md):
+Manual / scripted reference (the skill uses these; see docs/guides/cli-setup-and-models.md):
 
 setup
   init      set up a repo. On a terminal it asks (Enter = managed A2A); scripted:

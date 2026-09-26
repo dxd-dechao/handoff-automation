@@ -1,14 +1,14 @@
 # A2A Executor implementation plan
 
-**A8-PREFLIGHT-SANDBOX (2026-09-25): executed; READY FOR QA.** Dispatch preflight, three-state liveness, sandboxed connect/skill/init errors, and section-boundary diagnostics. Evidence: [qa-a8-preflight-sandbox.md](qa-a8-preflight-sandbox.md).
+**A8-PREFLIGHT-SANDBOX (2026-09-25): executed; READY FOR QA.** Dispatch preflight, three-state liveness, sandboxed connect/skill/init errors, and section-boundary diagnostics. Evidence: [../qa/qa-a8-preflight-sandbox.md](../qa/qa-a8-preflight-sandbox.md).
 
-**A7-SKILL-FIRST-SETUP (2026-09-25): executed; READY FOR QA.** Skill-first setup and use: `handoff skill install|status` (one installer, three hosts, safe upgrades), the Setup interview with A2A as the agreed default, a saved run mode (`init --mode`, `handoff mode`, status, watch enforcement, watcher record), `--json` output for the skill, and Executor isolation from the skill. On `codex/a7-skill-first-setup`. Evidence and limits: [qa-a7-skill-first-setup.md](qa-a7-skill-first-setup.md).
+**A7-SKILL-FIRST-SETUP (2026-09-25): executed; READY FOR QA.** Skill-first setup and use: `handoff skill install|status` (one installer, three hosts, safe upgrades), the Setup interview with A2A as the agreed default, a saved run mode (`init --mode`, `handoff mode`, status, watch enforcement, watcher record), `--json` output for the skill, and Executor isolation from the skill. On `codex/a7-skill-first-setup`. Evidence and limits: [../qa/qa-a7-skill-first-setup.md](../qa/qa-a7-skill-first-setup.md).
 
-**A6-CLI-USABILITY-CURSOR (2026-09-24): executed; READY FOR QA.** Generated setup (`init`/`models`), managed service (`server`), Executor model selection within a workflow (`model`, `--after-current`), Cursor Executor adapter, and Cursor CLI/editor Planner integration, on `codex/a6-cli-setup-cursor-model-switch`. Evidence and limits: [qa-a6-cli-usability.md](qa-a6-cli-usability.md). The earlier status below remains the record for A1–A5.
+**A6-CLI-USABILITY-CURSOR (2026-09-24): executed; READY FOR QA.** Generated setup (`init`/`models`), managed service (`server`), Executor model selection within a workflow (`model`, `--after-current`), Cursor Executor adapter, and Cursor CLI/editor Planner integration, on `codex/a6-cli-setup-cursor-model-switch`. Evidence and limits: [../qa/qa-a6-cli-usability.md](../qa/qa-a6-cli-usability.md). The earlier status below remains the record for A1–A5.
 
-**Planner QA, 2026-09-24, reviewed `1e09ec5`: APPROVED for the scoped local MVP.** A5 resolves the last material blocker (R3 startup cancellation). 99 Python tests and 17 legacy checks pass; the original independent cancel probe passes 4/4 runs across both fake adapters. R1/R2 and the retained live replacement evidence remain accepted. See the [final QA report](qa-a5-2026-09-24.md). Root HANDOFF.md is **A5-CANCEL-STARTUP, APPROVED**, after one execution; the predecessor retains its three executions and superseded history. No further implementation round or paid comparison is requested. Human merge/push/adoption remain separate. Full skill-host workflow and third-party interoperability remain disclosed limitations.
+**Planner QA, 2026-09-24, reviewed `1e09ec5`: APPROVED for the scoped local MVP.** A5 resolves the last material blocker (R3 startup cancellation). 99 Python tests and 17 legacy checks pass; the original independent cancel probe passes 4/4 runs across both fake adapters. R1/R2 and the retained live replacement evidence remain accepted. See the [final QA report](../qa/qa-a5-2026-09-24.md). Root HANDOFF.md is **A5-CANCEL-STARTUP, APPROVED**, after one execution; the predecessor retains its three executions and superseded history. No further implementation round or paid comparison is requested. Human merge/push/adoption remain separate. Full skill-host workflow and third-party interoperability remain disclosed limitations.
 
-Continuation (2026-09-24, Executor): the A3-A4-COMPLETE handoff was executed. The A3 correction, Codex adapter, live replacement evidence, and skill host checks in Codex CLI are done; Cursor host discovery is untested. See product-status.md "Continuation results". The original Planner subsequently approved the scoped MVP after A5, as recorded above.
+Continuation (2026-09-24, Executor): the A3-A4-COMPLETE handoff was executed. The A3 correction, Codex adapter, live replacement evidence, and skill host checks in Codex CLI are done; Cursor host discovery is untested. See ../status/product-status.md "Continuation results". The original Planner subsequently approved the scoped MVP after A5, as recorded above.
 
 Status as of 2026-09-24 (Planner review, before the continuation): A1 and A2 QA approved; A3 implemented at `7c45000`, but not QA approved. Current regression suites pass (47 Python tests and 17 legacy checks); an independent probe reproduced a configuration-switch recovery/status defect. A4 is not started. Human retains manual Executor launch and merge/push decisions.
 Created: 2026-09-14. Original source baseline: `6201590bb98d7cc9514c04e7df14482695f8afed`. Current inspected HEAD: `7c45000174ac583a2003f2b10ea2dbb5e0b6f7d7` on `codex/a2a-executor-mvp`.
@@ -26,7 +26,7 @@ The Planner is the external chat agent. `drive` is a workflow instruction, not a
 
 Add a small `handoff-cli` skill as the user-facing entry point for that Planner. It invokes the existing CLI and preserves the same responsibilities. The skill is useful with legacy execution immediately and with A2A after A3; it does not implement either transport.
 
-The temporary experiment established that the same official-SDK A2A client could run identical coding requests and follow-ups through Claude and Codex. It did not establish production reliability or improvement in coding quality, speed, or cost. See [prototype evidence](a2a-prototype-results.md).
+The temporary experiment established that the same official-SDK A2A client could run identical coding requests and follow-ups through Claude and Codex. It did not establish production reliability or improvement in coding quality, speed, or cost. See [prototype evidence](../qa/a2a-prototype-results.md).
 
 ## How implementation and QA will run
 
@@ -69,9 +69,9 @@ Planner is authorized to make documentation-only QA corrections directly at any 
 |---|---|---|---|---|
 | A1 | Standalone local A2A server, Claude adapter, provider-neutral client, request/result contract, and Planner-facing CLI skill | Existing baseline | APPROVED | d615f09 + b9bd0aa; reviewed through 123eccc; 23 A2A + 17 legacy checks and five independent CLI probes passed |
 | A2 | Durable execution identity, reconnect/restart handling, and cancellation | A1 | APPROVED; R3 closed by A5 | b8468ce + 756ad06; 35 A2A + 17 legacy checks and both independent cancellation/restart probes passed on 2026-09-15 |
-| A3 | Wire A2A into handoff CLI, workflow status, gates, and reporting | A2 | APPROVED; recovery and R1 accepted | Reviewed through 8d99b93; 93 Python + 17 legacy checks; [current QA](qa-a3-a4-correction-2026-09-24.md) |
-| A4 | Codex adapter and real replacement validation through handoff CLI | A3 | APPROVED for scoped local replacement experiment | [Live results](a2a-replacement-results.md); [current QA](qa-a3-a4-correction-2026-09-24.md) |
-| A5 | Safe cancellation during worker startup | Preserved A1–A4 work | APPROVED at 1e09ec5, execution 1 | 99 Python + 17 legacy checks; independent cancel probe 4/4; [final QA](qa-a5-2026-09-24.md) |
+| A3 | Wire A2A into handoff CLI, workflow status, gates, and reporting | A2 | APPROVED; recovery and R1 accepted | Reviewed through 8d99b93; 93 Python + 17 legacy checks; [current QA](../qa/qa-a3-a4-correction-2026-09-24.md) |
+| A4 | Codex adapter and real replacement validation through handoff CLI | A3 | APPROVED for scoped local replacement experiment | [Live results](../qa/a2a-replacement-results.md); [current QA](../qa/qa-a3-a4-correction-2026-09-24.md) |
+| A5 | Safe cancellation during worker startup | Preserved A1–A4 work | APPROVED at 1e09ec5, execution 1 | 99 Python + 17 legacy checks; independent cancel probe 4/4; [final QA](../qa/qa-a5-2026-09-24.md) |
 
 ### A1 — Make a real A2A execution path work
 
@@ -79,7 +79,7 @@ Add an optional Python package with a small `handoff-a2a` development command, o
 
 This stage is a runnable vertical slice, not just types/scaffolding. It does not change `bin/handoff` or the installed template yet. In-memory task state is explicitly acceptable at this stage; restart durability and cancel commands are A2. A dropped connection is reported as unresolved, never silently resubmitted or routed to legacy execution.
 
-Expected files: `pyproject.toml`, `uv.lock`, optional runtime ignores, `src/handoff_a2a/{__init__,__main__,contracts,client,server,workspace}.py`, `src/handoff_a2a/adapters/{__init__,claude}.py`, `tests/test_a2a_*.py`, `docs/a2a-coding-task-v1.md`, and a short README addition. Adjacent small helpers inside the package are allowed when useful; no framework rewrite.
+Expected files: `pyproject.toml`, `uv.lock`, optional runtime ignores, `src/handoff_a2a/{__init__,__main__,contracts,client,server,workspace}.py`, `src/handoff_a2a/adapters/{__init__,claude}.py`, `tests/test_a2a_*.py`, `docs/reference/a2a-coding-task-v1.md`, and a short README addition. Adjacent small helpers inside the package are allowed when useful; no framework rewrite.
 
 Also deliver the instruction-only skill at `skills/handoff-cli/SKILL.md`, with installation instructions in README. Keep one source in this repository; the user can install/link it into a supported skill directory for the Planner, including a user-level location when working across repositories. A1 does not modify global configuration or install the skill automatically.
 
@@ -147,7 +147,7 @@ Untracked Python bytecode (`__pycache__`, `.pyc`, `.pyo`) is not code: it stays 
 
 ### A10 — Slim handoff template
 
-The installed `templates/HANDOFF.md` preamble stays at or under 3 KB: opt-in banner, roles, Executor rules, and Status values. Planner loop rules live in the skill. `handoff template refresh` replaces only the preamble of an existing file and leaves `## Current Task` onward byte-for-byte. A sandboxed status probe of an outstanding run is `execution: UNKNOWN` with `probe: not_permitted`, distinct from `UNRESOLVED`. Known follow-ups are listed at the end of `docs/product-status.md` and are not fixed here.
+The installed `templates/HANDOFF.md` preamble stays at or under 3 KB: opt-in banner, roles, Executor rules, and Status values. Planner loop rules live in the skill. `handoff template refresh` replaces only the preamble of an existing file and leaves `## Current Task` onward byte-for-byte. A sandboxed status probe of an outstanding run is `execution: UNKNOWN` with `probe: not_permitted`, distinct from `UNRESOLVED`. Known follow-ups are listed at the end of `docs/status/product-status.md` and are not fixed here.
 
 ### A11 — Handoff integrity
 

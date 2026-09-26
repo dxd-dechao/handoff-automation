@@ -112,7 +112,7 @@ Codex.
 ## QA round 1 correction
 
 - Blocking: Claude and Codex adapters now strip `CURSOR_*` as well (a server started from a Cursor Planner shell leaked that session's variables to non-Cursor workers). Unit assertions added for both adapters' child environments; the fake worker's AUTH_PROBE already flags any `CURSOR_*` except the Cursor adapter's own `CURSOR_CONFIG_DIR`.
-- Nit: Cursor deny rules also list `git <options> push|merge|remote` forms and `*/claude`, `*/codex`. The matcher is best effort; the documented backstop is the shell sandbox's empty network allowlist (docs/cli-setup-and-models.md §8). Not exercised live (budget spent).
+- Nit: Cursor deny rules also list `git <options> push|merge|remote` forms and `*/claude`, `*/codex`. The matcher is best effort; the documented backstop is the shell sandbox's empty network allowlist (docs/guides/cli-setup-and-models.md §8). Not exercised live (budget spent).
 
 ## Pending / not verified
 
@@ -124,5 +124,5 @@ Codex.
   Only the Cursor **CLI** Planner has been exercised live.
 - User-level Cursor content in the home directory (`~/.cursor/rules`,
   `~/.cursor/skills`, `~/.agents/skills`, and the MCP list) is not isolated
-  from the Cursor Executor. See `docs/cli-setup-and-models.md`.
+  from the Cursor Executor. See `docs/guides/cli-setup-and-models.md`.
 - No quality, speed, or cost claims.
