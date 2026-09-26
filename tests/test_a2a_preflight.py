@@ -417,7 +417,7 @@ def test_status_lists_stale_planner_skills(tmp_path: Path) -> None:
     write_handoff(repo, status="DRAFT", branch="main")
     empty = _json(handoff(env, "status", str(repo), "--json"))
     assert empty["schema"] == "urn:handoff-automation:cli-output:v1" and empty["kind"] == "status"
-    assert empty["planner_skill"] == {"stale": []}
+    assert empty["planner_skill"] == {"stale": [], "unknown": []}
     assert "status" in empty and "execution" in empty and "preflight" in empty
     assert not any(line.startswith("skill:") for line in handoff(env, "status", str(repo)).stdout.splitlines())
 
@@ -426,6 +426,7 @@ def test_status_lists_stale_planner_skills(tmp_path: Path) -> None:
     (copy / "SKILL.md").write_text("---\nname: handoff-cli\ndescription: skillshare\n---\nold\n", encoding="utf-8")
     shown = _json(handoff(env, "status", str(repo), "--json"))
     assert shown["planner_skill"]["stale"] == [str(copy)]
+    assert shown["planner_skill"]["unknown"] == []
     assert shown["status"] == empty["status"] and shown["preflight"] == empty["preflight"]
     human = handoff(env, "status", str(repo))
     skill_lines = [line for line in human.stdout.splitlines() if line.startswith("skill:")]

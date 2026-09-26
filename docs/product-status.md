@@ -2,6 +2,8 @@
 
 Reviewed: **2026-09-24**. Checkout: `codex/a2a-executor-mvp`, commit `1e09ec58f4f059c9d7f3e01fe875eb01b99ce588`.
 
+**A14 update (2026-09-26, Executor self-report; independent Planner QA pending).** An unreadable Planner skill folder is reported as `unknown`. `handoff status`, `handoff skill status`, and `init` keep working and name it. Install into that folder is refused and writes nothing. See [the A14 report](qa-a14-unreadable-skill-roots.md).
+
 **A13 update (2026-09-26, Executor self-report; independent Planner QA pending).** `handoff qa --append` from READY FOR QA appends the new round and sets Status in one write. Stale Planner skill copies (`outdated`, or `elsewhere` with different content) are reported by `skill status`, `init`, and `status`, and are not modified. See [the A13 report](qa-a13-qa-append-stale-skill.md).
 
 **A12 update (2026-09-25, Executor self-report; independent Planner QA pending).** Init compares preambles without a temp file, refresh keeps the file mode and each file's line endings, `handoff qa` edits only the QA body and Status and refuses a plan that already changed, rebaseline is recorded only when the snapshot changes, and `execute`/`resume` take `--wait`. The `server` pytest marker is the suite that needs process probes (including a child `handoff` probe), localhost, a started service, or a pseudo-terminal. See [the A12 report](qa-a12-polish-sandbox-tests.md).
@@ -180,4 +182,4 @@ Execution policy throughout: human approval followed by manual Executor launch; 
 
 ## Known follow-ups
 
-- (A13) `handoff status` now reads the Planner skill folders on every call. `skills.elsewhere_copy` calls `root.iterdir()` without catching `OSError`, and `status_entries` catches only `SkillError`. So a host that denies reading a user skill root (for example `~/.cursor/skills`) would make `status` fail over optional information. The skill report should degrade to "unknown" instead.
+None open.

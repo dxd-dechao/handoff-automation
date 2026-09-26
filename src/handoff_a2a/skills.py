@@ -10,6 +10,8 @@ only when it is provably this project's skill and unmodified:
             known earlier release. Upgraded in place on install / re-init.
   foreign   anything else (user-modified, unknown unmarked content, a
             symlink, or tracked in git). Never overwritten.
+  unknown   the location could not be read. Not treated as present or
+            absent. Install into that location is refused and writes nothing.
 
 Project locations (the host's documented project skill folder):
 
@@ -37,6 +39,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
+
+from handoff_a2a.processes import permission_denied
 
 HOSTS = ("cursor", "codex", "claude")
 SKILL_NAME = "handoff-cli"
@@ -182,32 +186,63 @@ def _frontmatter_name(skill_md: Path) -> str | None:
     return None
 
 
+def _error_reason(exc: OSError) -> str:
+    return exc.strerror or str(exc)
+
+
+def _os_detail(path: Path, exc: OSError) -> str:
+    return f"{path}: {_error_reason(exc)}"
+
+
+def _probe_name(exc: OSError) -> str:
+    return "not_permitted" if permission_denied(exc) else "error"
+
+
+def _unreadable(path: Path, exc: OSError) -> dict[str, Any]:
+    """A skill root that could not be listed. Not evidence a copy is absent."""
+    return {"unreadable": True, "path": str(path), "detail": _os_detail(path, exc), "probe": _probe_name(exc)}
+
+
 def elsewhere_copy(loc: Location) -> dict[str, Any] | None:
-    """A handoff-cli skill under another folder name in this host's skill root."""
+    """A handoff-cli skill under another folder name in this host's skill root.
+
+    When the skill root itself cannot be listed, returns an ``unreadable``
+    record (the root path) instead of ``None``. An unreadable child is skipped.
+    """
     root = loc.path.parent
-    if not root.is_dir():
-        return None
-    for child in sorted(root.iterdir()):
-        if not child.is_dir() or child.name.startswith("."):
-            continue
+    try:
+        if not root.is_dir():
+            return None
+        children = sorted(root.iterdir())
+    except OSError as exc:
+        return _unreadable(root, exc)
+    for child in children:
         try:
-            if child.resolve() == loc.path.resolve():
+            if not child.is_dir() or child.name.startswith("."):
                 continue
+            try:
+                if child.resolve() == loc.path.resolve():
+                    continue
+            except OSError:
+                continue
+            skill_md = child / "SKILL.md"
+            if not skill_md.is_file() or _frontmatter_name(skill_md) != SKILL_NAME:
+                continue
+            try:
+                current = tree_digest(child) == source_digest()
+            except OSError:
+                current = False
+            return {"path": str(child), "current_content": current}
         except OSError:
             continue
-        skill_md = child / "SKILL.md"
-        if not skill_md.is_file() or _frontmatter_name(skill_md) != SKILL_NAME:
-            continue
-        try:
-            current = tree_digest(child) == source_digest()
-        except OSError:
-            current = False
-        return {"path": str(child), "current_content": current}
     return None
 
 
 def skill_available(repo: Path | None, host: str, env: Mapping[str, str] | None = None) -> str | None:
-    """Path of a current, outdated, or elsewhere copy for this host, if any."""
+    """Path of a current, outdated, or elsewhere copy for this host, if any.
+
+    Unknown locations are skipped. An unreadable skill root is not a copy.
+    """
     locations: list[Location] = []
     if repo is not None:
         locations.append(project_location(repo, host))
@@ -215,13 +250,17 @@ def skill_available(repo: Path | None, host: str, env: Mapping[str, str] | None 
         locations.append(user_location(host, env))
     except SkillError:
         pass
+    except OSError:
+        pass
     for loc in locations:
         state, _detail = skill_state(loc)
         if state in {"current", "outdated"}:
             return str(loc.path)
+        if state == "unknown":
+            continue
         if state == "absent":
             found = elsewhere_copy(loc)
-            if found:
+            if found and not found.get("unreadable"):
                 return str(found["path"])
     return None
 
@@ -234,8 +273,8 @@ def any_skill_available(repo: Path, env: Mapping[str, str] | None = None) -> str
     return None
 
 
-def skill_state(loc: Location) -> tuple[str, str]:
-    """(state, detail) for one location; see the module docstring."""
+def _classify(loc: Location) -> tuple[str, str]:
+    """(state, detail) assuming the location can be inspected."""
     path = loc.path
     if path.is_symlink():
         return "foreign", "a symlink (managed outside handoff)"
@@ -266,6 +305,26 @@ def skill_state(loc: Location) -> tuple[str, str]:
     if digest in KNOWN_RELEASE_DIGESTS:
         return "outdated", f"unmodified copy of the {KNOWN_RELEASE_DIGESTS[digest]} release"
     return "foreign", "not installed by handoff (different content, no install marker)"
+
+
+def _inspect(loc: Location) -> tuple[str, str, str | None]:
+    """(state, detail, probe). ``probe`` is set only when the state is unknown."""
+    try:
+        state, detail = _classify(loc)
+    except OSError as exc:
+        return "unknown", _os_detail(loc.path, exc), _probe_name(exc)
+    return state, detail, None
+
+
+def skill_state(loc: Location) -> tuple[str, str]:
+    """(state, detail) for one location; see the module docstring.
+
+    An ``OSError`` while inspecting the location (symlink and existence checks,
+    ``is_dir``, ``rglob``, ``tree_digest``, ``read_marker``, the ancestor walk)
+    is ``unknown`` with detail ``"<path>: <strerror>"``. That is not absent.
+    """
+    state, detail, _probe = _inspect(loc)
+    return state, detail
 
 
 # ── install ─────────────────────────────────────────────────────────────────
@@ -304,9 +363,12 @@ def install(loc: Location, *, journal: Any = None) -> str:
 
     `journal` (setup's rollback journal) records a fresh copy so a failed
     `handoff init` removes it. An upgrade replaces an unmodified older copy
-    and is not rolled back.
+    and is not rolled back. An unreadable target is refused before any write.
     """
-    state, detail = skill_state(loc)
+    state, detail, _probe = _inspect(loc)
+    if state == "unknown":
+        reason = detail.removeprefix(f"{loc.path}: ")
+        raise SkillError(f"cannot read {loc.path} ({reason}); not installing", exit_code=2)
     if state == "foreign":
         raise SkillError(
             f"{loc.display} already exists and is not an unmodified handoff install ({detail}); "
@@ -382,18 +444,48 @@ ELSEWHERE_UPDATE = "update it with the tool that installed it (e.g. skillshare);
 
 
 def _with_stale(entry: dict[str, Any]) -> dict[str, Any]:
-    """``stale`` is derived: outdated, or an elsewhere copy whose content differs."""
-    entry["stale"] = entry.get("state") == "outdated" or (
-        entry.get("state") == "elsewhere" and entry.get("current_content") is False
+    """``stale`` is derived: outdated, or an elsewhere copy whose content differs.
+
+    ``unknown`` is never stale. Every entry carries ``unknown`` (false unless
+    that is the state).
+    """
+    is_unknown = entry.get("state") == "unknown"
+    entry["stale"] = not is_unknown and (
+        entry.get("state") == "outdated" or (entry.get("state") == "elsewhere" and entry.get("current_content") is False)
     )
+    entry["unknown"] = is_unknown
     return entry
 
 
+def _unknown_fallback(host: str, scope: str, path: str | None, exc: OSError) -> dict[str, Any]:
+    shown = path or "<unknown>"
+    return _with_stale(
+        {
+            "host": host,
+            "scope": scope,
+            "path": path,
+            "state": "unknown",
+            "detail": f"{shown}: {_error_reason(exc)}",
+            "probe": _probe_name(exc),
+        }
+    )
+
+
 def _entry(loc: Location) -> dict[str, Any]:
-    state, detail = skill_state(loc)
+    state, detail, probe = _inspect(loc)
     entry: dict[str, Any] = {"host": loc.host, "scope": loc.scope, "path": str(loc.path), "state": state, "detail": detail}
+    if probe is not None:
+        entry["probe"] = probe
+    if state == "unknown":
+        return _with_stale(entry)
     if state == "absent":
         found = elsewhere_copy(loc)
+        if found and found.get("unreadable"):
+            entry["state"] = "unknown"
+            entry["path"] = found["path"]
+            entry["detail"] = found["detail"]
+            entry["probe"] = found["probe"]
+            return _with_stale(entry)
         if found:
             entry["state"] = "elsewhere"
             entry["found_path"] = found["path"]
@@ -406,14 +498,30 @@ def _entry(loc: Location) -> dict[str, Any]:
 
 
 def status_entries(repo: Path | None, env: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
-    entries = [_entry(project_location(repo, host)) for host in HOSTS] if repo is not None else []
+    """Project and user locations for each host. Never raises ``OSError``."""
+    entries: list[dict[str, Any]] = []
+    if repo is not None:
+        for host in HOSTS:
+            loc = project_location(repo, host)
+            try:
+                entries.append(_entry(loc))
+            except OSError as exc:
+                entries.append(_unknown_fallback(host, "project", str(loc.path), exc))
     for host in HOSTS:
         try:
-            entries.append(_entry(user_location(host, env)))
+            loc = user_location(host, env)
         except SkillError as exc:
             entries.append(
                 _with_stale({"host": host, "scope": "user", "path": None, "state": "unsupported", "detail": str(exc)})
             )
+            continue
+        except OSError as exc:
+            entries.append(_unknown_fallback(host, "user", None, exc))
+            continue
+        try:
+            entries.append(_entry(loc))
+        except OSError as exc:
+            entries.append(_unknown_fallback(host, "user", str(loc.path), exc))
     return entries
 
 
@@ -422,23 +530,35 @@ def _copy_path(entry: dict[str, Any]) -> str | None:
     return str(path) if path else None
 
 
-def planner_skill_report(repo: Path | None, env: Mapping[str, str] | None = None) -> tuple[list[str], str | None]:
-    """Stale copy paths, and one human ``status`` line when that list is non-empty.
+def planner_skill_report(
+    repo: Path | None, env: Mapping[str, str] | None = None
+) -> tuple[list[str], list[str], list[str]]:
+    """Stale paths, unknown paths, and human ``status`` lines.
 
-    Uses the same entries as ``skill status``. The line is omitted when nothing is stale.
+    Uses the same entries as ``skill status``. The stale line is unchanged and
+    is omitted when nothing is stale. One unknown line is added only when a
+    location could not be read. Neither list changes ``turn``, ``next``, or preflight.
     """
-    stale = [entry for entry in status_entries(repo, env) if entry.get("stale")]
+    entries = status_entries(repo, env)
+    stale = [entry for entry in entries if entry.get("stale")]
     paths: list[str] = []
     for entry in stale:
         path = _copy_path(entry)
         if path:
             paths.append(path)
-    if not paths:
-        return [], None
-    line = f"skill:  {', '.join(paths)}: {STALE_DIFFERS}"
-    if all(entry.get("state") == "elsewhere" for entry in stale):
-        line += f"; {ELSEWHERE_UPDATE}"
-    return paths, line
+    lines: list[str] = []
+    if paths:
+        line = f"skill:  {', '.join(paths)}: {STALE_DIFFERS}"
+        if all(entry.get("state") == "elsewhere" for entry in stale):
+            line += f"; {ELSEWHERE_UPDATE}"
+        lines.append(line)
+    unknown_entries = [entry for entry in entries if entry.get("state") == "unknown"]
+    unknown_paths = [str(entry["path"]) for entry in unknown_entries if entry.get("path")]
+    if unknown_paths:
+        denied = all(entry.get("probe") == "not_permitted" for entry in unknown_entries)
+        why = "permission denied" if denied else "error"
+        lines.append(f"skill:  could not read {', '.join(unknown_paths)} ({why}); stale check skipped")
+    return paths, unknown_paths, lines
 
 
 def stale_available_notice(repo: Path | None, host: str, env: Mapping[str, str] | None = None) -> str | None:
@@ -446,11 +566,14 @@ def stale_available_notice(repo: Path | None, host: str, env: Mapping[str, str] 
 
     Walks locations in the same order as ``skill_available``. An elsewhere copy
     names the tool that installed it. An outdated copy names its upgrade command.
+    Unknown locations are skipped; they are not a stale copy.
     """
     for entry in status_entries(repo, env):
         if entry.get("host") != host:
             continue
         state = entry.get("state")
+        if state == "unknown":
+            continue
         if state in {"current", "outdated"}:
             if not entry.get("stale"):
                 return None
@@ -462,6 +585,29 @@ def stale_available_notice(repo: Path | None, host: str, env: Mapping[str, str] 
             path = _copy_path(entry)
             return f"{path}: {STALE_DIFFERS}; {ELSEWHERE_UPDATE}"
     return None
+
+
+def unknown_location_notice(
+    repo: Path | None, hosts: tuple[str, ...] | None = None, env: Mapping[str, str] | None = None
+) -> str | None:
+    """One init line naming skill locations that could not be read.
+
+    ``hosts`` limits the line to one Planner host. ``None`` names every host.
+    """
+    paths: list[str] = []
+    for entry in status_entries(repo, env):
+        if entry.get("state") != "unknown":
+            continue
+        if hosts is not None and entry.get("host") not in hosts:
+            continue
+        path = entry.get("path")
+        if path and str(path) not in paths:
+            paths.append(str(path))
+    if not paths:
+        return None
+    listed = ", ".join(paths)
+    skipped = "it" if len(paths) == 1 else "them"
+    return f"could not read {listed}; the skill check skipped {skipped}"
 
 
 def cmd_install(repo_arg: str | None, host: str, user: bool, as_json: bool) -> int:

@@ -25,7 +25,9 @@ At the start of a handoff conversation, read `handoff status "<repo>" --json`
 once. If `planner_skill.stale` lists copies, mention them once: the path and
 how to update it. For an `elsewhere` copy, that is the tool that installed
 it (for example skillshare). Never edit, overwrite, or install over an
-`elsewhere` copy.
+`elsewhere` copy. If `planner_skill.unknown` is non-empty, say once which
+locations could not be read and that the stale check skipped them. That does
+not block anything. Never try to fix permissions.
 
 **Target:** the repository the user named, else the unambiguous current
 project (ask only if ambiguous; never this skill's own folder). Use `handoff`

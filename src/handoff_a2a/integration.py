@@ -1178,7 +1178,7 @@ async def cmd_status_async(repo: Path, *, as_json: bool = False) -> int:
     next_action = _mode_next(
         _next_action(markdown_status=document.status, execution=execution, workflow=workflow), mode, watcher, repo
     )
-    stale_skills, skill_line = planner_skill_report(repo)
+    stale_skills, unknown_skills, skill_lines = planner_skill_report(repo)
     code = 2 if execution in {"UNRESOLVED", "UNKNOWN", "RECOVERY"} else 0
     if structure_problems:
         structure_reason = "; ".join(structure_problems)
@@ -1205,7 +1205,7 @@ async def cmd_status_async(repo: Path, *, as_json: bool = False) -> int:
                 "probe": probe,
                 "next": next_action,
                 "preflight": _status_preflight(repo),
-                "planner_skill": {"stale": stale_skills},
+                "planner_skill": {"stale": stale_skills, "unknown": unknown_skills},
             },
         )
         return code
@@ -1253,7 +1253,7 @@ async def cmd_status_async(repo: Path, *, as_json: bool = False) -> int:
         for item in preflight.get("blockers") or []:
             print(f"  - {item['message']}")
             print(f"    fix: {item['fix']}")
-    if skill_line:
+    for skill_line in skill_lines:
         print(skill_line)
     print(f"next:   {next_action}")
     return code

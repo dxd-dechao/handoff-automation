@@ -54,6 +54,7 @@ from handoff_a2a.skills import (
     project_location,
     skill_state,
     stale_available_notice,
+    unknown_location_notice,
 )
 from handoff_a2a.workspace import (
     CONFIG_NAME,
@@ -742,12 +743,17 @@ def _next_steps(paths: ManagedPaths, provider: str, planner: str | None, report:
                 lines.append(notice)
         return lines
 
+    def unknown_lines(hosts: tuple[str, ...]) -> list[str]:
+        notice = unknown_location_notice(paths.repo, hosts)
+        return [notice] if notice else []
+
     if planner:
         report.next_steps.append(
             f"in your {planner.capitalize()} Planner chat: /handoff-cli plan <task> in the handoff "
             "(the skill writes a DRAFT, waits for your approval, then runs the CLI)"
         )
         report.next_steps.extend(stale_lines((planner,)))
+        report.next_steps.extend(unknown_lines((planner,)))
     else:
         found = any_skill_available(paths.repo)
         if found:
@@ -761,6 +767,7 @@ def _next_steps(paths: ManagedPaths, provider: str, planner: str | None, report:
                 f"make the Planner skill available: handoff skill install {q} --host <cursor|codex|claude>, "
                 "then in the Planner chat: /handoff-cli plan <task> in the handoff"
             )
+        report.next_steps.extend(unknown_lines(PLANNER_HOSTS))
 
 
 def print_report(report: SetupReport) -> None:
