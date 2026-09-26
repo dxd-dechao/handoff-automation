@@ -825,3 +825,212 @@ def test_json_outputs_for_models_model_and_server(tmp_path: Path) -> None:
     assert unmanaged.returncode == 2 and "no CLI-managed A2A service" in as_json(unmanaged, "server-status")["error"]
     model_err = handoff(managed_env(tmp_path / "plain"), "model", str(plain), "--json")
     assert model_err.returncode == 2 and as_json(model_err, "model")["error"]
+
+
+SCHEMA = "urn:handoff-automation:cli-output:v1"
+_ARCHIVE_PREAMBLE = (
+    "# HANDOFF Archive\n\n"
+    "Completed tasks, appended verbatim by `handoff archive`. Local-only (git-excluded).\n"
+)
+
+
+def _archive_of(*entries: str) -> str:
+    text = _ARCHIVE_PREAMBLE
+    for entry in entries:
+        text += "\n---\n\n" + entry
+    return text
+
+
+def _run_archive(repo: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run([str(HANDOFF_BIN), "archive", *args], cwd=repo, capture_output=True)
+
+
+def test_archive_list_and_show_read_one_entry(tmp_path: Path) -> None:
+    repo = tmp_path / "archive-repo"
+    repo.mkdir()
+    (repo / "HANDOFF.md").write_text("# HANDOFF.md\n\n## Current Task\n\n**Status:** DRAFT\n", encoding="utf-8")
+    long_goal = "A smaller follow-up " + ("x" * 180)
+    first = (
+        '# Archived 2026-09-01 09:00 — Keep the "first" goal\n'
+        "Disposition: archived\n"
+        "Workflow-ID: wf-1\n"
+        "\n"
+        "## Current Task\n"
+        "\n"
+        "**Status:** APPROVED\n"
+        "\n"
+        "**Task ID:** A-ONE\n"
+        "\n"
+        "quote `## QA Feedback` inline\n"
+        "\n"
+        "## Execution Notes\n"
+        "\n"
+        "notes one\n"
+        "\n"
+        "## QA Feedback\n"
+        "\n"
+        "qa one\n"
+    )
+    second = (
+        f"# Superseded 2026-09-02 10:00 — {long_goal}\n"
+        "Disposition: **superseded, not approved**\n"
+        "Workflow-ID: wf-2\n"
+        "\n"
+        "## Current Task\n"
+        "\n"
+        "**Status:** READY FOR QA\n"
+        "\n"
+        "**Task ID:** A-TWO\n"
+        "\n"
+        "## Execution Notes\n"
+        "\n"
+        "notes two\n"
+        "\n"
+        "## QA Feedback\n"
+        "\n"
+        "qa two\n"
+    )
+    third = (
+        "# Archived 2026-09-03 11:00 — No disposition on this one\n"
+        "Workflow-ID: wf-3\n"
+        "\n"
+        "## Current Task\n"
+        "\n"
+        "**Status:** APPROVED\n"
+        "\n"
+        "**Task ID:** A-DUP\n"
+        "\n"
+        "## Execution Notes\n"
+        "\n"
+        "notes three\n"
+        "\n"
+        "## QA Feedback\n"
+        "\n"
+        "qa three\n"
+    )
+    fourth = (
+        "# Archived 2026-09-04 12:00 — Duplicate id later\n"
+        "Disposition: archived\n"
+        "\n"
+        "## Current Task\n"
+        "\n"
+        "**Status:** APPROVED\n"
+        "\n"
+        "**Task ID:** A-DUP\n"
+        "\n"
+        "## Execution Notes\n"
+        "\n"
+        "notes four\n"
+        "\n"
+        "## QA Feedback\n"
+        "\n"
+        "qa four\n"
+    )
+    fifth = (
+        "# Archived 2026-09-05 13:00 — CRLF entry\r\n"
+        "\r\n"
+        "## Current Task\r\n"
+        "\r\n"
+        "**Status:** APPROVED\r\n"
+        "\r\n"
+        "**Task ID:** A-CRLF\r\n"
+        "\r\n"
+        "## Execution Notes\r\n"
+        "\r\n"
+        "notes\r\n"
+        "\r\n"
+        "## QA Feedback\r\n"
+        "\r\n"
+        "qa\r\n"
+    )
+    entries = (first, second, third, fourth, fifth)
+    archive = repo / "HANDOFF-ARCHIVE.md"
+    archive.write_text(_archive_of(*entries), encoding="utf-8")
+    before = archive.read_bytes()
+
+    listed = _run_archive(repo, "list", str(repo))
+    assert listed.returncode == 0, listed.stderr
+    lines = listed.stdout.decode().splitlines()
+    assert len(lines) == 5
+    assert lines[0].startswith('1 2026-09-01 09:00 A-ONE archived ')
+    assert 'Keep the "first" goal' in lines[0]
+    assert lines[1].startswith("2 2026-09-02 10:00 A-TWO superseded ")
+    assert lines[1].endswith("...")
+    assert "A-DUP" in lines[2] and "A-DUP" in lines[3]
+    assert lines[4].startswith("5 2026-09-05 13:00 A-CRLF archived ")
+    assert all(len(line) <= 120 for line in lines)
+    assert archive.read_bytes() == before
+
+    payload = json.loads(_run_archive(repo, "list", str(repo), "--json").stdout)
+    assert payload["schema"] == SCHEMA and payload["kind"] == "archive_list"
+    assert payload["repo"] == str(repo.resolve())
+    assert len(payload["entries"]) == 5
+    assert payload["entries"][0]["goal"] == 'Keep the "first" goal'
+    assert payload["entries"][0]["bytes"] == len(first.encode())
+    assert payload["entries"][1]["kind"] == "superseded"
+    assert payload["entries"][1]["disposition"] == "**superseded, not approved**"
+    assert payload["entries"][2]["disposition"] is None and payload["entries"][2]["workflow_id"] == "wf-3"
+    assert payload["entries"][3]["workflow_id"] is None and payload["entries"][3]["task_id"] == "A-DUP"
+    assert payload["entries"][4]["task_id"] == "A-CRLF"
+    assert archive.read_bytes() == before
+
+    shown = _run_archive(repo, "show", str(repo), "A-ONE")
+    assert shown.returncode == 0 and shown.stdout == first.encode()
+    duplicate = _run_archive(repo, "show", str(repo), "A-DUP")
+    assert duplicate.returncode == 0 and duplicate.stdout == fourth.encode()
+    assert b"2 entries match A-DUP (indexes 3, 4)" in duplicate.stderr
+    by_index = _run_archive(repo, "show", str(repo), "2")
+    assert by_index.stdout == second.encode()
+    crlf = _run_archive(repo, "show", str(repo), "A-CRLF")
+    assert crlf.stdout == fifth.encode()
+
+    task = _run_archive(repo, "show", str(repo), "A-ONE", "--section", "task")
+    assert b"quote `## QA Feedback` inline" in task.stdout
+    assert b"\n## Execution Notes\n" not in task.stdout
+    assert not any(line in (b"## Execution Notes", b"## QA Feedback") for line in task.stdout.splitlines())
+    qa = _run_archive(repo, "show", str(repo), "A-ONE", "--section", "qa")
+    assert qa.stdout.startswith(b"## QA Feedback\n")
+    assert b"qa one\n" in qa.stdout and b"## Current Task" not in qa.stdout and b"quote `" not in qa.stdout
+
+    missing = _run_archive(repo, "show", str(repo), "NOPE")
+    assert missing.returncode == 1
+    assert b"no archived task NOPE; see handoff archive list" in missing.stderr
+
+    show_json = json.loads(_run_archive(repo, "show", str(repo), "A-ONE", "--section", "qa", "--json").stdout)
+    assert show_json["schema"] == SCHEMA and show_json["kind"] == "archive_show"
+    assert show_json["section"] == "qa" and show_json["text"] == qa.stdout.decode()
+    assert show_json["entry"]["task_id"] == "A-ONE" and show_json["entry"]["index"] == 1
+    whole = json.loads(_run_archive(repo, "show", str(repo), "1", "--json").stdout)
+    assert whole["section"] is None and whole["text"] == first
+
+    legacy = (
+        "# Superseded — 2026-09-24 — Odd older header\n"
+        "\n"
+        "## Current Task\n"
+        "\n"
+        "**Status:** APPROVED\n"
+        "\n"
+        "**Task ID:** A-OLD\n"
+        "\n"
+        "## Execution Notes\n"
+        "\n"
+        "n\n"
+        "\n"
+        "## QA Feedback\n"
+        "\n"
+        "q\n"
+    )
+    archive.write_text(_archive_of(legacy), encoding="utf-8")
+    odd = json.loads(_run_archive(repo, "list", str(repo), "--json").stdout)
+    assert odd["entries"][0]["archived_at"] == "2026-09-24"
+    assert odd["entries"][0]["kind"] == "superseded"
+    assert odd["entries"][0]["goal"] == "Odd older header"
+    assert odd["entries"][0]["disposition"] is None
+
+    archive.unlink()
+    empty = _run_archive(repo, "list", str(repo))
+    assert empty.returncode == 0 and empty.stdout == b"no archive yet\n"
+    empty_json = json.loads(_run_archive(repo, "list", str(repo), "--json").stdout)
+    assert empty_json["kind"] == "archive_list" and empty_json["entries"] == []
+    absent = _run_archive(repo, "show", str(repo), "A-ONE")
+    assert absent.returncode == 1 and b"no archived task A-ONE" in absent.stderr

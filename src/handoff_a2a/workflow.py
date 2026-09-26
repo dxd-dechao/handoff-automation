@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,8 @@ from handoff_a2a.workspace import (
     ARCHIVE_NAME,
     HANDOFF_NAME,
     LOG_DIRNAME,
+    HandoffStructureError,
+    _current_task_without_status,
     approved_plan_hash,
     handoff_structure,
     parse_handoff,
@@ -274,6 +277,57 @@ def exhausted(workflow: dict[str, Any]) -> bool:
     return rounds_available(workflow) < 1 and not workflow.get("reserved_execution_id")
 
 
+def _normalize_newlines(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _header_stamp(line: str) -> str:
+    """Date or date-time from an archive header, including the older Superseded form."""
+    rest = re.sub(r"^# (?:Archived|Superseded) ", "", line, count=1)
+    dated = re.match(r"(\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2})?) — ", rest)
+    if dated:
+        return dated.group(1)
+    legacy = re.match(r"— (\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2})?) — ", rest)
+    if legacy:
+        return legacy.group(1)
+    return ""
+
+
+def _last_archived_task(archive_text: str) -> tuple[int, str, str] | None:
+    """Index, header stamp, and status-insensitive Current Task of the last entry."""
+    text = _normalize_newlines(archive_text)
+    lines = text.split("\n")
+    headers = [
+        index
+        for index, line in enumerate(lines)
+        if line.startswith("# Archived ") or line.startswith("# Superseded ")
+    ]
+    if not headers:
+        return None
+    entry = "\n".join(lines[headers[-1] :])
+    try:
+        key = _current_task_without_status(entry)
+    except HandoffStructureError:
+        return None
+    if not key:
+        return None
+    return len(headers), _header_stamp(lines[headers[-1]]), key
+
+
+def _duplicate_archive(archive_text: str, markdown: str) -> tuple[int, str] | None:
+    last = _last_archived_task(archive_text)
+    if last is None:
+        return None
+    index, when, previous = last
+    try:
+        current = _current_task_without_status(_normalize_newlines(markdown))
+    except HandoffStructureError:
+        return None
+    if current and previous == current:
+        return index, when
+    return None
+
+
 def archive_current(
     repo: Path,
     *,
@@ -294,6 +348,11 @@ def archive_current(
         raise WorkflowError("refusing to archive because the plan changed since approval. " + ARCHIVE_RECOVERY)
     document = parse_handoff(markdown)
     archive = repo / ARCHIVE_NAME
+    if archive.is_file():
+        duplicate = _duplicate_archive(archive.read_text(encoding="utf-8"), markdown)
+        if duplicate is not None:
+            index, when = duplicate
+            raise WorkflowError(f"already archived as entry {index} ({when}); plan the next task first")
     if superseded:
         if workflow is None:
             raise WorkflowError("no workflow to supersede")

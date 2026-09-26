@@ -157,7 +157,16 @@ If a delivery or a QA edit damages `HANDOFF.md`, restore it before archive:
 
 - The bytes the server evaluated are `.handoff-logs/<run_id>-delivered.md` (also `handoff-delivered.md` under that run's server evidence). Copy that file back over `HANDOFF.md`.
 - `handoff qa` saves the previous file as `.handoff-logs/HANDOFF.pre-qa-<UTC timestamp>.md`. Copy the newest of those back to undo a QA write. From READY FOR QA, `handoff qa --append` keeps the earlier round and sets Status in the same write. From APPROVED or CHANGES REQUESTED, `--append` adds a note and leaves Status unchanged. It still refuses from DRAFT or READY FOR EXECUTION.
-- `handoff archive` refuses a malformed heading structure or a plan whose hash no longer matches approval. Restore one of those copies, or revise Current Task and re-approve. Nothing is appended to `HANDOFF-ARCHIVE.md` until the guard passes.
+- `handoff archive` refuses a malformed heading structure, a plan whose hash no longer matches approval, or a Current Task that is already the last entry in `HANDOFF-ARCHIVE.md`. Restore one of those copies, or revise Current Task and re-approve, then plan the next task before archiving again. Nothing is appended until the guard passes.
+
+Read history from the index, not from the archive file. `list` prints one line per entry. `show` prints one entry, or its Current Task, Execution Notes, or QA Feedback. A task id that was archived twice prints the last copy and names the other indexes on stderr.
+
+```sh
+handoff archive list "/path/to/project"
+handoff archive list "/path/to/project" --json
+handoff archive show "/path/to/project" A6-CLI-USABILITY-CURSOR --section qa
+handoff archive show "/path/to/project" 6 --json
+```
 
 A manually configured endpoint keeps working for `execute`/`resume`/`status`/`cancel`,
 but managed `server`/`model` commands refuse to touch it. To migrate, run
@@ -278,8 +287,8 @@ cleanly. It never interrupts a worker. Nothing starts a watcher for you;
 ## Machine-readable output (`--json`)
 
 `status`, `models`, `model`, `server start|status|stop`, `mode`,
-`skill install`, and `skill status` accept `--json` and print exactly one
-object on stdout:
+`skill install`, `skill status`, `archive list`, and `archive show` accept
+`--json` and print exactly one object on stdout:
 
 ```json
 {"schema": "urn:handoff-automation:cli-output:v1", "kind": "status", "...": "..."}
@@ -289,6 +298,8 @@ object on stdout:
 |---|---|---|
 | `status` | `handoff status --json` | `transport` (`legacy`/`a2a`), `managed`, `status`, `turn`, `goal`, `execution` (`UNKNOWN` when a status probe is not permitted), `probe`, `workflow`, `mode`, `watcher`, `executor`, `run`, `reason`, `next`, `planner_skill.stale`, `planner_skill.unknown` |
 | `template_refresh` | `handoff template refresh --json` | `replaced`, `backup`, `old_preamble_bytes`, `new_preamble_bytes`, `message` |
+| `archive_list` | `handoff archive list --json` | `repo`, `entries[]` (`index`, `archived_at`, `kind`, `task_id`, `goal`, `disposition`, `workflow_id`, `bytes`; missing fields are null) |
+| `archive_show` | `handoff archive show --json` | `repo`, `entry`, `section` (`task`, `notes`, `qa`, or null), `text` |
 | `models` | `handoff models --json` | `provider`, `binary`, `version`, `models_listed` (false only means no enumeration, as for Claude), `source`, `models[]` (`id`, `name`), `note`, `reasoning_effort_supported`, `login_command` |
 | `model` / `model-change` | `handoff model [...] --json` | `selected`, `active` (`state`: `verified`/`unverified`/`stopped`/`unknown`), `current_run`, `pending`; changes add `messages[]` |
 | `server-status` / `server-stop` | `handoff server ... --json` | `service`, `verified`, `endpoint`, `port`, `selected`, `active`, `pid`, `started_at`, `log`, `notes`, `last_failure` / `outcome` |

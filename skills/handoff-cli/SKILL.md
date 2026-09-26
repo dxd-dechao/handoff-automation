@@ -120,6 +120,11 @@ and `HANDOFF.md`. If a finished previous task is still there, run
 `handoff archive "<repo>"` first. Write a self-contained Current Task as
 **DRAFT** and stop for human review. Do not dispatch a DRAFT.
 
+When a plan needs history (a predecessor, earlier QA, a repeated failure),
+run `handoff archive list "<repo>" --json`, then
+`handoff archive show "<repo>" <id> --section qa|notes|task`. Never open
+or search `HANDOFF-ARCHIVE.md` directly, and exclude it when searching the repo.
+
 ## Approve and run
 
 Only after explicit chat approval of this plan (honor approval already given

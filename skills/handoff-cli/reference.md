@@ -32,7 +32,9 @@ explicit ID, which is recorded as unverified.
 | `handoff watch "<repo>"` | Poll and dispatch (watch mode; refuses in drive mode). The human keeps it running. Status checks only; no `--wait`. |
 | `handoff resume "<repo>" [--wait <seconds>]` / `handoff cancel "<repo>"` | Reconnect to / cancel an outstanding run. `--wait` is the same override as on `execute`. |
 | `handoff runs "<repo>"` | Past runs from manifests. |
-| `handoff archive "<repo>" [--superseded]` | Move the finished task to HANDOFF-ARCHIVE.md; `--superseded` closes an exhausted workflow. Refuses a damaged heading structure or a plan that changed since approval. |
+| `handoff archive "<repo>" [--superseded]` | Append the finished task to HANDOFF-ARCHIVE.md. `--superseded` closes an exhausted workflow. Refuses a damaged heading structure, a plan that changed since approval, or a Current Task already stored as the last archive entry. |
+| `handoff archive list "<repo>" [--json]` | Index of HANDOFF-ARCHIVE.md (`kind: archive_list`). No archive file prints `no archive yet` and exits 0. Duplicate task ids stay as separate entries. |
+| `handoff archive show "<repo>" <task-id\|index> [--section task\|notes\|qa] [--json]` | One entry, or its `task`, `notes`, or `qa` section (`kind: archive_show`). A repeated task id prints the last entry and names every index on stderr. |
 | `handoff qa "<repo>" --status <APPROVED\|CHANGES REQUESTED> --file <path> [--append] [--json]` | A2A only (`kind: qa`). Replaces QA Feedback and sets Status. `--append` from READY FOR QA appends the new round and sets Status in the same write. `--append` on APPROVED or CHANGES REQUESTED adds a note and leaves Status unchanged. Refuses from DRAFT or READY FOR EXECUTION, while a run is outstanding, on a bad structure, or if Current Task would change. |
 | `handoff template refresh "<repo>" [--json]` | Replace the HANDOFF.md preamble from the installed template (`kind: template_refresh`). Everything from `## Current Task` on stays byte-for-byte. Prints "already current" when nothing differs. Refuses, without writing, when the heading is missing or duplicated or an A2A run is outstanding. |
 
@@ -83,6 +85,13 @@ explicit ID, which is recorded as unverified.
   `path`, `state`, `detail`, `install_command`, `stale`, `unknown`.
   `elsewhere` also has `found_path` and `current_content`. State `unknown`
   also has `probe` (`not_permitted` or `error`).
+- `archive_list`: `repo`, `entries[]` with `index`, `archived_at`, `kind`
+  (`archived` or `superseded`), `task_id`, `goal`, `disposition`,
+  `workflow_id`, `bytes`. A missing `task_id`, `disposition`, `workflow_id`,
+  or `archived_at` is null. `bytes` is the size of that entry.
+- `archive_show`: `repo`, `entry` (the same fields), `section` (`task`,
+  `notes`, `qa`, or null for the whole entry), `text` (those bytes,
+  unchanged).
 
 ## Skill copy states
 

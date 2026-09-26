@@ -262,6 +262,206 @@ assert_eq "legacy archive refuses a duplicated heading" "1" "$ARCH_RC"
 assert "legacy archive names the heading" grep -q '## QA Feedback' "$TMPDIR_BASE/arch.txt"
 assert "archive file was not created" test ! -f "$STRUCT/HANDOFF-ARCHIVE.md"
 
+# ── Archive list/show and the duplicate guard, with no Python ───────────────
+echo ""
+echo "=== archive list/show without Python ==="
+NOPY="$TMPDIR_BASE/nopython-path"
+mkdir -p "$NOPY"
+printf '#!/bin/sh\necho "python invoked" >&2\nexit 99\n' > "$NOPY/python3"
+cp "$NOPY/python3" "$NOPY/python"
+chmod +x "$NOPY/python3" "$NOPY/python"
+JQ_DIR="$(dirname "$(command -v jq)")"
+LIST_PATH="$PATH"
+# The python stub is first, so list/show cannot call Python. jq stays the real binary.
+export PATH="$NOPY:$JQ_DIR:/usr/bin:/bin"
+hash -r
+
+LIST_REPO="$TMPDIR_BASE/list-repo"
+mkdir -p "$LIST_REPO"
+printf '%s\n' '# HANDOFF.md' '' '## Current Task' '' '**Status:** DRAFT' > "$LIST_REPO/HANDOFF.md"
+LONG_GOAL="$(printf 'x%.0s' $(seq 1 180))"
+E1='# Archived 2026-09-01 09:00 — Keep the "first" goal
+Disposition: archived
+Workflow-ID: wf-1
+
+## Current Task
+
+**Status:** APPROVED
+
+**Task ID:** A-ONE
+
+quote `## QA Feedback` inline
+
+## Execution Notes
+
+notes one
+
+## QA Feedback
+
+qa one
+'
+E2="# Superseded 2026-09-02 10:00 — A smaller follow-up ${LONG_GOAL}
+Disposition: **superseded, not approved**
+Workflow-ID: wf-2
+
+## Current Task
+
+**Status:** READY FOR QA
+
+**Task ID:** A-TWO
+
+## Execution Notes
+
+notes two
+
+## QA Feedback
+
+qa two
+"
+E3='# Archived 2026-09-03 11:00 — No disposition on this one
+Workflow-ID: wf-3
+
+## Current Task
+
+**Status:** APPROVED
+
+**Task ID:** A-DUP
+
+## Execution Notes
+
+notes three
+
+## QA Feedback
+
+qa three
+'
+E4='# Archived 2026-09-04 12:00 — Duplicate id later
+Disposition: archived
+
+## Current Task
+
+**Status:** APPROVED
+
+**Task ID:** A-DUP
+
+## Execution Notes
+
+notes four
+
+## QA Feedback
+
+qa four
+'
+E5=$'# Archived 2026-09-05 13:00 — CRLF entry\r\n\r\n## Current Task\r\n\r\n**Status:** APPROVED\r\n\r\n**Task ID:** A-CRLF\r\n\r\n## Execution Notes\r\n\r\nnotes\r\n\r\n## QA Feedback\r\n\r\nqa\r\n'
+PREAMBLE='# HANDOFF Archive
+
+Completed tasks, appended verbatim by `handoff archive`. Local-only (git-excluded).
+'
+{
+  printf '%s' "$PREAMBLE"
+  printf '\n---\n\n%s' "$E1"
+  printf '\n---\n\n%s' "$E2"
+  printf '\n---\n\n%s' "$E3"
+  printf '\n---\n\n%s' "$E4"
+  printf '\n---\n\n%s' "$E5"
+} > "$LIST_REPO/HANDOFF-ARCHIVE.md"
+printf '%s' "$E4" > "$TMPDIR_BASE/e4.txt"
+printf '%s' "$E5" > "$TMPDIR_BASE/e5.txt"
+BEFORE_CKSUM="$(cksum "$LIST_REPO/HANDOFF-ARCHIVE.md")"
+"$HANDOFF_BIN" archive list "$LIST_REPO" > "$TMPDIR_BASE/list.txt"
+assert_eq "list prints five entries" "5" "$(wc -l < "$TMPDIR_BASE/list.txt" | tr -d ' ')"
+assert "list names the superseded entry" grep -q 'A-TWO superseded' "$TMPDIR_BASE/list.txt"
+assert "list keeps both copies of a task id" test "$(grep -c 'A-DUP' "$TMPDIR_BASE/list.txt")" -eq 2
+assert "list names the CRLF entry" grep -q 'A-CRLF archived' "$TMPDIR_BASE/list.txt"
+LIST_FIT=0
+while IFS= read -r list_line; do
+  if ((${#list_line} > 120)); then LIST_FIT=1; fi
+done < "$TMPDIR_BASE/list.txt"
+assert_eq "list lines fit 120 columns" "0" "$LIST_FIT"
+assert "long goal is truncated" grep -q '\.\.\.$' "$TMPDIR_BASE/list.txt"
+assert_eq "list does not append" "$BEFORE_CKSUM" "$(cksum "$LIST_REPO/HANDOFF-ARCHIVE.md")"
+"$HANDOFF_BIN" archive list "$LIST_REPO" --json > "$TMPDIR_BASE/list.json"
+assert_eq "list json kind" "archive_list" "$(jq -r .kind "$TMPDIR_BASE/list.json")"
+assert_eq "list json schema" "urn:handoff-automation:cli-output:v1" "$(jq -r .schema "$TMPDIR_BASE/list.json")"
+assert_eq "list json count" "5" "$(jq '.entries | length' "$TMPDIR_BASE/list.json")"
+assert_eq "missing disposition is null" "null" "$(jq -r '.entries[2].disposition' "$TMPDIR_BASE/list.json")"
+assert_eq "missing workflow id is null" "null" "$(jq -r '.entries[3].workflow_id' "$TMPDIR_BASE/list.json")"
+assert_eq "superseded kind" "superseded" "$(jq -r '.entries[1].kind' "$TMPDIR_BASE/list.json")"
+"$HANDOFF_BIN" archive show "$LIST_REPO" A-DUP > "$TMPDIR_BASE/dup.txt" 2> "$TMPDIR_BASE/dup.err"
+assert "show prints the last duplicate" cmp -s "$TMPDIR_BASE/dup.txt" "$TMPDIR_BASE/e4.txt"
+assert "duplicate indexes on stderr" grep -q '2 entries match A-DUP (indexes 3, 4)' "$TMPDIR_BASE/dup.err"
+"$HANDOFF_BIN" archive show "$LIST_REPO" A-CRLF > "$TMPDIR_BASE/crlf-show.txt"
+assert "show keeps CRLF bytes" cmp -s "$TMPDIR_BASE/crlf-show.txt" "$TMPDIR_BASE/e5.txt"
+"$HANDOFF_BIN" archive show "$LIST_REPO" A-ONE --section task > "$TMPDIR_BASE/section-task.txt"
+assert "task section keeps the inline heading quote" grep -F -q 'quote `## QA Feedback` inline' "$TMPDIR_BASE/section-task.txt"
+if grep -qx '## Execution Notes' "$TMPDIR_BASE/section-task.txt" || grep -qx '## QA Feedback' "$TMPDIR_BASE/section-task.txt"; then
+  assert "inline QA heading does not split the task" false
+else
+  assert "inline QA heading does not split the task" true
+fi
+SHOW_RC=0
+"$HANDOFF_BIN" archive show "$LIST_REPO" NOPE > /dev/null 2> "$TMPDIR_BASE/missing.err" || SHOW_RC=$?
+assert_eq "unknown id exits 1" "1" "$SHOW_RC"
+assert "unknown id names list" grep -q 'no archived task NOPE; see handoff archive list' "$TMPDIR_BASE/missing.err"
+EMPTY_REPO="$TMPDIR_BASE/empty-archive"
+mkdir -p "$EMPTY_REPO"
+printf '%s\n' '# HANDOFF.md' '' '## Current Task' '' '**Status:** DRAFT' > "$EMPTY_REPO/HANDOFF.md"
+"$HANDOFF_BIN" archive list "$EMPTY_REPO" > "$TMPDIR_BASE/empty.txt"
+assert_eq "no archive yet" "no archive yet" "$(cat "$TMPDIR_BASE/empty.txt")"
+"$HANDOFF_BIN" archive list "$EMPTY_REPO" --json > "$TMPDIR_BASE/empty.json"
+assert_eq "empty entries" "0" "$(jq '.entries | length' "$TMPDIR_BASE/empty.json")"
+
+GUARD_REPO="$TMPDIR_BASE/guard-repo"
+mkdir -p "$GUARD_REPO"
+cat > "$GUARD_REPO/HANDOFF.md" <<'EOF'
+# HANDOFF.md
+
+## Current Task
+
+**Status:** APPROVED
+
+### Goal
+
+Keep the gate
+
+---
+
+## Execution Notes
+
+done
+
+---
+
+## QA Feedback
+
+ok
+EOF
+"$HANDOFF_BIN" archive "$GUARD_REPO" > "$TMPDIR_BASE/guard1.txt"
+cp "$GUARD_REPO/HANDOFF-ARCHIVE.md" "$TMPDIR_BASE/guard-once.md"
+GUARD_RC=0
+"$HANDOFF_BIN" archive "$GUARD_REPO" > "$TMPDIR_BASE/guard2.txt" 2> "$TMPDIR_BASE/guard2.err" || GUARD_RC=$?
+assert_eq "second archive exits 1" "1" "$GUARD_RC"
+assert "second archive names the entry" grep -q 'already archived as entry 1' "$TMPDIR_BASE/guard2.err"
+assert "second archive tells the planner to continue" grep -q 'plan the next task first' "$TMPDIR_BASE/guard2.err"
+assert "second archive leaves the file unchanged" cmp -s "$GUARD_REPO/HANDOFF-ARCHIVE.md" "$TMPDIR_BASE/guard-once.md"
+sed 's/APPROVED/READY FOR QA/' "$GUARD_REPO/HANDOFF.md" > "$TMPDIR_BASE/guard-status.md"
+mv "$TMPDIR_BASE/guard-status.md" "$GUARD_REPO/HANDOFF.md"
+GUARD_RC=0
+"$HANDOFF_BIN" archive "$GUARD_REPO" > /dev/null 2> "$TMPDIR_BASE/guard-status.err" || GUARD_RC=$?
+assert_eq "status-only archive exits 1" "1" "$GUARD_RC"
+assert "status-only archive is still a duplicate" cmp -s "$GUARD_REPO/HANDOFF-ARCHIVE.md" "$TMPDIR_BASE/guard-once.md"
+sed 's/Keep the gate/A different plan/' "$GUARD_REPO/HANDOFF.md" > "$TMPDIR_BASE/guard-next.md"
+mv "$TMPDIR_BASE/guard-next.md" "$GUARD_REPO/HANDOFF.md"
+"$HANDOFF_BIN" archive "$GUARD_REPO" > "$TMPDIR_BASE/guard3.txt"
+assert_eq "a different task archives" "2" "$("$HANDOFF_BIN" archive list "$GUARD_REPO" | wc -l | tr -d ' ')"
+SUPER_RC=0
+"$HANDOFF_BIN" archive --superseded "$GUARD_REPO" > /dev/null 2> "$TMPDIR_BASE/super.err" || SUPER_RC=$?
+assert_eq "legacy superseded still needs A2A" "1" "$SUPER_RC"
+assert "legacy superseded names A2A" grep -q 'archive --superseded requires A2A workflow state' "$TMPDIR_BASE/super.err"
+
+export PATH="$LIST_PATH"
+hash -r
+
 # ── Final report ─────────────────────────────────────────────────────────────
 echo ""
 echo "═══════════════════════════════════════"
